@@ -1,0 +1,15 @@
+# Birdeye Peak brand theme — matches the local `--theme.*` CLI flags in
+# .claude/launch.json so cloud deploys render identically to local preview.
+[theme]
+base = "dark"
+primaryColor = "#d2b58f"
+backgroundColor = "#141414"
+secondaryBackgroundColor = "#1d1b19"
+textColor = "#ffffff"
+
+[server]
+headless = true
+runOnSave = true
+
+[browser]
+gatherUsageStats = false

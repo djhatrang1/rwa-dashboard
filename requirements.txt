@@ -1,0 +1,22 @@
+# ── Core ─────────────────────────────────────────────────────────────────────
+streamlit>=1.36.0
+streamlit-autorefresh>=1.0.1
+
+# ── Data ─────────────────────────────────────────────────────────────────────
+pandas>=2.0.0
+requests>=2.31.0
+
+# ── Visualisation ────────────────────────────────────────────────────────────
+plotly>=5.18.0
+
+# ── Config ───────────────────────────────────────────────────────────────────
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+
+# ── Scheduling & retry ───────────────────────────────────────────────────────
+APScheduler>=3.10.4
+tenacity>=8.2.3
+
+# ── Postgres backend (used when DATABASE_URL is set; harmless if not) ───────
+psycopg[binary]>=3.1

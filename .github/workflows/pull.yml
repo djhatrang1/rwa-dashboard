@@ -1,0 +1,45 @@
+name: Scheduled data pull
+
+# Runs the headless pull every 6 hours (00:00, 06:00, 12:00, 18:00 UTC) and on
+# manual dispatch. Each run writes fresh snapshots to the Postgres cache that
+# the Streamlit Cloud app reads from.
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      groups:
+        description: "Comma-separated puller GROUP names (blank = all)"
+        required: false
+        default: ""
+
+concurrency:
+  group: data-pull
+  cancel-in-progress: false
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run pullers
+        env:
+          BIRDEYE_API_KEY: ${{ secrets.BIRDEYE_API_KEY }}
+          DATABASE_URL:    ${{ secrets.DATABASE_URL }}
+          PULL_GROUP:      ${{ github.event.inputs.groups }}
+        run: |
+          python scripts/run_pull.py

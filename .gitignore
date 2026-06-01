@@ -1,0 +1,47 @@
+# ── Secrets ──────────────────────────────────────────────────────────────────
+.env
+.env.*
+.streamlit/secrets.toml
+
+# ── Local-only cache (lives in Postgres on Streamlit Cloud) ─────────────────
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+pull.log
+*.log
+
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# ── Editor / OS ─────────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── Streamlit ───────────────────────────────────────────────────────────────
+.streamlit/cache/
+
+# ── Local dev tooling ───────────────────────────────────────────────────────
+# Claude Code / Cursor / etc. workspace state (user-specific, not portable).
+.claude/
+
+# ── Legacy ──────────────────────────────────────────────────────────────────
+# Pre-clone original dashboard, kept locally for reference only.
+sop_base.py

@@ -26,7 +26,6 @@ from datetime import datetime
 from typing import List, Optional
 from urllib.parse import urlparse
 
-import anthropic
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -52,7 +51,7 @@ except ImportError:  # pragma: no cover — fine for local SQLite-only runs
 # pydantic-settings only reads env vars / .env, not st.secrets. Copy known keys
 # from st.secrets into os.environ at import time so cloud deploys pick them up
 # without touching any pydantic-settings code paths. No-op locally.
-for _k in ("BIRDEYE_API_KEY", "ANTHROPIC_API_KEY", "DATABASE_URL"):
+for _k in ("BIRDEYE_API_KEY", "DATABASE_URL"):
     if _k not in os.environ:
         try:
             _v = st.secrets.get(_k)  # type: ignore[attr-defined]
@@ -70,7 +69,6 @@ class Settings(BaseSettings):
     birdeye_api_key: str = ""
     dune_api_key: str = ""
     allium_api_key: str = ""
-    anthropic_api_key: str = ""
 
     # Base URLs
     birdeye_base_url: str = "https://public-api.birdeye.so"
@@ -89,7 +87,13 @@ class Settings(BaseSettings):
     # Streamlit UI auto-refresh
     ui_refresh_seconds: int = 30
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    # `extra = "ignore"` so unused .env / st.secrets keys (e.g. an older
+    # ANTHROPIC_API_KEY left over from prior features) don't crash startup.
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
 
 
 settings = Settings()

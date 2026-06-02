@@ -2044,6 +2044,82 @@ class TokenGroupMetricsPuller(DataPuller):
         )
         st.plotly_chart(fig, use_container_width=True)
 
+    # ── Volume chart filtered to one chain (Birdeye OHLCV V3) ──────────────────
+    def render_volume_chain(self, chain: str | None = None) -> None:
+        """Daily trading-volume chart restricted to tokens whose addresses
+        live on `chain` (per `_birdeye_chain_for`). When chain=None every
+        token in TOKENS is included regardless of source. Reuses _build_fig
+        so the layout matches the Solana volume chart exactly."""
+        df = self.get_latest()
+        if df is None or df.empty:
+            st.info("Waiting for first pull…")
+            return
+        df = df.copy()
+        df["date"] = pd.to_datetime(df["date"])
+
+        # Restrict to tokens whose Birdeye-inferred chain matches.
+        if chain is None:
+            tokens_subset = list(self.TOKENS)
+        else:
+            want = str(chain).lower()
+            tokens_subset = [
+                (t, a) for t, a in self.TOKENS
+                if self._birdeye_chain_for(a).lower() == want
+            ]
+        if not tokens_subset:
+            st.info(f"No tokens with on-chain trading data on {chain}.")
+            return
+
+        # Keep only tokens with ≥ $0.01 historical volume, sorted by latest
+        # day's vol (smallest first = bottom of bar stack — matches render()).
+        active = [
+            (t, a) for t, a in tokens_subset
+            if t not in self.HIDDEN_TOKENS
+            and self._safe_col(t) in df.columns
+            and df[self._safe_col(t)].sum() >= 0.01
+        ]
+        if not active:
+            st.info(f"No trading volume recorded on {chain} yet.")
+            return
+        last_row = df.sort_values("date").iloc[-1]
+        ordered = sorted(
+            active, key=lambda ta: last_row.get(self._safe_col(ta[0]), 0.0)
+        )
+        sorted_tokens = [
+            (t, a, self._COLORS[i % len(self._COLORS)])
+            for i, (t, a) in enumerate(ordered)
+        ]
+
+        st.caption(
+            f"Last pull: {df.attrs.get('pulled_at', '?')} UTC · "
+            f"Source: Birdeye OHLCV V3 (x-chain: {chain or 'all'})"
+        )
+        chain_tag = (chain or "all").lower().replace(" ", "_")
+        with st.container(key=f"chartwrap_{self.name}_vol_{chain_tag}"):
+            # Raw-data icon — pinned via existing CSS rules.
+            _fmt = {self._safe_col(t): "${:,.0f}" for t, _ in tokens_subset}
+            if st.button("📋", key=f"raw_{self.name}_vol_{chain_tag}",
+                         help="View raw data"):
+                _raw_data_modal(df.sort_values("date", ascending=False), _fmt)
+            tab_d, tab_w, tab_m = st.tabs(["Daily", "Weekly", "Monthly"])
+            with tab_d:
+                st.plotly_chart(
+                    self._build_fig(df, sorted_tokens, height=380),
+                    use_container_width=True,
+                )
+            with tab_w:
+                st.plotly_chart(
+                    self._build_fig(self._resample(df, "W"), sorted_tokens,
+                                    height=380),
+                    use_container_width=True,
+                )
+            with tab_m:
+                st.plotly_chart(
+                    self._build_fig(self._resample(df, "M"), sorted_tokens,
+                                    height=380),
+                    use_container_width=True,
+                )
+
     # ── Market-cap chart (per token) ────────────────────────────────────────────
     def render_market_cap(self, stacked: bool = False) -> None:
         """Per-token market cap from the cached MC series.
@@ -3065,7 +3141,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v11-paxg-xaut"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v12-volume-chain"
 
 _need_init = (
     "scheduler" not in st.session_state
@@ -3279,8 +3355,21 @@ if selected_chain != "Solana":
     dl_chain = _CHAIN_TO_DL.get(selected_chain)
     scope_label = "all chains" if dl_chain is None else selected_chain
 
-    def _render_chain_group(group_label: str, group_pullers: list) -> None:
-        """Render every puller in a group, filtered to the active chain."""
+    # Sidebar chain label → Birdeye x-chain value. None when the puller
+    # already infers the chain from each token's address (no extra volume
+    # chart) or when "All chain" is selected.
+    _BIRDEYE_CHAIN = {
+        "Ethereum":  "ethereum",
+        "BNB Chain": "bsc",
+        "Base":      "base",
+    }
+    birdeye_chain = _BIRDEYE_CHAIN.get(selected_chain)
+
+    def _render_chain_group(group_label: str, group_pullers: list,
+                            show_volume: bool = False) -> None:
+        """Render every puller in a group, filtered to the active chain.
+        If show_volume=True, also render a per-chain Birdeye volume chart
+        above the market-cap chart."""
         if not group_pullers:
             st.info(
                 f"No {group_label.lower()} tracked on {scope_label} yet. "
@@ -3289,6 +3378,9 @@ if selected_chain != "Solana":
         any_data = False
         for p in group_pullers:
             heading = getattr(p, "GROUP_LABEL", "") or group_label
+            if show_volume and birdeye_chain:
+                st.subheader(f"{heading} — Trading Volume ({scope_label})")
+                p.render_volume_chain(chain=birdeye_chain)
             st.subheader(f"{heading} — Market Cap ({scope_label})")
             st.caption(
                 f"Per-token market cap on {scope_label}. Birdeye first; "
@@ -3308,7 +3400,11 @@ if selected_chain != "Solana":
     with chain_tabs[0]:
         _render_chain_group("Tokenized Stocks", stocks_pullers)
     with chain_tabs[1]:
-        _render_chain_group("Tokenized Commodities", commodity_pullers)
+        # Commodities is the only group with Birdeye-native volume on
+        # Ethereum today (PAXG / XAUT). Other chains will populate once
+        # their addresses are wired into the TOKENS list.
+        _render_chain_group("Tokenized Commodities", commodity_pullers,
+                            show_volume=True)
     with chain_tabs[2]:
         _render_chain_group("Stablecoins", stablecoin_pullers)
     with chain_tabs[3]:
@@ -3373,9 +3469,11 @@ with tab_commodities:
         st.info("No tokenized commodity pullers registered.")
     else:
         for p in commodity_pullers:
-            st.subheader(f"{p.GROUP_LABEL} — Trading Volume")
-            st.caption("Solana on-chain daily volume (Birdeye OHLCV V3).")
-            p.render()
+            st.subheader(f"{p.GROUP_LABEL} — Trading Volume (Solana)")
+            # Restrict to Solana-native tokens so the Ethereum-only PAXG /
+            # XAUT entries (which carry Birdeye Ethereum volume, not Solana)
+            # don't pollute this stack.
+            p.render_volume_chain(chain="solana")
 
             st.subheader(f"{p.GROUP_LABEL} — Market Cap by Token")
             st.caption(

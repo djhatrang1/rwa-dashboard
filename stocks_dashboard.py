@@ -2859,6 +2859,13 @@ def _asset_text(rel: str) -> str:
 _PEAK_FONT_B64 = _asset_b64("fonts/Indivisible_SemiBold.otf")
 _PEAK_LOGO_SVG = _asset_text("logos/Birdeye_Peak_Horizontal_White.svg")
 
+# Streamlit Cloud injects extra header buttons (Share, pencil-edit, GitHub icon)
+# that local runs don't have. Detect via the Cloud-only mount path so we can
+# push our floated header controls further left and avoid overlapping them.
+_IS_CLOUD = os.path.exists("/mount/src")
+_TOPBAR_FORCE_PULL_RIGHT = "13rem" if _IS_CLOUD else "8rem"
+_TOPBAR_CAPTION_RIGHT    = "20rem" if _IS_CLOUD else "15rem"
+
 st.markdown(
     f"""
     <style>
@@ -2953,7 +2960,7 @@ st.markdown(
     .peak-sub-anchor {{ display: none; }}
     [data-testid="stElementContainer"]:has(.peak-sub-anchor),
     .element-container:has(.peak-sub-anchor) {{
-        position: fixed; top: 0; right: 15rem; height: 3.75rem;
+        position: fixed; top: 0; right: {_TOPBAR_CAPTION_RIGHT}; height: 3.75rem;
         display: flex; align-items: center; justify-content: flex-end;
         width: auto !important; margin: 0 !important; padding: 0 !important;
         z-index: 999991;
@@ -2965,7 +2972,7 @@ st.markdown(
     }}
     /* Force-pull button floated into the top bar, styled like the Deploy button */
     .st-key-force_pull_header {{
-        position: fixed; top: 0; right: 8rem; height: 3.75rem;
+        position: fixed; top: 0; right: {_TOPBAR_FORCE_PULL_RIGHT}; height: 3.75rem;
         display: flex; align-items: center;
         width: auto !important; min-height: 0 !important;
         margin: 0 !important; padding: 0 !important;

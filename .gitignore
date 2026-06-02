@@ -45,3 +45,6 @@ env/
 # ── Legacy ──────────────────────────────────────────────────────────────────
 # Pre-clone original dashboard, kept locally for reference only.
 sop_base.py
+
+# Local backups of seed files (created automatically when re-importing)
+mc_seed_*.json.bak

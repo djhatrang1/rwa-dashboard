@@ -1665,29 +1665,46 @@ class TokenGroupMetricsPuller(DataPuller):
         mc_by_date: dict[str, float] = {}        # coingecko: summed total per date
         mc_cols: list[str] = []                  # birdeye: per-token MC columns
         mc_cols_by_date: dict[str, dict] = {}    # birdeye: {date: {col: mc}}
+        # ── (0) Historical seed (mc_history_seed.json + per-token files) ────
+        # Runs for EVERY puller regardless of MARKET_CAP_SOURCE so treasuries
+        # (which fetch MC only from DefiLlama, not Birdeye) still get the
+        # local seed merged in. Seed values write to BOTH the legacy chain-
+        # agnostic col (so render_market_cap() and other un-migrated charts
+        # still see the data) AND the per-chain Solana col (so the per-chain
+        # MC chart shows the long history). `setdefault` is used so any value
+        # DefiLlama / carry-forward already supplied takes precedence — seed
+        # only fills genuine gaps.
+        _seed = _load_mc_seed()
+        if _seed:
+            for tok in self.TOKENS:
+                token_name = tok[0]
+                address    = tok[1] if len(tok) > 1 else ""
+                chain      = self._token_chain(tok)
+                ser = (_seed.get(token_name.lower())
+                       or _seed.get(str(address).lower()))
+                if not ser:
+                    continue
+                col_legacy = self._mc_col(token_name)
+                col_chain  = self._mc_chain_col(token_name, chain)
+                for d, mc in ser.items():
+                    bucket = mc_cols_by_date.setdefault(d, {})
+                    bucket.setdefault(col_legacy, mc)
+                    bucket.setdefault(col_chain,  mc)
+                for c in (col_legacy, col_chain):
+                    if c not in mc_cols:
+                        mc_cols.append(c)
+
         if self.MARKET_CAP_SOURCE == "birdeye_overview":
             # Legacy (chain-agnostic) MC col, one per UNIQUE symbol — kept so
             # the existing Solana per-token MC chart (render_market_cap) keeps
             # working without migration.
             _seen_names: set[str] = set()
-            mc_cols = []
             for tok in self.TOKENS:
                 t = tok[0]
                 if t in _seen_names: continue
                 _seen_names.add(t)
-                mc_cols.append(self._mc_col(t))
-            # (0) optional historical seed (mc_history_seed.json) — keyed by symbol/mint.
-            _seed = _load_mc_seed()
-            if _seed:
-                for tok in self.TOKENS:
-                    token_name = tok[0]
-                    address    = tok[1] if len(tok) > 1 else ""
-                    col = self._mc_col(token_name)
-                    ser = (_seed.get(token_name.lower())
-                           or _seed.get(str(address).lower()))
-                    if ser:
-                        for d, mc in ser.items():
-                            mc_cols_by_date.setdefault(d, {})[col] = mc
+                if self._mc_col(t) not in mc_cols:
+                    mc_cols.append(self._mc_col(t))
             # (1) carry forward prior snapshot — preserve every mc_* / mcbe_*
             # column we previously stored so chain-suffixed series accumulate
             # over time, not just the legacy chain-agnostic cols.
@@ -1724,7 +1741,8 @@ class TokenGroupMetricsPuller(DataPuller):
                         mc_cols_by_date.setdefault(today, {})[col_legacy] = mc
             all_dates.update(mc_cols_by_date.keys())
         elif self.MARKET_CAP_SOURCE == "coingecko" and self.COINGECKO_IDS:
-            for idx, (token_name, _) in enumerate(self.TOKENS):
+            for idx, tok in enumerate(self.TOKENS):
+                token_name = tok[0]
                 cg_id = self.COINGECKO_IDS.get(token_name)
                 if not cg_id:
                     continue
@@ -2040,7 +2058,8 @@ class TokenGroupMetricsPuller(DataPuller):
         sorted_tokens = self._active_sorted_tokens(df)
 
         _fmt = {"total_market_cap_usd": "${:,.0f}"}
-        for _tn, _ in self.TOKENS:
+        for _tok in self.TOKENS:
+            _tn   = _tok[0]
             _safe = _tn.lower().replace("-", "_").replace(" ", "_")
             _fmt[f"vol_{_safe}_usd"] = "${:,.0f}"
 
@@ -2106,7 +2125,8 @@ class TokenGroupMetricsPuller(DataPuller):
         # address, so the second entry would produce identical data anyway.
         token_series: list[tuple[str, pd.Series]] = []
         _seen: set[str] = set()
-        for token_name, _ in self.TOKENS:
+        for _tok in self.TOKENS:
+            token_name = _tok[0]
             if token_name in self.HIDDEN_TOKENS or token_name in _seen:
                 continue
             _seen.add(token_name)
@@ -2246,9 +2266,10 @@ class TokenGroupMetricsPuller(DataPuller):
         df = df.copy()
         df["date"] = pd.to_datetime(df["date"])
         present = [
-            (t, self._mc_col(t)) for t, _ in self.TOKENS
-            if t not in self.HIDDEN_TOKENS
-            and self._mc_col(t) in df.columns and df[self._mc_col(t)].notna().any()
+            (tok[0], self._mc_col(tok[0])) for tok in self.TOKENS
+            if tok[0] not in self.HIDDEN_TOKENS
+            and self._mc_col(tok[0]) in df.columns
+            and df[self._mc_col(tok[0])].notna().any()
         ]
         if not present:
             st.info("Market-cap history is building — a snapshot is cached each "
@@ -3434,7 +3455,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v15-tokens-3tuple"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v16-solscan-seeds"
 
 _need_init = (
     "scheduler" not in st.session_state

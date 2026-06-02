@@ -2694,9 +2694,15 @@ _TOKENIZED_COMMODITY_GROUPS: list[tuple[str, str, list]] = [
         "commodities_group",
         "Tokenized Commodities",
         [
+            # ── Solana-native (Birdeye OHLCV volume + Birdeye overview MC) ────
             ("XAUM",  "5aLhp9VnUEKcsdtkfsf2DUgpJfomx7GmYVny24dHUZoB"),
             ("GOLD",  "GoLDppdjB1vDTPSGxyMJFqdnj134yH6Prg9eqsGDiw6A"),
             ("VNXAU", "9TPL8droGJ7jThsq4momaoz6uhTcvX2SeMqipoPmNa8R"),
+            # ── Ethereum-native gold tokens (DefiLlama-only; Birdeye will
+            #    skip them since x-chain=solana). Addresses kept for
+            #    reference / future per-chain Birdeye calls. ─────────────────
+            ("PAXG",  "0x45804880De22913dAFE09f4980848ECE6EcbAf78"),
+            ("XAUT",  "0x68749665FF8D2d112Fa859AA293F07A622782F38"),
         ],
     ),
 ]
@@ -2748,6 +2754,12 @@ _STABLECOIN_DEFILLAMA: dict = {
 # top of Birdeye/Solana cache.
 _COMMODITY_DEFILLAMA: dict = {
     "XAUM": {"type": "protocol", "slug": "matrixdock-xaum"},
+    # PAXG: Ethereum-only (~$2.07B). XAUT: Ethereum dominant (~$3.15B) +
+    # smaller balances on Arbitrum / Avalanche / Celo / Monad / Plasma /
+    # Polygon / Ink. Both come in as separate mc_<token>_<chain>_usd cols
+    # via the additive DefiLlama path.
+    "PAXG": {"type": "protocol", "slug": "paxos-gold"},
+    "XAUT": {"type": "protocol", "slug": "tether-gold"},
     # GOLD / VNXAU: no clean DefiLlama mapping yet — Solana-only via Birdeye.
 }
 
@@ -3013,7 +3025,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v10"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v11-paxg-xaut"
 
 _need_init = (
     "scheduler" not in st.session_state

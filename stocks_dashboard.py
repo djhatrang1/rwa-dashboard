@@ -140,7 +140,13 @@ class CacheDB:
             return psycopg.connect(self.database_url, autocommit=True)
         return sqlite3.connect(self.db_path, check_same_thread=False)
 
+    @retry(stop=stop_after_attempt(4),
+           wait=wait_exponential(multiplier=1, min=1, max=8),
+           reraise=True)
     def _init(self) -> None:
+        """Create the schema. Wrapped in tenacity retry so transient Supabase
+        pgbouncer drops (EDBHANDLEREXITED) on startup don't crash the app —
+        the next attempt grabs a fresh pooler connection cleanly."""
         with self._connect() as c:
             if self.backend == "postgres":
                 with c.cursor() as cur:
@@ -241,7 +247,21 @@ class CacheDB:
         return pd.concat(frames, ignore_index=True)
 
 
-cache_db = CacheDB(settings.db_path, settings.database_url)
+def _build_cache_db() -> CacheDB:
+    return CacheDB(settings.db_path, settings.database_url)
+
+
+# Streamlit re-executes this script on every interaction (autorefresh every
+# 30 s here), so a plain `CacheDB(...)` at module level would open a fresh
+# Postgres connection per rerun and saturate Supabase's pgbouncer pooler,
+# triggering EDBHANDLEREXITED drops. `st.cache_resource` caches the instance
+# for the lifetime of the Streamlit process so connection setup happens once.
+# PULL_ONLY mode runs the script as a plain interpreter (no Streamlit ctx);
+# the try/except falls through to a normal construction in that case.
+try:
+    cache_db = st.cache_resource(_build_cache_db)()
+except Exception:
+    cache_db = _build_cache_db()
 log.info(
     "CacheDB backend = %s (%s)",
     cache_db.backend,

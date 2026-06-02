@@ -1976,10 +1976,16 @@ class TokenGroupMetricsPuller(DataPuller):
         df["date"] = pd.to_datetime(df["date"])
 
         # Map each visible token to a single per-chain series (or sum-across-chains).
+        # Same symbol can appear in TOKENS twice (e.g. BUIDL on both Solana and
+        # Ethereum addresses) — dedupe so the chart legend / area stack doesn't
+        # show duplicates. The MC column lookup is keyed by (name, chain), not
+        # address, so the second entry would produce identical data anyway.
         token_series: list[tuple[str, pd.Series]] = []
+        _seen: set[str] = set()
         for token_name, _ in self.TOKENS:
-            if token_name in self.HIDDEN_TOKENS:
+            if token_name in self.HIDDEN_TOKENS or token_name in _seen:
                 continue
+            _seen.add(token_name)
             if chain is None:
                 # Sum across every per-chain column for this token (= global MC).
                 prefix = f"mc_{token_name.lower().replace('-','_').replace(' ','_')}_"
@@ -2072,12 +2078,17 @@ class TokenGroupMetricsPuller(DataPuller):
 
         # Keep only tokens with ≥ $0.01 historical volume, sorted by latest
         # day's vol (smallest first = bottom of bar stack — matches render()).
-        active = [
-            (t, a) for t, a in tokens_subset
-            if t not in self.HIDDEN_TOKENS
-            and self._safe_col(t) in df.columns
-            and df[self._safe_col(t)].sum() >= 0.01
-        ]
+        # Dedupe by name so a symbol that appears in TOKENS on more than one
+        # chain (e.g. BUIDL on Solana + Ethereum entries) doesn't render twice.
+        active: list[tuple[str, str]] = []
+        _seen: set[str] = set()
+        for t, a in tokens_subset:
+            if (t in self.HIDDEN_TOKENS or t in _seen
+                or self._safe_col(t) not in df.columns
+                or df[self._safe_col(t)].sum() < 0.01):
+                continue
+            _seen.add(t)
+            active.append((t, a))
         if not active:
             st.info(f"No trading volume recorded on {chain} yet.")
             return
@@ -2886,6 +2897,7 @@ _TREASURY_GROUPS: list[tuple[str, str, list]] = [
         "treasuries_group",
         "Treasuries & MMFs",
         [
+            # ── Solana-native treasury / MMF tokens ─────────────────────────
             ("BUIDL",    "GyWgeqpy5GueU2YbkE8xqUeVEokCMMCEeUrfbtMw6phr"),
             ("ULTRA",    "9DRPPWYud8i6CaSsDsFESs1xyVr8dBCMtjPZji2xiZEa"),
             ("VBILL",    "34mJztT9am2jybSukvjNqRjgJBZqHJsHnivArx1P4xy1"),
@@ -2908,6 +2920,40 @@ _TREASURY_GROUPS: list[tuple[str, str, list]] = [
             ("USDY",     "A1KLoBrKBde8Ty9qtNQUtq3C2ortoC3u7twggz7sEto6"),
             ("USDM1",    "BNgsQdjfWmjoy3cw8T3VXWswHfgCzEMyQzUno8gmzmRC"),
             ("USTRY",    "USTRYnGgcHAhdWsanv8BG6vHGd4p7UGgoB9NRd8ei7j"),
+            # ── Ethereum-native treasury / MMF tokens ───────────────────────
+            # Duplicated symbol names (BUIDL/USDY/USYC/etc) are deduplicated
+            # by name at render time so the chart legend stays clean. Each
+            # entry still triggers a Birdeye Ethereum fetch (x-chain inferred
+            # from 0x prefix) so we get per-token snapshots + volume.
+            ("USYC",     "0x136471a34f6ef19fe571effc1ca711fdb8e49f2b"),
+            ("BUIDL",    "0x6a9da2d710bb9b700acde7cb81f10f1ff8c89041"),
+            ("USDY",     "0x96f6ef951840721adbf46ac996b59e0235cb985c"),
+            ("iBENJI",   "0x90276e9d4a023b5229e0c2e9d4b2a83fe3a2b48c"),
+            ("WTGXX",    "0x1fecf3d9d4fee7f2c02917a66028a48c6706c179"),
+            ("JTRSY",    "0x8c213ee79581ff4984583c6a801e5263418c4b86"),
+            ("BENJI",    "0x3ddc84940ab509c11b20b76b466933f40b750dc9"),
+            ("USTB",     "0x43415eb6ff9db7e26a15b704e7a3edce97d31c4e"),
+            ("OUSG",     "0x1b19c19393e2d034d8ff31ff34c81252fcbbee92"),
+            ("CUMIU",    "0x85d38585c3ac08268f598282a84b7c0ddfc0d04f"),
+            ("USTBL",    "0xe4880249745eac5f1ed9d8f7df844792d560e750"),
+            ("FDIT",     "0x48ab4e39ac59f4e88974804b04a991b3a402717f"),
+            ("ULTRA",    "0x50293dd8889b931eb3441d2664dce8396640b419"),
+            ("THBILL",   "0x5fa487bca6158c64046b2813623e20755091da0b"),
+            ("BELIF",    "0x237c717df1b60501f8d029d3fe7385fd090df180"),
+            ("MONY",     "0x6a7c6aa2b8b8a6a891de552bdeffa87c3f53bd46"),
+            ("TBILL",    "0xdd50c053c096cb04a3e3362e2b622529ec5f2e8a"),
+            ("VBILL",    "0x2255718832bc9fd3be1caf75084f4803da14ff01"),
+            ("MTBILL",   "0xdd629e5241cbc5919847783e6c96b2de4754e438"),
+            ("CASHx",    "0x42975aae7a124257e7fda7f5e8382f51449b784a"),
+            ("DCP",      "0xb5710a6fede27d1048c75b157bd3403ba08cdbe0"),
+            ("FILQ",     "0x54a4fc78431f9201824643e99bec891bb7462a1d"),
+            ("CUMBU",    "0x1aaa3339572cf88dc487dbeef263f5aabc5f3bbf"),
+            ("UMINT",    "0xc06036793272219179f846ef6bfc3b16e820df0b"),
+            ("CUMFU",    "0xdbf879f356c6b8c5f1edfdcb2950eda8b3ad25d9"),
+            ("usfr.d",   "0xaEB0A5d56de94479cdA178977570FD9079500527"),
+            ("deJTRSY",  "0xa6233014b9b7aaa74f38fa1977ffc7a89642dc72"),
+            ("CMBMINT",  "0xc9a71c8fa0f505e690cbab1012d4a4a518e03231"),
+            ("USDM1",    "0x90a1717e0dabe37693f79afe43ae236dc3b65957"),
         ],
     ),
 ]
@@ -2916,6 +2962,7 @@ _TREASURY_GROUPS: list[tuple[str, str, list]] = [
 # the full per-chain historical MC series. Tokens missing from this map will
 # simply have empty MC series until you drop an mc_seed_<symbol>.json file in.
 _TREASURY_DEFILLAMA: dict = {
+    # ── Single-fund slugs (precise) ─────────────────────────────────────────
     "BUIDL":  {"type": "protocol",   "slug": "blackrock-buidl"},
     "OUSG":   {"type": "protocol",   "slug": "ondo-yield-assets"},
     "USDY":   {"type": "stablecoin", "id":   129},
@@ -2924,6 +2971,20 @@ _TREASURY_DEFILLAMA: dict = {
     "USTB":   {"type": "protocol",   "slug": "superstate-ustb"},
     "TBILL":  {"type": "protocol",   "slug": "openeden-tbill"},
     "USDM1":  {"type": "stablecoin", "id":   342},
+    "USYC":   {"type": "protocol",   "slug": "circle-usyc"},
+    "FDIT":   {"type": "protocol",   "slug": "fidelity-digital-interest-token"},
+    "THBILL": {"type": "protocol",   "slug": "theo-network-thbill"},
+    "DCP":    {"type": "protocol",   "slug": "apollo-diversified-credit-securitize-fund"},
+    # ── Multi-fund protocol slugs (aggregate at protocol level — better
+    #    than nothing while waiting for DefiLlama to split out per token) ──
+    "WTGXX":  {"type": "protocol",   "slug": "wisdomtree"},
+    "MTBILL": {"type": "protocol",   "slug": "midas-rwa"},
+    "USTBL":  {"type": "protocol",   "slug": "spiko"},
+    "CASHx":  {"type": "protocol",   "slug": "asseto-cash+"},
+    # Not yet mapped (no clean DefiLlama equivalent found):
+    #   iBENJI, BENJI, JTRSY, CUMIU, BELIF, MONY, FILQ, CUMBU, UMINT,
+    #   CUMFU, usfr.d, deJTRSY, CMBMINT, nTBILL, FLTTX, TIPSX, WTLGX,
+    #   WTSTX, WTTSX, WTSYX, USTRY
 }
 
 
@@ -3141,7 +3202,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v12-volume-chain"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v13-eth-treasuries"
 
 _need_init = (
     "scheduler" not in st.session_state

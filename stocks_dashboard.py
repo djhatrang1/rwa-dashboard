@@ -1103,8 +1103,12 @@ def _chain_safe(chain: str) -> str:
 # the stablecoin endpoint emits "BSC" while the protocol endpoint emits "Binance".
 # We normalise to "Binance" so both data sources stack in one column.
 _DL_CHAIN_ALIASES = {
-    "BSC": "Binance",
+    "BSC":                 "Binance",
+    "BNB Chain":           "Binance",
     "Binance Smart Chain": "Binance",
+    "BinanceSmartChain":   "Binance",  # spelling used by Backed.fi xStocks CSV
+    "bsc":                 "Binance",  # lowercase fallback
+    "binance":             "Binance",
 }
 
 
@@ -1382,21 +1386,54 @@ class TokenGroupMetricsPuller(DataPuller):
             t_from = int(items[-1][time_key]) + 86_400
         return rows
 
-    # ── Birdeye chain helper ────────────────────────────────────────────────────
+    # ── Chain helpers ───────────────────────────────────────────────────────────
+    # Map "logical" chain name (used in TOKENS tuples + column suffixes) to the
+    # x-chain value Birdeye expects. Keeps Birdeye-API naming separate from the
+    # canonical chain name used for column storage (which matches DefiLlama).
+    _BIRDEYE_CHAIN_API = {
+        "solana":   "solana",
+        "ethereum": "ethereum",
+        "binance":  "bsc",    # canonical = "Binance" (DefiLlama-style)
+        "bsc":      "bsc",
+        "base":     "base",
+        "arbitrum": "arbitrum",
+        "polygon":  "polygon",
+        "optimism": "optimism",
+        "avalanche":"avalanche",
+        "sui":      "sui",
+        "zksync":   "zksync",
+    }
+
     @staticmethod
     def _birdeye_chain_for(address: str) -> str:
-        """Infer the Birdeye `x-chain` value from the address format.
-        EVM addresses are 42-char `0x…` hex; otherwise we treat as Solana."""
+        """Infer Birdeye `x-chain` from address format. EVM = ethereum; else
+        solana. Only used when a TOKENS entry has no explicit 3rd chain element."""
         a = str(address or "").strip()
         return "ethereum" if a.startswith("0x") else "solana"
 
-    def _birdeye_headers(self, address: str) -> dict:
-        """API headers with the right `x-chain` for `address`. Use this in
-        every per-token Birdeye call so multi-chain tokens (PAXG/XAUT on
-        Ethereum, etc.) hit the right endpoint instead of erroring out."""
+    @staticmethod
+    def _token_chain(token_tuple) -> str:
+        """Return the canonical chain (DefiLlama-style name) for a TOKENS row.
+        Supports 2-tuple (name, addr) [chain inferred from addr] or 3-tuple
+        (name, addr, chain). Normalises BSC aliases to 'Binance' to match the
+        DefiLlama-written `mc_<token>_binance_usd` column suffix."""
+        if len(token_tuple) >= 3 and token_tuple[2]:
+            return _norm_chain(str(token_tuple[2]))
+        addr = token_tuple[1] if len(token_tuple) >= 2 else ""
+        return "Ethereum" if str(addr).startswith("0x") else "Solana"
+
+    def _birdeye_headers(self, address: str, chain: str | None = None) -> dict:
+        """API headers with the right `x-chain`. Pass explicit `chain` when a
+        token's address alone can't disambiguate (e.g. the same 0x address
+        deployed on both Ethereum and BSC)."""
+        if chain:
+            key = chain.lower()
+            api_chain = self._BIRDEYE_CHAIN_API.get(key, key)
+        else:
+            api_chain = self._birdeye_chain_for(address)
         return {
             "X-API-KEY": self.settings.birdeye_api_key,
-            "x-chain":  self._birdeye_chain_for(address),
+            "x-chain":   api_chain,
         }
 
     def _fetch_circ_supply(self, headers: dict, address: str) -> float | None:
@@ -1586,20 +1623,25 @@ class TokenGroupMetricsPuller(DataPuller):
         time_to    = int(datetime.utcnow().timestamp())
         sol_by_day: dict[str, float] = {}   # fetched lazily, shared across tokens
 
-        token_data: dict[str, dict] = {}
+        # Token data is keyed by (name, chain) so the same symbol can carry
+        # separate Solana / Ethereum / BSC volume series without overwriting.
+        token_data: dict[tuple[str, str], dict] = {}
         if not self.SKIP_VOLUME:
-            for idx, (token_name, address) in enumerate(self.TOKENS):
-                # Small inter-token delay so we don't hit Birdeye's rate limit when
-                # the group has many tokens (e.g. 264 Ondo contracts).
+            for idx, tok in enumerate(self.TOKENS):
+                token_name = tok[0]
+                address    = tok[1] if len(tok) > 1 else ""
+                chain      = self._token_chain(tok)
+                # Small inter-token delay so we don't hit Birdeye's rate limit
+                # when the group has many tokens (e.g. 264 Ondo contracts).
                 if idx > 0:
                     time.sleep(0.12)
-                # Headers chosen per-token so EVM addresses go through Birdeye's
-                # Ethereum endpoint instead of the Solana one (which 400s).
-                h = self._birdeye_headers(address)
+                # Per-token headers — explicit chain wins over address inference
+                # so 0x… EVM tokens on BSC hit x-chain=bsc, not ethereum.
+                h = self._birdeye_headers(address, chain)
                 circ_supply = self._fetch_circ_supply(h, address)
                 daily = self._fetch_token_daily(h, time_to, token_name, address,
                                                 circ_supply, sol_by_day)
-                token_data[token_name] = daily
+                token_data[(token_name, chain)] = daily
 
         all_dates: set[str] = set()
         for daily in token_data.values():
@@ -1616,32 +1658,62 @@ class TokenGroupMetricsPuller(DataPuller):
         mc_cols: list[str] = []                  # birdeye: per-token MC columns
         mc_cols_by_date: dict[str, dict] = {}    # birdeye: {date: {col: mc}}
         if self.MARKET_CAP_SOURCE == "birdeye_overview":
-            mc_cols = [self._mc_col(t) for t, _ in self.TOKENS]
+            # Legacy (chain-agnostic) MC col, one per UNIQUE symbol — kept so
+            # the existing Solana per-token MC chart (render_market_cap) keeps
+            # working without migration.
+            _seen_names: set[str] = set()
+            mc_cols = []
+            for tok in self.TOKENS:
+                t = tok[0]
+                if t in _seen_names: continue
+                _seen_names.add(t)
+                mc_cols.append(self._mc_col(t))
             # (0) optional historical seed (mc_history_seed.json) — keyed by symbol/mint.
             _seed = _load_mc_seed()
             if _seed:
-                for (token_name, address), col in zip(self.TOKENS, mc_cols):
+                for tok in self.TOKENS:
+                    token_name = tok[0]
+                    address    = tok[1] if len(tok) > 1 else ""
+                    col = self._mc_col(token_name)
                     ser = (_seed.get(token_name.lower())
                            or _seed.get(str(address).lower()))
                     if ser:
                         for d, mc in ser.items():
                             mc_cols_by_date.setdefault(d, {})[col] = mc
-            # (1) carry forward prior snapshot (real cached data overrides the seed)
+            # (1) carry forward prior snapshot — preserve every mc_* / mcbe_*
+            # column we previously stored so chain-suffixed series accumulate
+            # over time, not just the legacy chain-agnostic cols.
             prior = self.get_latest()
             if prior is not None and not prior.empty:
+                _carry_cols = [c for c in prior.columns
+                               if c.startswith("mc_") and c.endswith("_usd")]
                 for _, pr in prior.iterrows():
                     d = pd.to_datetime(pr["date"]).strftime("%Y-%m-%d")
-                    for col in mc_cols:
-                        if col in prior.columns and pd.notna(pr.get(col)):
+                    for col in _carry_cols:
+                        if pd.notna(pr.get(col)):
                             mc_cols_by_date.setdefault(d, {})[col] = float(pr[col])
+                        if col not in mc_cols:
+                            mc_cols.append(col)
             today = datetime.utcnow().strftime("%Y-%m-%d")
-            for idx, ((token_name, address), col) in enumerate(zip(self.TOKENS, mc_cols)):
+            for idx, tok in enumerate(self.TOKENS):
+                token_name = tok[0]
+                address    = tok[1] if len(tok) > 1 else ""
+                chain      = self._token_chain(tok)
                 if idx > 0:
                     time.sleep(0.1)   # gentle pacing for large groups
                 mc = self._fetch_token_overview_mc(
-                    self._birdeye_headers(address), address)
+                    self._birdeye_headers(address, chain), address)
                 if mc is not None:
-                    mc_cols_by_date.setdefault(today, {})[col] = mc
+                    # Write to BOTH the legacy chain-agnostic col (Solana-only
+                    # historically) AND the per-chain col. The per-chain col is
+                    # what render_market_cap_chain reads for non-Solana tabs.
+                    col_chain = self._mc_chain_col(token_name, chain)
+                    mc_cols_by_date.setdefault(today, {})[col_chain] = mc
+                    if col_chain not in mc_cols:
+                        mc_cols.append(col_chain)
+                    if chain.lower() == "solana":
+                        col_legacy = self._mc_col(token_name)
+                        mc_cols_by_date.setdefault(today, {})[col_legacy] = mc
             all_dates.update(mc_cols_by_date.keys())
         elif self.MARKET_CAP_SOURCE == "coingecko" and self.COINGECKO_IDS:
             for idx, (token_name, _) in enumerate(self.TOKENS):
@@ -1659,7 +1731,11 @@ class TokenGroupMetricsPuller(DataPuller):
         # so Solana keeps its primary source while every chain DefiLlama covers
         # gets its own mc_<token>_<chain>_usd column.
         if self.DEFILLAMA_TOKENS:
-            for token_name, _ in self.TOKENS:
+            _seen_dl: set[str] = set()
+            for tok in self.TOKENS:
+                token_name = tok[0]
+                if token_name in _seen_dl: continue
+                _seen_dl.add(token_name)
                 cfg = self.DEFILLAMA_TOKENS.get(token_name)
                 if not cfg:
                     continue
@@ -1682,14 +1758,29 @@ class TokenGroupMetricsPuller(DataPuller):
             row: dict = {"date": date}
             total_mc = 0.0
             mc_valid = False
-            for token_name, _ in self.TOKENS:
-                entry = token_data.get(token_name, {}).get(date, {})
-                safe  = token_name.lower().replace("-", "_").replace(" ", "_")
-                row[f"vol_{safe}_usd"] = entry.get("volume_usd", 0.0)
+            # Track per-(name, chain) to emit chain-suffixed vol cols and the
+            # legacy chain-agnostic col (Solana entry wins so pre-refactor
+            # readers keep seeing the same value).
+            _legacy_vol: dict[str, float] = {}
+            for tok in self.TOKENS:
+                token_name = tok[0]
+                chain      = self._token_chain(tok)
+                entry      = token_data.get((token_name, chain), {}).get(date, {})
+                vol        = entry.get("volume_usd", 0.0) or 0.0
+                safe_name  = token_name.lower().replace("-", "_").replace(" ", "_")
+                ch_safe    = _chain_safe(chain)
+                row[f"vol_{safe_name}_{ch_safe}_usd"] = vol
+                # Legacy column (chain-agnostic): Solana entries always win;
+                # otherwise the first non-Solana value seeds it.
+                if chain.lower() == "solana" or token_name not in _legacy_vol:
+                    _legacy_vol[token_name] = vol
                 mc = entry.get("market_cap_usd")
                 if mc is not None:
                     total_mc += mc
                     mc_valid  = True
+            for token_name, vol in _legacy_vol.items():
+                safe_name = token_name.lower().replace("-", "_").replace(" ", "_")
+                row[f"vol_{safe_name}_usd"] = vol
             if mc_cols:
                 day = mc_cols_by_date.get(date, {})
                 for col in mc_cols:
@@ -1708,12 +1799,14 @@ class TokenGroupMetricsPuller(DataPuller):
     @staticmethod
     def _resample(df: pd.DataFrame, period: str) -> pd.DataFrame:
         """Aggregate daily df to weekly ('W') or monthly ('M').
-        All vol_*_usd columns are summed; total_market_cap_usd takes the last value."""
+        Every vol_*_usd column (chain-agnostic legacy and chain-suffixed) is
+        summed; total_market_cap_usd takes the last value."""
         col      = "week" if period == "W" else "month"
         vol_cols = [c for c in df.columns
                     if c.startswith("vol_") and c.endswith("_usd")]
         agg      = {c: "sum" for c in vol_cols}
-        agg["total_market_cap_usd"] = "last"
+        if "total_market_cap_usd" in df.columns:
+            agg["total_market_cap_usd"] = "last"
         return (
             df.assign(**{col: df["date"].dt.to_period(period).dt.start_time})
             .groupby(col, as_index=False)
@@ -1722,8 +1815,15 @@ class TokenGroupMetricsPuller(DataPuller):
         )
 
     @staticmethod
-    def _safe_col(token_name: str) -> str:
-        return f"vol_{token_name.lower().replace('-', '_').replace(' ', '_')}_usd"
+    def _safe_col(token_name: str, chain: str | None = None) -> str:
+        """Volume column name. When `chain` is given returns the chain-suffixed
+        form (e.g. vol_mstrx_ethereum_usd) used by per-chain charts; without
+        chain returns the legacy chain-agnostic form (vol_<name>_usd) that the
+        original Solana-only chart used."""
+        base = token_name.lower().replace('-', '_').replace(' ', '_')
+        if chain:
+            return f"vol_{base}_{_chain_safe(chain)}_usd"
+        return f"vol_{base}_usd"
 
     @staticmethod
     def _mc_col(token_name: str) -> str:
@@ -1736,18 +1836,34 @@ class TokenGroupMetricsPuller(DataPuller):
         safe_t = token_name.lower().replace("-", "_").replace(" ", "_")
         return f"mc_{safe_t}_{_chain_safe(chain)}_usd"
 
-    def _active_sorted_tokens(self, df: pd.DataFrame) -> list[tuple[str, str, str]]:
-        """Return [(token_name, address, color)] for tokens with ≥ $0.01 historical
-        volume, sorted ascending by most-recent-day volume (bar stack order)."""
-        active = [
-            (t, a) for t, a in self.TOKENS
-            if t not in self.HIDDEN_TOKENS and df[self._safe_col(t)].sum() >= 0.01
-        ]
+    def _active_sorted_tokens(self, df: pd.DataFrame,
+                              chain: str | None = None
+                              ) -> list[tuple[str, str, str]]:
+        """Return [(token_name, address, color)] for tokens with ≥ $0.01
+        historical volume, sorted ascending by most-recent-day volume (bar
+        stack order). When `chain` is given, restricts to TOKENS rows whose
+        per-row chain matches and uses chain-suffixed volume columns; dedupes
+        repeat symbols so a single name doesn't render twice."""
+        seen: set[str] = set()
+        active: list[tuple[str, str]] = []
+        for tok in self.TOKENS:
+            t = tok[0]
+            a = tok[1] if len(tok) > 1 else ""
+            if t in self.HIDDEN_TOKENS or t in seen:
+                continue
+            if chain and self._token_chain(tok).lower() != chain.lower():
+                continue
+            col = self._safe_col(t, chain) if chain else self._safe_col(t)
+            if col not in df.columns or df[col].sum() < 0.01:
+                continue
+            seen.add(t)
+            active.append((t, a))
+        if not active:
+            return []
         last_row = df.sort_values("date").iloc[-1]
-        ordered = sorted(
-            active,
-            key=lambda ta: last_row.get(self._safe_col(ta[0]), 0.0),
-        )
+        col_fn = (lambda name: self._safe_col(name, chain)) if chain \
+            else self._safe_col
+        ordered = sorted(active, key=lambda ta: last_row.get(col_fn(ta[0]), 0.0))
         return [
             (t, a, self._COLORS[i % len(self._COLORS)])
             for i, (t, a) in enumerate(ordered)
@@ -2063,43 +2179,13 @@ class TokenGroupMetricsPuller(DataPuller):
         df = df.copy()
         df["date"] = pd.to_datetime(df["date"])
 
-        # Restrict to tokens whose Birdeye-inferred chain matches.
-        if chain is None:
-            tokens_subset = list(self.TOKENS)
-        else:
-            want = str(chain).lower()
-            tokens_subset = [
-                (t, a) for t, a in self.TOKENS
-                if self._birdeye_chain_for(a).lower() == want
-            ]
-        if not tokens_subset:
-            st.info(f"No tokens with on-chain trading data on {chain}.")
+        # _active_sorted_tokens does the chain filtering + dedup + sort using
+        # the chain-suffixed column (`vol_<name>_<chain>_usd`). When chain is
+        # None we fall through to the legacy chain-agnostic column.
+        sorted_tokens = self._active_sorted_tokens(df, chain=chain)
+        if not sorted_tokens:
+            st.info(f"No trading volume recorded on {chain or 'any chain'} yet.")
             return
-
-        # Keep only tokens with ≥ $0.01 historical volume, sorted by latest
-        # day's vol (smallest first = bottom of bar stack — matches render()).
-        # Dedupe by name so a symbol that appears in TOKENS on more than one
-        # chain (e.g. BUIDL on Solana + Ethereum entries) doesn't render twice.
-        active: list[tuple[str, str]] = []
-        _seen: set[str] = set()
-        for t, a in tokens_subset:
-            if (t in self.HIDDEN_TOKENS or t in _seen
-                or self._safe_col(t) not in df.columns
-                or df[self._safe_col(t)].sum() < 0.01):
-                continue
-            _seen.add(t)
-            active.append((t, a))
-        if not active:
-            st.info(f"No trading volume recorded on {chain} yet.")
-            return
-        last_row = df.sort_values("date").iloc[-1]
-        ordered = sorted(
-            active, key=lambda ta: last_row.get(self._safe_col(ta[0]), 0.0)
-        )
-        sorted_tokens = [
-            (t, a, self._COLORS[i % len(self._COLORS)])
-            for i, (t, a) in enumerate(ordered)
-        ]
 
         st.caption(
             f"Last pull: {df.attrs.get('pulled_at', '?')} UTC · "
@@ -2108,25 +2194,35 @@ class TokenGroupMetricsPuller(DataPuller):
         chain_tag = (chain or "all").lower().replace(" ", "_")
         with st.container(key=f"chartwrap_{self.name}_vol_{chain_tag}"):
             # Raw-data icon — pinned via existing CSS rules.
-            _fmt = {self._safe_col(t): "${:,.0f}" for t, _ in tokens_subset}
+            _fmt = {self._safe_col(t, chain): "${:,.0f}"
+                    for t, _, _ in sorted_tokens}
             if st.button("📋", key=f"raw_{self.name}_vol_{chain_tag}",
                          help="View raw data"):
                 _raw_data_modal(df.sort_values("date", ascending=False), _fmt)
+            # Aliased view: rename the chain-suffixed col → legacy col name so
+            # _build_fig (which reads _safe_col(name) = vol_<name>_usd) works
+            # without modification. Each render gets its own alias view.
+            if chain:
+                _aliases = {self._safe_col(t, chain): self._safe_col(t)
+                            for t, _, _ in sorted_tokens}
+                df_view = df.rename(columns=_aliases)
+            else:
+                df_view = df
             tab_d, tab_w, tab_m = st.tabs(["Daily", "Weekly", "Monthly"])
             with tab_d:
                 st.plotly_chart(
-                    self._build_fig(df, sorted_tokens, height=380),
+                    self._build_fig(df_view, sorted_tokens, height=380),
                     use_container_width=True,
                 )
             with tab_w:
                 st.plotly_chart(
-                    self._build_fig(self._resample(df, "W"), sorted_tokens,
+                    self._build_fig(self._resample(df_view, "W"), sorted_tokens,
                                     height=380),
                     use_container_width=True,
                 )
             with tab_m:
                 st.plotly_chart(
-                    self._build_fig(self._resample(df, "M"), sorted_tokens,
+                    self._build_fig(self._resample(df_view, "M"), sorted_tokens,
                                     height=380),
                     use_container_width=True,
                 )
@@ -2314,6 +2410,134 @@ _TOKENIZED_STOCK_GROUPS: list[tuple[str, str, list]] = [
             ("Vx",     "XsqgsbXwWogGJsNcVZ3TyVouy2MbTkfCFhCGGGcQZ2p"),
             ("WMTx",   "Xs151QeqTCiuKtinzfRATnUESM2xTU6V9Wy8Vy538ci"),
             ("XOMx",   "XsaHND8sHyfMfsWPj6kSdd5VwvCayZvjYgKmmcNL5qh"),
+            # ── EVM mirror deployments (Backed.fi, identical 0x proxy on both EVMs) ──
+("AAPLx", "0x9d275685dc284c8eb1c79f6aba7a63dc75ec890a", "Ethereum"),
+            ("ABBVx", "0xfbf2398df672cee4afcc2a4a733222331c742a6a", "Ethereum"),
+            ("ABTx", "0x89233399708c18ac6887f90a2b4cd8ba5fedd06e", "Ethereum"),
+            ("ACNx", "0x03183ce31b1656b72a55fa6056e287f50c35bbeb", "Ethereum"),
+            ("AMBRx", "0x2f9a35ab5ddfbc49927bfdeab98a86c53dc6e763", "Ethereum"),
+            ("AMZNx", "0x3557ba345b01efa20a1bddc61f573bfd87195081", "Ethereum"),
+            ("APPx", "0x50a1291f69d9d3853def8209cfb1af0b46927be1", "Ethereum"),
+            ("AVGOx", "0x38bac69cbbd28156796e4163b2b6dcb81e336565", "Ethereum"),
+            ("AZNx", "0x5d642505fe1a28897eb3baba665f454755d8daa2", "Ethereum"),
+            ("BACx", "0x314938c596f5ce31c3f75307d2979338c346d7f2", "Ethereum"),
+            ("BRK.Bx", "0x12992613fdd35abe95dec5a4964331b1ee23b50d", "Ethereum"),
+            ("CMCSAx", "0xbc7170a1280be28513b4e940c681537eb25e39f4", "Ethereum"),
+            ("COINx", "0x364f210f430ec2448fc68a49203040f6124096f0", "Ethereum"),
+            ("CRCLx", "0xfebded1b0986a8ee107f5ab1a1c5a813491deceb", "Ethereum"),
+            ("CRMx", "0x4a4073f2eaf299a1be22254dcd2c41727f6f54a2", "Ethereum"),
+            ("CRWDx", "0x214151022c2a5e380ab80cdac31f23ae554a7345", "Ethereum"),
+            ("CSCOx", "0x053c784cd87b74f42e0c089f98643e79c1a3ff16", "Ethereum"),
+            ("CVXx", "0xad5cdc3340904285b8159089974a99a1a09eb4c0", "Ethereum"),
+            ("DFDVx", "0x521860bb5df5468358875266b89bfe90d990c6e7", "Ethereum"),
+            ("DHRx", "0xdba228936f4079daf9aa906fd48a87f2300405f4", "Ethereum"),
+            ("GLDx", "0x2380f2673c640fb67e2d6b55b44c62f0e0e69da9", "Ethereum"),
+            ("GMEx", "0xe5f6d3b2405abdfe6f660e63202b25d23763160d", "Ethereum"),
+            ("GOOGLx", "0xe92f673ca36c5e2efd2de7628f815f84807e803f", "Ethereum"),
+            ("GSx", "0x3ee7e9b3a992fd23cd1c363b0e296856b04ab149", "Ethereum"),
+            ("HDx", "0x766b0cd6ed6d90b5d49d2c36a3761e9728501ba9", "Ethereum"),
+            ("HONx", "0x62a48560861b0b451654bfffdb5be6e47aa8ff1b", "Ethereum"),
+            ("HOODx", "0xe1385fdd5ffb10081cd52c56584f25efa9084015", "Ethereum"),
+            ("IBMx", "0xd9913208647671fe0f48f7f260076b2c6f310aac", "Ethereum"),
+            ("INTCx", "0xf8a80d1cb9cfd70d03d655d9df42339846f3b3c8", "Ethereum"),
+            ("JNJx", "0xdb0482cfad4789798623e64b15eeba01b16e917c", "Ethereum"),
+            ("JPMx", "0xd9fc3e075d45254a1d834fea18af8041207dea0a", "Ethereum"),
+            ("KOx", "0xdcc1a2699441079da889b1f49e12b69cc791129b", "Ethereum"),
+            ("LINx", "0x15059c599c16fd8f70b633ade165502d6402cd49", "Ethereum"),
+            ("LLYx", "0x19c41ea77b34bbdee61c3a87a75d1abda2ed0be4", "Ethereum"),
+            ("MAx", "0xb365cd2588065f522d379ad19e903304f6b622c6", "Ethereum"),
+            ("MCDx", "0x80a77a372c1e12accda84299492f404902e2da67", "Ethereum"),
+            ("MDTx", "0x0588e851ec0418d660bee81230d6c678daf21d46", "Ethereum"),
+            ("METAx", "0x96702be57cd9777f835117a809c7124fe4ec989a", "Ethereum"),
+            ("MRKx", "0x17d8186ed8f68059124190d147174d0f6697dc40", "Ethereum"),
+            ("MRVLx", "0xeaad46f4146ded5a47b55aa7f6c48c191deaec88", "Ethereum"),
+            ("MSFTx", "0x5621737f42dae558b81269fcb9e9e70c19aa6b35", "Ethereum"),
+            ("MSTRx", "0xae2f842ef90c0d5213259ab82639d5bbf649b08e", "Ethereum"),
+            ("NFLXx", "0xa6a65ac27e76cd53cb790473e4345c46e5ebf961", "Ethereum"),
+            ("NVDAx", "0xc845b2894dbddd03858fd2d643b4ef725fe0849d", "Ethereum"),
+            ("NVOx", "0xf9523e369c5f55ad72dbaa75b0a9b92b3d8b147e", "Ethereum"),
+            ("OPENx", "0xbee6b69345f376598fe16abd5592c6f844825e66", "Ethereum"),
+            ("ORCLx", "0x548308e91ec9f285c7bff05295badbd56a6e4971", "Ethereum"),
+            ("PEPx", "0x36c424a6ec0e264b1616102ad63ed2ad7857413e", "Ethereum"),
+            ("PFEx", "0x1ac765b5bea23184802c7d2d497f7c33f1444a9e", "Ethereum"),
+            ("PGx", "0xa90424d5d3e770e8644103ab503ed775dd1318fd", "Ethereum"),
+            ("PLTRx", "0x6d482cec5f9dd1f05ccee9fd3ff79b246170f8e2", "Ethereum"),
+            ("PMx", "0x02a6c1789c3b4fdb1a7a3dfa39f90e5d3c94f4f9", "Ethereum"),
+            ("QQQx", "0xa753a7395cae905cd615da0b82a53e0560f250af", "Ethereum"),
+            ("SPYx", "0x90a2a4c76b5d8c0bc892a69ea28aa775a8f2dd48", "Ethereum"),
+            ("TBLLx", "0x4cbf89ed7bb30b8a860fa86d3c96e9c72931299b", "Ethereum"),
+            ("TMOx", "0xaf072f109a2c173d822a4fe9af311a1b18f83d19", "Ethereum"),
+            ("TQQQx", "0xfdddb57878ef9d6f681ec4381dcb626b9e69ac86", "Ethereum"),
+            ("TSLAx", "0x8ad3c73f833d3f9a523ab01476625f269aeb7cf0", "Ethereum"),
+            ("UNHx", "0x167a6375da1efc4a5be0f470e73ecefd66245048", "Ethereum"),
+            ("VTIx", "0xbd730e618bcd88c82ddee52e10275cf2f88a4777", "Ethereum"),
+            ("Vx", "0x2363fd1235c1b6d3a5088ddf8df3a0b3a30c5293", "Ethereum"),
+            ("WMTx", "0x7aefc9965699fbea943e03264d96e50cd4a97b21", "Ethereum"),
+            ("XOMx", "0xeedb0273c5af792745180e9ff568cd01550ffa13", "Ethereum"),
+
+            ("AAPLx", "0x9d275685dc284c8eb1c79f6aba7a63dc75ec890a", "BinanceSmartChain"),
+            ("ABBVx", "0xfbf2398df672cee4afcc2a4a733222331c742a6a", "BinanceSmartChain"),
+            ("ABTx", "0x89233399708c18ac6887f90a2b4cd8ba5fedd06e", "BinanceSmartChain"),
+            ("ACNx", "0x03183ce31b1656b72a55fa6056e287f50c35bbeb", "BinanceSmartChain"),
+            ("AMBRx", "0x2f9a35ab5ddfbc49927bfdeab98a86c53dc6e763", "BinanceSmartChain"),
+            ("AMZNx", "0x3557ba345b01efa20a1bddc61f573bfd87195081", "BinanceSmartChain"),
+            ("APPx", "0x50a1291f69d9d3853def8209cfb1af0b46927be1", "BinanceSmartChain"),
+            ("AVGOx", "0x38bac69cbbd28156796e4163b2b6dcb81e336565", "BinanceSmartChain"),
+            ("AZNx", "0x5d642505fe1a28897eb3baba665f454755d8daa2", "BinanceSmartChain"),
+            ("BACx", "0x314938c596f5ce31c3f75307d2979338c346d7f2", "BinanceSmartChain"),
+            ("BRK.Bx", "0x12992613fdd35abe95dec5a4964331b1ee23b50d", "BinanceSmartChain"),
+            ("CMCSAx", "0xbc7170a1280be28513b4e940c681537eb25e39f4", "BinanceSmartChain"),
+            ("COINx", "0x364f210f430ec2448fc68a49203040f6124096f0", "BinanceSmartChain"),
+            ("CRCLx", "0xfebded1b0986a8ee107f5ab1a1c5a813491deceb", "BinanceSmartChain"),
+            ("CRMx", "0x4a4073f2eaf299a1be22254dcd2c41727f6f54a2", "BinanceSmartChain"),
+            ("CRWDx", "0x214151022c2a5e380ab80cdac31f23ae554a7345", "BinanceSmartChain"),
+            ("CSCOx", "0x053c784cd87b74f42e0c089f98643e79c1a3ff16", "BinanceSmartChain"),
+            ("CVXx", "0xad5cdc3340904285b8159089974a99a1a09eb4c0", "BinanceSmartChain"),
+            ("DFDVx", "0x521860bb5df5468358875266b89bfe90d990c6e7", "BinanceSmartChain"),
+            ("DHRx", "0xdba228936f4079daf9aa906fd48a87f2300405f4", "BinanceSmartChain"),
+            ("GLDx", "0x2380f2673c640fb67e2d6b55b44c62f0e0e69da9", "BinanceSmartChain"),
+            ("GMEx", "0xe5f6d3b2405abdfe6f660e63202b25d23763160d", "BinanceSmartChain"),
+            ("GOOGLx", "0xe92f673ca36c5e2efd2de7628f815f84807e803f", "BinanceSmartChain"),
+            ("GSx", "0x3ee7e9b3a992fd23cd1c363b0e296856b04ab149", "BinanceSmartChain"),
+            ("HDx", "0x766b0cd6ed6d90b5d49d2c36a3761e9728501ba9", "BinanceSmartChain"),
+            ("HONx", "0x62a48560861b0b451654bfffdb5be6e47aa8ff1b", "BinanceSmartChain"),
+            ("HOODx", "0xe1385fdd5ffb10081cd52c56584f25efa9084015", "BinanceSmartChain"),
+            ("IBMx", "0xd9913208647671fe0f48f7f260076b2c6f310aac", "BinanceSmartChain"),
+            ("INTCx", "0xf8a80d1cb9cfd70d03d655d9df42339846f3b3c8", "BinanceSmartChain"),
+            ("JNJx", "0xdb0482cfad4789798623e64b15eeba01b16e917c", "BinanceSmartChain"),
+            ("JPMx", "0xd9fc3e075d45254a1d834fea18af8041207dea0a", "BinanceSmartChain"),
+            ("KOx", "0xdcc1a2699441079da889b1f49e12b69cc791129b", "BinanceSmartChain"),
+            ("LINx", "0x15059c599c16fd8f70b633ade165502d6402cd49", "BinanceSmartChain"),
+            ("LLYx", "0x19c41ea77b34bbdee61c3a87a75d1abda2ed0be4", "BinanceSmartChain"),
+            ("MAx", "0xb365cd2588065f522d379ad19e903304f6b622c6", "BinanceSmartChain"),
+            ("MCDx", "0x80a77a372c1e12accda84299492f404902e2da67", "BinanceSmartChain"),
+            ("MDTx", "0x0588e851ec0418d660bee81230d6c678daf21d46", "BinanceSmartChain"),
+            ("METAx", "0x96702be57cd9777f835117a809c7124fe4ec989a", "BinanceSmartChain"),
+            ("MRKx", "0x17d8186ed8f68059124190d147174d0f6697dc40", "BinanceSmartChain"),
+            ("MRVLx", "0xeaad46f4146ded5a47b55aa7f6c48c191deaec88", "BinanceSmartChain"),
+            ("MSFTx", "0x5621737f42dae558b81269fcb9e9e70c19aa6b35", "BinanceSmartChain"),
+            ("MSTRx", "0xae2f842ef90c0d5213259ab82639d5bbf649b08e", "BinanceSmartChain"),
+            ("NFLXx", "0xa6a65ac27e76cd53cb790473e4345c46e5ebf961", "BinanceSmartChain"),
+            ("NVDAx", "0xc845b2894dbddd03858fd2d643b4ef725fe0849d", "BinanceSmartChain"),
+            ("NVOx", "0xf9523e369c5f55ad72dbaa75b0a9b92b3d8b147e", "BinanceSmartChain"),
+            ("OPENx", "0xbee6b69345f376598fe16abd5592c6f844825e66", "BinanceSmartChain"),
+            ("ORCLx", "0x548308e91ec9f285c7bff05295badbd56a6e4971", "BinanceSmartChain"),
+            ("PEPx", "0x36c424a6ec0e264b1616102ad63ed2ad7857413e", "BinanceSmartChain"),
+            ("PFEx", "0x1ac765b5bea23184802c7d2d497f7c33f1444a9e", "BinanceSmartChain"),
+            ("PGx", "0xa90424d5d3e770e8644103ab503ed775dd1318fd", "BinanceSmartChain"),
+            ("PLTRx", "0x6d482cec5f9dd1f05ccee9fd3ff79b246170f8e2", "BinanceSmartChain"),
+            ("PMx", "0x02a6c1789c3b4fdb1a7a3dfa39f90e5d3c94f4f9", "BinanceSmartChain"),
+            ("QQQx", "0xa753a7395cae905cd615da0b82a53e0560f250af", "BinanceSmartChain"),
+            ("SPYx", "0x90a2a4c76b5d8c0bc892a69ea28aa775a8f2dd48", "BinanceSmartChain"),
+            ("TBLLx", "0x4cbf89ed7bb30b8a860fa86d3c96e9c72931299b", "BinanceSmartChain"),
+            ("TMOx", "0xaf072f109a2c173d822a4fe9af311a1b18f83d19", "BinanceSmartChain"),
+            ("TQQQx", "0xfdddb57878ef9d6f681ec4381dcb626b9e69ac86", "BinanceSmartChain"),
+            ("TSLAx", "0x8ad3c73f833d3f9a523ab01476625f269aeb7cf0", "BinanceSmartChain"),
+            ("UNHx", "0x167a6375da1efc4a5be0f470e73ecefd66245048", "BinanceSmartChain"),
+            ("VTIx", "0xbd730e618bcd88c82ddee52e10275cf2f88a4777", "BinanceSmartChain"),
+            ("Vx", "0x2363fd1235c1b6d3a5088ddf8df3a0b3a30c5293", "BinanceSmartChain"),
+            ("WMTx", "0x7aefc9965699fbea943e03264d96e50cd4a97b21", "BinanceSmartChain"),
+            ("XOMx", "0xeedb0273c5af792745180e9ff568cd01550ffa13", "BinanceSmartChain"),
         ],
     ),
     (
@@ -3202,7 +3426,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v13-eth-treasuries"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v14-xstocks-evm"
 
 _need_init = (
     "scheduler" not in st.session_state
@@ -3459,7 +3683,11 @@ if selected_chain != "Solana":
         "Treasuries & MMFs",
     ])
     with chain_tabs[0]:
-        _render_chain_group("Tokenized Stocks", stocks_pullers)
+        # xStocks now has Birdeye-native EVM volume (Backed.fi deploys the
+        # same 0x proxy on Ethereum + BSC), so the non-Solana stock tabs get
+        # a real volume chart on top of the per-chain MC chart.
+        _render_chain_group("Tokenized Stocks", stocks_pullers,
+                            show_volume=True)
     with chain_tabs[1]:
         # Commodities is the only group with Birdeye-native volume on
         # Ethereum today (PAXG / XAUT). Other chains will populate once

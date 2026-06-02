@@ -1362,6 +1362,23 @@ class TokenGroupMetricsPuller(DataPuller):
             t_from = int(items[-1][time_key]) + 86_400
         return rows
 
+    # ── Birdeye chain helper ────────────────────────────────────────────────────
+    @staticmethod
+    def _birdeye_chain_for(address: str) -> str:
+        """Infer the Birdeye `x-chain` value from the address format.
+        EVM addresses are 42-char `0x…` hex; otherwise we treat as Solana."""
+        a = str(address or "").strip()
+        return "ethereum" if a.startswith("0x") else "solana"
+
+    def _birdeye_headers(self, address: str) -> dict:
+        """API headers with the right `x-chain` for `address`. Use this in
+        every per-token Birdeye call so multi-chain tokens (PAXG/XAUT on
+        Ethereum, etc.) hit the right endpoint instead of erroring out."""
+        return {
+            "X-API-KEY": self.settings.birdeye_api_key,
+            "x-chain":  self._birdeye_chain_for(address),
+        }
+
     def _fetch_circ_supply(self, headers: dict, address: str) -> float | None:
         try:
             r = requests.get(
@@ -1546,7 +1563,6 @@ class TokenGroupMetricsPuller(DataPuller):
         if not self.TOKENS:
             return pd.DataFrame()
 
-        headers    = {"X-API-KEY": self.settings.birdeye_api_key, "x-chain": "solana"}
         time_to    = int(datetime.utcnow().timestamp())
         sol_by_day: dict[str, float] = {}   # fetched lazily, shared across tokens
 
@@ -1557,8 +1573,11 @@ class TokenGroupMetricsPuller(DataPuller):
                 # the group has many tokens (e.g. 264 Ondo contracts).
                 if idx > 0:
                     time.sleep(0.12)
-                circ_supply = self._fetch_circ_supply(headers, address)
-                daily = self._fetch_token_daily(headers, time_to, token_name, address,
+                # Headers chosen per-token so EVM addresses go through Birdeye's
+                # Ethereum endpoint instead of the Solana one (which 400s).
+                h = self._birdeye_headers(address)
+                circ_supply = self._fetch_circ_supply(h, address)
+                daily = self._fetch_token_daily(h, time_to, token_name, address,
                                                 circ_supply, sol_by_day)
                 token_data[token_name] = daily
 
@@ -1599,7 +1618,8 @@ class TokenGroupMetricsPuller(DataPuller):
             for idx, ((token_name, address), col) in enumerate(zip(self.TOKENS, mc_cols)):
                 if idx > 0:
                     time.sleep(0.1)   # gentle pacing for large groups
-                mc = self._fetch_token_overview_mc(headers, address)
+                mc = self._fetch_token_overview_mc(
+                    self._birdeye_headers(address), address)
                 if mc is not None:
                     mc_cols_by_date.setdefault(today, {})[col] = mc
             all_dates.update(mc_cols_by_date.keys())

@@ -2229,11 +2229,19 @@ class TokenGroupMetricsPuller(DataPuller):
                 _raw_data_modal(df.sort_values("date", ascending=False), _fmt)
             # Aliased view: rename the chain-suffixed col → legacy col name so
             # _build_fig (which reads _safe_col(name) = vol_<name>_usd) works
-            # without modification. Each render gets its own alias view.
+            # without modification. The legacy col is also written by fetch()
+            # for Solana entries (back-compat) — if we keep both, pandas ends
+            # up with two cols of the same name and `row[col]` returns a
+            # Series instead of a scalar, blowing up the boolean test inside
+            # _build_fig with "truth value of a Series is ambiguous". So we
+            # drop the legacy cols *before* the rename to leave exactly one
+            # column per token.
             if chain:
+                legacy_cols = [self._safe_col(t) for t, _, _ in sorted_tokens]
                 _aliases = {self._safe_col(t, chain): self._safe_col(t)
                             for t, _, _ in sorted_tokens}
-                df_view = df.rename(columns=_aliases)
+                df_view = (df.drop(columns=legacy_cols, errors="ignore")
+                             .rename(columns=_aliases))
             else:
                 df_view = df
             tab_d, tab_w, tab_m = st.tabs(["Daily", "Weekly", "Monthly"])

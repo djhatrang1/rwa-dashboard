@@ -1318,6 +1318,10 @@ class TokenGroupMetricsPuller(DataPuller):
     DEFILLAMA_TOKENS  : dict = {}
     # Tokens still pulled/cached but hidden from the charts (display only).
     HIDDEN_TOKENS     : frozenset = frozenset()
+    # Per-chain hidden overrides: {chain_lower: {sym1, sym2}}. Used to hide
+    # a token on ONE chain while keeping it visible on others (e.g. USDC
+    # hidden on the Solana stablecoins chart but visible on Ethereum).
+    HIDDEN_TOKENS_BY_CHAIN: dict = {}
     # If True, skip OHLCV/volume fetching entirely — only MC is pulled & cached.
     # Use for groups with no trading activity (e.g. tokenized treasuries / MMFs).
     SKIP_VOLUME       : bool = False
@@ -1410,6 +1414,27 @@ class TokenGroupMetricsPuller(DataPuller):
         solana. Only used when a TOKENS entry has no explicit 3rd chain element."""
         a = str(address or "").strip()
         return "ethereum" if a.startswith("0x") else "solana"
+
+    @staticmethod
+    def _api_address(address: str) -> str:
+        """Normalise an address for Birdeye URL params. Birdeye's Ethereum /
+        BSC endpoints validate checksum casing strictly and will return
+        ``address is invalid format`` for some valid EIP-55 checksums (e.g.
+        USDC's 0xA0b…). Lowercasing every EVM address sidesteps that and is
+        a no-op for Solana addresses (which are base58 and case-sensitive)."""
+        a = str(address or "").strip()
+        return a.lower() if a.startswith("0x") else a
+
+    def _hidden_for_chain(self, chain: str | None) -> frozenset:
+        """Effective hidden-tokens set for a chain: global HIDDEN_TOKENS plus
+        any per-chain overrides in HIDDEN_TOKENS_BY_CHAIN. `chain=None`
+        (all-chain view) uses HIDDEN_TOKENS only."""
+        if not chain:
+            return self.HIDDEN_TOKENS
+        extra = self.HIDDEN_TOKENS_BY_CHAIN.get(str(chain).lower(), frozenset())
+        if not extra:
+            return self.HIDDEN_TOKENS
+        return frozenset(self.HIDDEN_TOKENS | extra)
 
     @staticmethod
     def _token_chain(token_tuple) -> str:
@@ -1637,7 +1662,9 @@ class TokenGroupMetricsPuller(DataPuller):
         if not self.SKIP_VOLUME:
             for idx, tok in enumerate(self.TOKENS):
                 token_name = tok[0]
-                address    = tok[1] if len(tok) > 1 else ""
+                # Lowercase EVM addresses before any Birdeye call — checksum
+                # casing 400s on some endpoints (see _api_address docstring).
+                address    = self._api_address(tok[1] if len(tok) > 1 else "")
                 chain      = self._token_chain(tok)
                 # Small inter-token delay so we don't hit Birdeye's rate limit
                 # when the group has many tokens (e.g. 264 Ondo contracts).
@@ -1722,7 +1749,7 @@ class TokenGroupMetricsPuller(DataPuller):
             today = datetime.utcnow().strftime("%Y-%m-%d")
             for idx, tok in enumerate(self.TOKENS):
                 token_name = tok[0]
-                address    = tok[1] if len(tok) > 1 else ""
+                address    = self._api_address(tok[1] if len(tok) > 1 else "")
                 chain      = self._token_chain(tok)
                 if idx > 0:
                     time.sleep(0.1)   # gentle pacing for large groups
@@ -1872,10 +1899,11 @@ class TokenGroupMetricsPuller(DataPuller):
         repeat symbols so a single name doesn't render twice."""
         seen: set[str] = set()
         active: list[tuple[str, str]] = []
+        hidden = self._hidden_for_chain(chain)
         for tok in self.TOKENS:
             t = tok[0]
             a = tok[1] if len(tok) > 1 else ""
-            if t in self.HIDDEN_TOKENS or t in seen:
+            if t in hidden or t in seen:
                 continue
             if chain and self._token_chain(tok).lower() != chain.lower():
                 continue
@@ -2125,9 +2153,10 @@ class TokenGroupMetricsPuller(DataPuller):
         # address, so the second entry would produce identical data anyway.
         token_series: list[tuple[str, pd.Series]] = []
         _seen: set[str] = set()
+        hidden = self._hidden_for_chain(chain)
         for _tok in self.TOKENS:
             token_name = _tok[0]
-            if token_name in self.HIDDEN_TOKENS or token_name in _seen:
+            if token_name in hidden or token_name in _seen:
                 continue
             _seen.add(token_name)
             if chain is None:
@@ -2329,22 +2358,31 @@ def _make_stock_group_puller(puller_name: str, label: str,
                               coingecko_ids: dict | None = None,
                               defillama_tokens: dict | None = None,
                               hidden_tokens: set | None = None,
+                              hidden_tokens_by_chain: dict | None = None,
                               skip_volume: bool = False) -> type:
-    """Factory: return a TokenGroupMetricsPuller subclass for one group."""
+    """Factory: return a TokenGroupMetricsPuller subclass for one group.
+    `hidden_tokens_by_chain` is an optional per-chain hide list of the form
+    {chain_lower: {sym, ...}} for symbols that should be hidden on some
+    chains but visible on others (e.g. USDC on Solana but visible on
+    Ethereum). Always-hidden symbols still go in `hidden_tokens`."""
     safe = puller_name.lower().replace("-", "_").replace(" ", "_")
     return type(
         f"{label.replace(' ', '').replace('-', '')}GroupMetricsPuller",
         (TokenGroupMetricsPuller,),
         {
-            "name"             : f"{safe}_metrics",
-            "GROUP"            : group,
-            "GROUP_LABEL"      : label,
-            "TOKENS"           : tokens,
-            "MARKET_CAP_SOURCE": market_cap_source,
-            "COINGECKO_IDS"    : coingecko_ids or {},
-            "DEFILLAMA_TOKENS" : defillama_tokens or {},
-            "HIDDEN_TOKENS"    : frozenset(hidden_tokens or ()),
-            "SKIP_VOLUME"      : bool(skip_volume),
+            "name"                 : f"{safe}_metrics",
+            "GROUP"                : group,
+            "GROUP_LABEL"          : label,
+            "TOKENS"               : tokens,
+            "MARKET_CAP_SOURCE"    : market_cap_source,
+            "COINGECKO_IDS"        : coingecko_ids or {},
+            "DEFILLAMA_TOKENS"     : defillama_tokens or {},
+            "HIDDEN_TOKENS"        : frozenset(hidden_tokens or ()),
+            "HIDDEN_TOKENS_BY_CHAIN": {
+                str(k).lower(): frozenset(v or ())
+                for k, v in (hidden_tokens_by_chain or {}).items()
+            },
+            "SKIP_VOLUME"          : bool(skip_volume),
         },
     )
 
@@ -3588,11 +3626,16 @@ def init_pullers(settings: Settings, db: CacheDB) -> List[DataPuller]:
         for pname, label, tokens in _TOKENIZED_COMMODITY_GROUPS
     ]
     stablecoin_pullers = [
-        _make_stock_group_puller(pname, label, tokens,
-                                 group="stablecoins",
-                                 market_cap_source="birdeye_overview",
-                                 defillama_tokens=_STABLECOIN_DEFILLAMA,
-                                 hidden_tokens=_HIDDEN_STABLECOINS)(settings, db)
+        _make_stock_group_puller(
+            pname, label, tokens,
+            group="stablecoins",
+            market_cap_source="birdeye_overview",
+            defillama_tokens=_STABLECOIN_DEFILLAMA,
+            # Hide PYUSD/USDC/USDG/USD1/USDe ONLY on the Solana chart (data-
+            # quality reasons agreed earlier) — they remain visible on the
+            # Ethereum chart so users can see the dominant deployments.
+            hidden_tokens_by_chain={"solana": _HIDDEN_STABLECOINS},
+        )(settings, db)
         for pname, label, tokens in _STABLECOIN_GROUPS
     ]
     treasury_pullers = [
@@ -3638,14 +3681,25 @@ _STABLECOIN_GROUPS: list[tuple[str, str, list]] = [
         "stablecoins_group",
         "Stablecoins",
         [
-            ("USDC", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "Solana"),
-            ("USDT", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", "Solana"),
-            ("CASH", "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH", "Solana"),
-            ("USDG", "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH", "Solana"),
-            ("USD1", "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB", "Solana"),
-            ("PYUSD", "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo", "Solana"),
-            ("USDe", "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT", "Solana"),
-            ("JupUSD", "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD", "Solana"),
+            # ── Solana-native ───────────────────────────────────────────────
+            ("USDC",   "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "Solana"),
+            ("USDT",   "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", "Solana"),
+            ("CASH",   "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH", "Solana"),
+            ("USDG",   "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH", "Solana"),
+            ("USD1",   "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB",  "Solana"),
+            ("PYUSD",  "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo", "Solana"),
+            ("USDe",   "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT", "Solana"),
+            ("JupUSD", "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD",  "Solana"),
+            # ── Ethereum mirrors (USDC/USDT/USDe/USD1/USDG/PYUSD only — CASH
+            #    and JupUSD are Solana-native and have no Ethereum deployment).
+            #    Birdeye chain inferred from address; DefiLlama also provides
+            #    historical MC via _STABLECOIN_DEFILLAMA. ───────────────────
+            ("USDC",  "0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "Ethereum"),
+            ("USDT",  "0xdAC17F958D2ee523a2206206994597C13D831ec7", "Ethereum"),
+            ("USDe",  "0x4c9EDD5852cd905f086C759E8383e09bff1E68B3", "Ethereum"),
+            ("USD1",  "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d", "Ethereum"),
+            ("USDG",  "0xe343167631d89B6Ffc58B88d6b7fb0228795491D", "Ethereum"),
+            ("PYUSD", "0x6c3ea9036406852006290770BEdFcAbA0e23A0e8", "Ethereum"),
         ],
     ),
 ]
@@ -3993,7 +4047,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v17-ondo-evm"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v18-stables-eth"
 
 _need_init = (
     "scheduler" not in st.session_state
@@ -4217,9 +4271,29 @@ if selected_chain != "Solana":
     }
     birdeye_chain = _BIRDEYE_CHAIN.get(selected_chain)
 
+    def _puller_has_chain(puller, chain_canonical: str | None) -> bool:
+        """True if `puller.TOKENS` has at least one entry whose declared
+        chain matches `chain_canonical` (DefiLlama-style name). When
+        `chain_canonical is None` (the All-chain view) returns True so every
+        puller renders. DefiLlama-only coverage doesn't count here — we only
+        suppress pullers whose TOKENS registry doesn't even list the chain."""
+        if not chain_canonical:
+            return True
+        want = chain_canonical.lower()
+        for tok in puller.TOKENS:
+            try:
+                if puller._token_chain(tok).lower() == want:
+                    return True
+            except Exception:
+                continue
+        return False
+
     def _render_chain_group(group_label: str, group_pullers: list,
                             show_volume: bool = False) -> None:
         """Render every puller in a group, filtered to the active chain.
+        Pullers whose TOKENS registry has no entries on the active chain are
+        skipped entirely (e.g. PreStocks on Ethereum/BNB Chain — Solana-only)
+        instead of emitting an empty 'no data yet' panel.
         If show_volume=True, also render a per-chain Birdeye volume chart
         above the market-cap chart."""
         if not group_pullers:
@@ -4227,8 +4301,15 @@ if selected_chain != "Solana":
                 f"No {group_label.lower()} tracked on {scope_label} yet. "
                 "Drop tokens into the group registry to populate this tab.")
             return
+        active_pullers = [p for p in group_pullers
+                          if _puller_has_chain(p, dl_chain)]
+        if not active_pullers:
+            st.info(
+                f"No {group_label.lower()} deployed on {scope_label} yet. "
+                "Tokens in this group are tracked on other chains only.")
+            return
         any_data = False
-        for p in group_pullers:
+        for p in active_pullers:
             heading = getattr(p, "GROUP_LABEL", "") or group_label
             if show_volume and birdeye_chain:
                 st.subheader(f"{heading} — Trading Volume ({scope_label})")
@@ -4262,7 +4343,10 @@ if selected_chain != "Solana":
         _render_chain_group("Tokenized Commodities", commodity_pullers,
                             show_volume=True)
     with chain_tabs[2]:
-        _render_chain_group("Stablecoins", stablecoin_pullers)
+        # Stablecoins trade in size on Ethereum (USDT/USDC do billions/day),
+        # so the non-Solana tab gets a Birdeye volume chart above MC.
+        _render_chain_group("Stablecoins", stablecoin_pullers,
+                            show_volume=True)
     with chain_tabs[3]:
         _render_chain_group("Treasuries & MMFs", treasury_pullers)
     st.stop()

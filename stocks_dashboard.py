@@ -4060,7 +4060,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v20-mc-dedup"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v21-chain-aware-solana-tabs"
 
 _need_init = (
     "scheduler" not in st.session_state
@@ -4414,7 +4414,12 @@ with tab_stocks:
             ):
                 with col:
                     st.subheader(p.GROUP_LABEL)
-                    p.render()
+                    # Chain-aware renderer reads the chain-suffixed vol col
+                    # and dedupes by symbol, so multi-chain TOKENS entries
+                    # (e.g. xStocks / Ondo on Solana + Ethereum + BSC) don't
+                    # produce duplicate columns or pollute the Solana chart
+                    # with EVM volume data.
+                    p.render_volume_chain(chain="solana")
             st.divider()
 
 with tab_commodities:
@@ -4434,25 +4439,28 @@ with tab_commodities:
                 "Birdeye Token Overview and cached over time — the history builds "
                 "up from when tracking began."
             )
-            p.render_market_cap()
+            p.render_market_cap_chain(chain="Solana", stacked=False)
 
 with tab_stablecoins:
     if not stablecoin_pullers:
         st.info("No stablecoin pullers registered.")
     else:
         for p in stablecoin_pullers:
-            st.subheader(f"{p.GROUP_LABEL} — Market Cap")
+            st.subheader(f"{p.GROUP_LABEL} — Market Cap (Solana)")
             st.caption(
-                "Solana-only market cap per token (Birdeye Token Overview), "
-                "stacked. Snapshotted each pull and cached over time — the "
-                "history builds up from when tracking began."
+                "Solana-only market cap per token, stacked. Sourced from "
+                "DefiLlama (free API, daily history) plus the Solscan-derived "
+                "seed JSONs and same-day Birdeye Token Overview snapshots."
             )
-            p.render_market_cap(stacked=True)
+            # Chain-aware renderer reads mc_<sym>_solana_usd (DefiLlama +
+            # seed + Birdeye snapshot all converge into this col) and dedupes
+            # by symbol so multi-chain TOKENS entries don't break the chart.
+            p.render_market_cap_chain(chain="Solana", stacked=True)
 
-            st.subheader(f"{p.GROUP_LABEL} — Daily Trading Volume")
+            st.subheader(f"{p.GROUP_LABEL} — Daily Trading Volume (Solana)")
             st.caption("Daily on-chain volume per token, stacked "
                        "(Birdeye OHLCV V3, v_usd).")
-            p.render()
+            p.render_volume_chain(chain="solana")
 
 with tab_treasuries:
     if not treasury_pullers:

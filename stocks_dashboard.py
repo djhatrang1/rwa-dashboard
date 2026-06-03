@@ -2248,7 +2248,8 @@ class TokenGroupMetricsPuller(DataPuller):
         st.plotly_chart(fig, use_container_width=True)
 
     @staticmethod
-    def _clip_outliers(series: pd.Series, factor: float = 25.0) -> pd.Series:
+    def _clip_outliers(series: pd.Series, factor: float = 25.0,
+                       min_retained: float = 0.5) -> pd.Series:
         """Replace points > factor × global non-zero median with NaN. Used to
         suppress Birdeye's occasional v_usd glitch days (e.g. a single bad
         pair trade or aggregator double-count) where the reported daily
@@ -2259,12 +2260,24 @@ class TokenGroupMetricsPuller(DataPuller):
         the late-Dec-2024 / early-Jan-2025 Birdeye glitch days hit 31-360×
         per-token median (clipped), while legitimate Jan 18-20 2025 TRUMP
         token-launch activity peaked at 19-20× (preserved). Lower factor
-        clips real bursts; higher factor lets glitches through."""
+        clips real bursts; higher factor lets glitches through.
+
+        `min_retained` is a safety guard for tokens with extremely skewed
+        distributions (e.g. USDe Solana: median \$45K but max \$256M because
+        secondary trading is sparse). For those, factor × median caps at a
+        tiny number and the clip nukes 90%+ of total volume, hiding the
+        token entirely. If the clip would retain less than `min_retained`
+        of the total non-zero volume, skip clipping for this column."""
         nz = series[series.fillna(0) > 0]
         if nz.empty:
             return series
         threshold = float(nz.median()) * factor
         if threshold <= 0:
+            return series
+        total = float(nz.sum())
+        kept  = float(nz[nz <= threshold].sum())
+        if total > 0 and kept / total < min_retained:
+            # Skewed distribution — clip would erase the token. Leave as-is.
             return series
         return series.mask(series > threshold)
 
@@ -4159,7 +4172,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v28-stables-usdc-usdt-merge"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v29-clip-min-retained"
 
 _need_init = (
     "scheduler" not in st.session_state

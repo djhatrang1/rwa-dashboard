@@ -2263,6 +2263,14 @@ class TokenGroupMetricsPuller(DataPuller):
         for token_name, s in token_series:
             mdf[token_name] = s.loc[mdf.index].values
 
+        # Pre-clip DefiLlama-style isolated 1-day spikes per token before any
+        # rendering. Catches glitches like XAUM Solana 2026-03-27 (\$10.24M
+        # between Mar 26 \$1.74M and Mar 28 \$5.20M — neighbor-mean replaces
+        # it with \$3.47M). Operates on a copy of mdf so the raw cache is
+        # never mutated.
+        for _tn in [t for t, _ in token_series]:
+            mdf[_tn] = self._clip_isolated_spikes(mdf[_tn])
+
         fig = go.Figure()
         for i, (token_name, _) in enumerate(token_series):
             color = self._COLORS[i % len(self._COLORS)]
@@ -2304,6 +2312,44 @@ class TokenGroupMetricsPuller(DataPuller):
                        tickformat="~s", showgrid=True, rangemode="tozero"),
         )
         _chart(fig, use_container_width=True)
+
+    @staticmethod
+    def _clip_isolated_spikes(series: pd.Series, factor: float = 2.0) -> pd.Series:
+        """Replace 1-day-only spikes with the linear interpolation between
+        their immediate neighbors. Targeted at DefiLlama protocol-TVL
+        glitches where one day's reported chain-MC briefly jumps 2-5× the
+        surrounding window then snaps back (e.g. XAUM Solana 2026-03-27
+        reported \$10.24M between Mar 26 \$1.74M and Mar 28 \$5.20M —
+        Birdeye supply confirms ~400 oz, not the ~2,280 oz that \$10.24M
+        would imply).
+
+        A point qualifies as an isolated spike when:
+          • value > factor × mean(prev, next), AND
+          • value > prev AND value > next (so we only catch upward spikes
+            sandwiched between lower neighbors)
+        Both neighbors must be non-NaN (otherwise we can't form context).
+        Replacement is mean(prev, next) — produces a smooth transition
+        through what was likely the day's real mid-point. Returns a copy;
+        the underlying cache is untouched.
+
+        Default factor=2.0 is intentionally loose — XAUM's spike was 2.95×
+        neighbor mean. Tighter thresholds (1.5×) catch more but risk
+        clipping real fast-growth days; looser (3×) miss the glitch."""
+        if len(series) < 3:
+            return series
+        out = series.copy()
+        for i in range(1, len(series) - 1):
+            v = series.iat[i]
+            p = series.iat[i - 1]
+            n = series.iat[i + 1]
+            if pd.isna(v) or pd.isna(p) or pd.isna(n):
+                continue
+            neighbor_mean = (p + n) / 2.0
+            if neighbor_mean <= 0:
+                continue
+            if v > factor * neighbor_mean and v > p and v > n:
+                out.iat[i] = neighbor_mean
+        return out
 
     @staticmethod
     def _clip_outliers(series: pd.Series, factor: float = 25.0,
@@ -2498,7 +2544,12 @@ class TokenGroupMetricsPuller(DataPuller):
         # Rows that carry at least one MC reading (MC accrues from tracking start).
         mc_cols = [c for _, c in present]
         mdf = df.loc[df[mc_cols].notna().any(axis=1),
-                     ["date"] + mc_cols].sort_values("date")
+                     ["date"] + mc_cols].sort_values("date").copy()
+
+        # Pre-clip isolated 1-day spikes (DefiLlama glitches like XAUM Solana
+        # 2026-03-27) before rendering. See _clip_isolated_spikes docstring.
+        for _col in mc_cols:
+            mdf[_col] = self._clip_isolated_spikes(mdf[_col])
 
         fig = go.Figure()
         for i, (token_name, col) in enumerate(present):
@@ -4260,7 +4311,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v34-outage-gaps"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v35-mc-spike-clip"
 
 _need_init = (
     "scheduler" not in st.session_state

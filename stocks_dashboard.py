@@ -2268,7 +2268,15 @@ class TokenGroupMetricsPuller(DataPuller):
             color = self._COLORS[i % len(self._COLORS)]
             y = mdf[token_name]
             if stacked:
-                y = y.fillna(0.0)
+                # Forward-fill THEN fill leading NaNs with 0. ffill carries the
+                # token's last good MC across mid-series gaps (e.g. cron-runner
+                # outages on May 12-14 2026 where Solscan + Birdeye both
+                # reported 0/missing for 3 days). fillna(0) only catches the
+                # leading window before the token existed — those genuinely
+                # are zero MC, not a data gap. Without ffill, every cron miss
+                # collapses the stack to zero for that day, producing a fake
+                # cliff in the area chart.
+                y = y.ffill().fillna(0.0)
                 fig.add_trace(go.Scatter(
                     x=mdf["date"], y=y, name=token_name,
                     mode="lines+markers",
@@ -2425,6 +2433,19 @@ class TokenGroupMetricsPuller(DataPuller):
                 if pd.notna(_first_nz):
                     df_view = df_view.loc[_first_nz:].reset_index(drop=True)
 
+                # Drop cron-runner outage days: rows AFTER the first non-zero
+                # day where every active token's volume is NaN-or-zero are
+                # almost certainly missed-pull days (it's a near-impossible
+                # coincidence for >5 tokens to all have $0 vol on the same
+                # day in normal trading). Dropping the row lets Plotly draw
+                # the stack continuous across the gap — without this, the
+                # stacked-area collapses to zero on outage days and produces
+                # a visible cliff (e.g. the May 12-14 2026 drop).
+                _row_total2 = df_view[active_cols].fillna(0).sum(axis=1)
+                _outage_mask = _row_total2 == 0
+                if _outage_mask.any():
+                    df_view = df_view.loc[~_outage_mask].reset_index(drop=True)
+
             tab_d, tab_w, tab_m = st.tabs(["Daily", "Weekly", "Monthly"])
             with tab_d:
                 _chart(
@@ -2483,7 +2504,11 @@ class TokenGroupMetricsPuller(DataPuller):
         for i, (token_name, col) in enumerate(present):
             color = self._COLORS[i % len(self._COLORS)]
             if stacked:
-                y = mdf[col].fillna(0.0)
+                # See render_market_cap_chain comment: ffill carries each
+                # token's MC across cron-runner outage days so the stack
+                # doesn't collapse to zero. Leading NaNs (before token
+                # existed) are then filled with 0.
+                y = mdf[col].ffill().fillna(0.0)
                 fig.add_trace(go.Scatter(
                     x=mdf["date"], y=y, name=token_name,
                     mode="lines+markers", line=dict(color=color, width=1.2),
@@ -4235,7 +4260,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v33-commodities-stacked"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v34-outage-gaps"
 
 _need_init = (
     "scheduler" not in st.session_state

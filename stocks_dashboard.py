@@ -3766,9 +3766,14 @@ _TOKENIZED_COMMODITY_GROUPS: list[tuple[str, str, list]] = [
         "Tokenized Commodities",
         [
             # ── Solana-native (Birdeye OHLCV volume + Birdeye overview MC) ────
-            ("XAUM", "5aLhp9VnUEKcsdtkfsf2DUgpJfomx7GmYVny24dHUZoB", "Solana"),
-            ("GOLD", "GoLDppdjB1vDTPSGxyMJFqdnj134yH6Prg9eqsGDiw6A", "Solana"),
+            ("XAUM",  "5aLhp9VnUEKcsdtkfsf2DUgpJfomx7GmYVny24dHUZoB", "Solana"),
+            ("GOLD",  "GoLDppdjB1vDTPSGxyMJFqdnj134yH6Prg9eqsGDiw6A", "Solana"),
             ("VNXAU", "9TPL8droGJ7jThsq4momaoz6uhTcvX2SeMqipoPmNa8R", "Solana"),
+            # PAXG on Solana is the Wormhole-bridged Paxos Gold (~\$70K MC).
+            # DefiLlama doesn't currently include Solana in the paxos-gold
+            # protocol's chain breakdown, so this entry's data comes from
+            # Birdeye only — MC will accrue from each pull's snapshot.
+            ("PAXG",  "C6oFsE8nXRDThzrMEQ5SxaNFGKoyyfWDDVPw37JKvPTe",  "Solana"),
             # ── Ethereum-native gold tokens (DefiLlama-only; Birdeye will
             #    skip them since x-chain=solana). Addresses kept for
             #    reference / future per-chain Birdeye calls. ─────────────────
@@ -4172,7 +4177,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v29-clip-min-retained"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v30-paxg-solana"
 
 _need_init = (
     "scheduler" not in st.session_state

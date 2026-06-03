@@ -2248,11 +2248,22 @@ class TokenGroupMetricsPuller(DataPuller):
         st.plotly_chart(fig, use_container_width=True)
 
     # ── Volume chart filtered to one chain (Birdeye OHLCV V3) ──────────────────
-    def render_volume_chain(self, chain: str | None = None) -> None:
+    def render_volume_chain(self, chain: str | None = None,
+                            include_tokens: set[str] | None = None,
+                            exclude_tokens: set[str] | None = None,
+                            key_suffix: str = "") -> None:
         """Daily trading-volume chart restricted to tokens whose addresses
         live on `chain` (per `_birdeye_chain_for`). When chain=None every
         token in TOKENS is included regardless of source. Reuses _build_fig
-        so the layout matches the Solana volume chart exactly."""
+        so the layout matches the Solana volume chart exactly.
+
+        Optional `include_tokens` / `exclude_tokens` (sets of symbol names)
+        further filter what's plotted — used to split a dominant token off
+        into its own chart (e.g. USDC volume vs all other stablecoins on
+        Solana, where USDC's cross-pair total dwarfs everything else).
+        `key_suffix` is appended to the Streamlit container/button keys so
+        the same puller + chain can be rendered multiple times on one tab
+        without key collisions."""
         df = self.get_latest()
         if df is None or df.empty:
             st.info("Waiting for first pull…")
@@ -2264,6 +2275,10 @@ class TokenGroupMetricsPuller(DataPuller):
         # the chain-suffixed column (`vol_<name>_<chain>_usd`). When chain is
         # None we fall through to the legacy chain-agnostic column.
         sorted_tokens = self._active_sorted_tokens(df, chain=chain)
+        if include_tokens:
+            sorted_tokens = [t for t in sorted_tokens if t[0] in include_tokens]
+        if exclude_tokens:
+            sorted_tokens = [t for t in sorted_tokens if t[0] not in exclude_tokens]
         if not sorted_tokens:
             st.info(f"No trading volume recorded on {chain or 'any chain'} yet.")
             return
@@ -2273,6 +2288,8 @@ class TokenGroupMetricsPuller(DataPuller):
             f"Source: Birdeye OHLCV V3 (x-chain: {chain or 'all'})"
         )
         chain_tag = (chain or "all").lower().replace(" ", "_")
+        if key_suffix:
+            chain_tag = f"{chain_tag}_{key_suffix}"
         with st.container(key=f"chartwrap_{self.name}_vol_{chain_tag}"):
             # Raw-data icon — pinned via existing CSS rules.
             _fmt = {self._safe_col(t, chain): "${:,.0f}"
@@ -4098,7 +4115,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v22-memory-diet"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v23-usdc-split"
 
 _need_init = (
     "scheduler" not in st.session_state
@@ -4503,10 +4520,21 @@ with tab_stablecoins:
             # by symbol so multi-chain TOKENS entries don't break the chart.
             p.render_market_cap_chain(chain="Solana", stacked=True)
 
-            st.subheader(f"{p.GROUP_LABEL} — Daily Trading Volume (Solana)")
-            st.caption("Daily on-chain volume per token, stacked "
-                       "(Birdeye OHLCV V3, v_usd).")
-            p.render_volume_chain(chain="solana")
+            # Split the volume view: USDC's cross-pair v_usd dwarfs every
+            # other Solana stable by 10-100×, flattening the rest into the
+            # x-axis. Render two stacks so both views are readable.
+            st.subheader(f"{p.GROUP_LABEL} — USDC Daily Trading Volume (Solana)")
+            st.caption("USDC isolated. Birdeye OHLCV V3, v_usd, daily.")
+            p.render_volume_chain(chain="solana",
+                                  include_tokens={"USDC"},
+                                  key_suffix="usdc")
+
+            st.subheader(f"{p.GROUP_LABEL} — Other Stables Daily Trading Volume (Solana)")
+            st.caption("Everything except USDC, stacked. "
+                       "Birdeye OHLCV V3, v_usd, daily.")
+            p.render_volume_chain(chain="solana",
+                                  exclude_tokens={"USDC"},
+                                  key_suffix="others")
 
 with tab_treasuries:
     if not treasury_pullers:

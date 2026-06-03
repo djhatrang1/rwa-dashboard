@@ -2302,12 +2302,21 @@ class TokenGroupMetricsPuller(DataPuller):
             return
         df = df.copy()
         df["date"] = pd.to_datetime(df["date"])
-        present = [
-            (tok[0], self._mc_col(tok[0])) for tok in self.TOKENS
-            if tok[0] not in self.HIDDEN_TOKENS
-            and self._mc_col(tok[0]) in df.columns
-            and df[self._mc_col(tok[0])].notna().any()
-        ]
+        # Dedupe by symbol — TOKENS can carry the same symbol on multiple
+        # chains now (e.g. USDC on both Solana and Ethereum). Without dedup,
+        # `present` would list the same mc_<sym>_usd column twice, df[col]
+        # would return a 2-column DataFrame instead of a Series, and plotly
+        # would crash with `narwhals DuplicateError`.
+        present = []
+        _seen: set[str] = set()
+        for tok in self.TOKENS:
+            name = tok[0]
+            if name in self.HIDDEN_TOKENS or name in _seen:
+                continue
+            col = self._mc_col(name)
+            if col in df.columns and df[col].notna().any():
+                present.append((name, col))
+                _seen.add(name)
         if not present:
             st.info("Market-cap history is building — a snapshot is cached each "
                     "pull, so the chart fills in over the coming days.")
@@ -4051,7 +4060,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v19-unhide-stables"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v20-mc-dedup"
 
 _need_init = (
     "scheduler" not in st.session_state

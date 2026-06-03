@@ -4235,7 +4235,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v32-time-controls"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v33-commodities-stacked"
 
 _need_init = (
     "scheduler" not in st.session_state
@@ -4621,11 +4621,13 @@ with tab_commodities:
 
             st.subheader(f"{p.GROUP_LABEL} — Market Cap by Token")
             st.caption(
-                "Solana-only market cap per token, snapshotted each pull from "
-                "Birdeye Token Overview and cached over time — the history builds "
-                "up from when tracking began."
+                "Solana-only market cap per token, stacked. Sourced from "
+                "DefiLlama (XAUM) plus Solscan-seeded history for GOLD / "
+                "VNXAU / PAXG-bridge / XAUt0 and same-day Birdeye Token "
+                "Overview snapshots — total band height = total tokenized "
+                "gold MC on Solana."
             )
-            p.render_market_cap_chain(chain="Solana", stacked=False)
+            p.render_market_cap_chain(chain="Solana", stacked=True)
 
 with tab_stablecoins:
     if not stablecoin_pullers:

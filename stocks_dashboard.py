@@ -311,8 +311,32 @@ class DataPuller(abc.ABC):
         return df
 
     def get_latest(self) -> Optional[pd.DataFrame]:
-        """Load the most recent cached snapshot."""
-        return self.db.latest(self.name)
+        """Load the most recent cached snapshot. Wrapped in a 5-minute
+        st.cache_data so multiple chart renders inside one autorefresh tick
+        (and follow-up reruns within the TTL) reuse a single DataFrame in
+        memory instead of re-pulling thousands of rows from Postgres."""
+        result = _cached_latest_payload(self.name)
+        if result is None:
+            return None
+        df, pulled_at = result
+        # cache_data's serialisation strips DataFrame.attrs, so reattach it
+        # on every call (cheap, no copy of underlying data).
+        df.attrs["pulled_at"] = pulled_at
+        return df
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_latest_payload(puller_name: str):
+    """Module-level cache wrapper for the latest-pull DataFrame. Keyed by
+    puller name; TTL 5 min — well under the 6-hour cron cadence, so users
+    see fresh data within a few minutes of each pull but every chart on a
+    page hits the same materialised DataFrame instead of pulling its own.
+    Returns (df, pulled_at_iso) — splitting attrs out because st.cache_data
+    doesn't preserve DataFrame.attrs across cache hits."""
+    df = cache_db.latest(puller_name)
+    if df is None:
+        return None
+    return df, df.attrs.get("pulled_at", "")
 
     def get_history(self, n: int = 200) -> pd.DataFrame:
         """Load the last *n* cached snapshots stacked into one DataFrame."""
@@ -4074,7 +4098,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v21-chain-aware-solana-tabs"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v22-memory-diet"
 
 _need_init = (
     "scheduler" not in st.session_state
@@ -4089,15 +4113,23 @@ if _need_init:
         except Exception:
             pass
     _pullers = init_pullers(settings, cache_db)
-    _sched = PullScheduler(settings)
-    for _p in _pullers:
-        _sched.register(_p)
-    _sched.start()
+    # On Streamlit Cloud the GitHub Actions cron pulls every 6h, so an
+    # in-process APScheduler is duplicate work AND a big memory hog
+    # (each puller holds its TOKENS list + APScheduler holds the whole
+    # scheduler thread + job state). Skip it on Cloud; keep it locally so
+    # `streamlit run` still auto-refreshes data during dev.
+    if _IS_CLOUD:
+        _sched = None
+    else:
+        _sched = PullScheduler(settings)
+        for _p in _pullers:
+            _sched.register(_p)
+        _sched.start()
     st.session_state["scheduler"]       = _sched
     st.session_state["pullers"]         = _pullers
     st.session_state["_pullers_version"] = _PULLERS_VERSION
 
-scheduler: PullScheduler = st.session_state["scheduler"]
+scheduler: PullScheduler | None = st.session_state["scheduler"]
 pullers: List[DataPuller] = st.session_state["pullers"]
 
 # ── Auto-refresh ──────────────────────────────────────────────────────────────

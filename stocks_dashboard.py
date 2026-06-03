@@ -3631,9 +3631,8 @@ def init_pullers(settings: Settings, db: CacheDB) -> List[DataPuller]:
             group="stablecoins",
             market_cap_source="birdeye_overview",
             defillama_tokens=_STABLECOIN_DEFILLAMA,
-            # Hide PYUSD/USDC/USDG/USD1/USDe ONLY on the Solana chart (data-
-            # quality reasons agreed earlier) — they remain visible on the
-            # Ethereum chart so users can see the dominant deployments.
+            # _HIDDEN_STABLECOINS is empty by default now — add symbols to
+            # the per-chain dict here if a specific chain's data goes bad.
             hidden_tokens_by_chain={"solana": _HIDDEN_STABLECOINS},
         )(settings, db)
         for pname, label, tokens in _STABLECOIN_GROUPS
@@ -3704,9 +3703,14 @@ _STABLECOIN_GROUPS: list[tuple[str, str, list]] = [
     ),
 ]
 
-# Tokens still pulled/cached but hidden from the charts for now (display only).
-# Empty this set to bring them back.
-_HIDDEN_STABLECOINS = {"PYUSD", "USDC", "USDG", "USD1", "USDe"}
+# Tokens hidden from the stablecoins chart on specific chains. Add a symbol
+# here to suppress its display while still keeping the data flowing. Was
+# originally populated to mask a sawtooth pattern caused by mixing live cache
+# data with seed JSON; the fresh Solscan seeds and the seed-application fix
+# (which now writes to the per-chain Solana col + uses `setdefault` so live
+# data takes precedence) resolved that, so the set is back to empty —
+# everything renders on every chain by default.
+_HIDDEN_STABLECOINS: set[str] = set()
 
 # DefiLlama IDs for stablecoins. These supply per-chain MC history for every chain
 # DefiLlama tracks (Ethereum, Binance, Base, Tron, Arbitrum, …). Solana keeps its
@@ -4047,7 +4051,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v18-stables-eth"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v19-unhide-stables"
 
 _need_init = (
     "scheduler" not in st.session_state

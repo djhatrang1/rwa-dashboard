@@ -2273,6 +2273,20 @@ class TokenGroupMetricsPuller(DataPuller):
                              .rename(columns=_aliases))
             else:
                 df_view = df
+
+            # Trim the x-axis to start at the first day with any non-zero
+            # volume across the active tokens. Without this the chart shows
+            # a long empty stretch (e.g. 2018-2024 for Solana stables that
+            # were only deployed in 2024) because df carries the union of
+            # all dates seen across every cached snapshot.
+            active_cols = [self._safe_col(t) for t, _, _ in sorted_tokens
+                           if self._safe_col(t) in df_view.columns]
+            if active_cols:
+                _row_total = df_view[active_cols].fillna(0).sum(axis=1)
+                _first_nz  = _row_total[_row_total > 0].index.min()
+                if pd.notna(_first_nz):
+                    df_view = df_view.loc[_first_nz:].reset_index(drop=True)
+
             tab_d, tab_w, tab_m = st.tabs(["Daily", "Weekly", "Monthly"])
             with tab_d:
                 st.plotly_chart(

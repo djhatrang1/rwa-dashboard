@@ -2248,12 +2248,18 @@ class TokenGroupMetricsPuller(DataPuller):
         st.plotly_chart(fig, use_container_width=True)
 
     @staticmethod
-    def _clip_outliers(series: pd.Series, factor: float = 10.0) -> pd.Series:
+    def _clip_outliers(series: pd.Series, factor: float = 25.0) -> pd.Series:
         """Replace points > factor × global non-zero median with NaN. Used to
         suppress Birdeye's occasional v_usd glitch days (e.g. a single bad
         pair trade or aggregator double-count) where the reported daily
         volume jumps 100-400× a token's normal range. The original cached
-        data is untouched — only the chart view is filtered."""
+        data is untouched — only the chart view is filtered.
+
+        Default factor=25 was tuned against the USDC + USDT Solana series:
+        the late-Dec-2024 / early-Jan-2025 Birdeye glitch days hit 31-360×
+        per-token median (clipped), while legitimate Jan 18-20 2025 TRUMP
+        token-launch activity peaked at 19-20× (preserved). Lower factor
+        clips real bursts; higher factor lets glitches through."""
         nz = series[series.fillna(0) > 0]
         if nz.empty:
             return series
@@ -2268,7 +2274,7 @@ class TokenGroupMetricsPuller(DataPuller):
                             exclude_tokens: set[str] | None = None,
                             key_suffix: str = "",
                             clip_outliers: bool = False,
-                            outlier_factor: float = 10.0) -> None:
+                            outlier_factor: float = 25.0) -> None:
         """Daily trading-volume chart restricted to tokens whose addresses
         live on `chain` (per `_birdeye_chain_for`). When chain=None every
         token in TOKENS is included regardless of source. Reuses _build_fig
@@ -4153,7 +4159,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v26-clip-all-vol"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v27-clip-factor-25"
 
 _need_init = (
     "scheduler" not in st.session_state
@@ -4570,7 +4576,8 @@ with tab_stablecoins:
             st.subheader(f"{p.GROUP_LABEL} — USDC Daily Trading Volume (Solana)")
             st.caption(
                 "USDC isolated · Birdeye OHLCV V3, v_usd, daily · outlier "
-                "days (>10× median) suppressed for readability."
+                "days (>25× median) suppressed for readability — keeps the "
+                "legit Jan 18-20 2025 TRUMP-launch burst (~20×)."
             )
             p.render_volume_chain(chain="solana",
                                   include_tokens={"USDC"},
@@ -4580,7 +4587,7 @@ with tab_stablecoins:
             st.subheader(f"{p.GROUP_LABEL} — Other Stables Daily Trading Volume (Solana)")
             st.caption(
                 "Everything except USDC, stacked · Birdeye OHLCV V3, v_usd, "
-                "daily · outlier days (>10× per-token median) suppressed."
+                "daily · outlier days (>25× per-token median) suppressed."
             )
             p.render_volume_chain(chain="solana",
                                   exclude_tokens={"USDC"},

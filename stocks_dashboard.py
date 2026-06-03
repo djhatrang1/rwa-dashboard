@@ -3774,6 +3774,14 @@ _TOKENIZED_COMMODITY_GROUPS: list[tuple[str, str, list]] = [
             # protocol's chain breakdown, so this entry's data comes from
             # Birdeye only — MC will accrue from each pull's snapshot.
             ("PAXG",  "C6oFsE8nXRDThzrMEQ5SxaNFGKoyyfWDDVPw37JKvPTe",  "Solana"),
+            # XAUt0 on Solana is the LayerZero OFT mirror of Tether Gold
+            # (the `0` suffix is LayerZero's OFT naming convention). MC
+            # ~\$13.9M, ~5.6K holders, ~\$680K/day vol. Tracked separately
+            # under its own symbol so it doesn't conflict with the Ethereum
+            # XAUT entry; DefiLlama's tether-gold slug groups Sol into the
+            # protocol-level chainTvls, so mc_xaut0_solana_usd is Birdeye-
+            # snapshot only (accrues from each pull).
+            ("XAUt0", "AymATz4TCL9sWNEEV9Kvyz45CHVhDZ6kUgjTJPzLpU9P",  "Solana"),
             # ── Ethereum-native gold tokens (DefiLlama-only; Birdeye will
             #    skip them since x-chain=solana). Addresses kept for
             #    reference / future per-chain Birdeye calls. ─────────────────
@@ -4177,7 +4185,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v30-paxg-solana"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v31-xaut0-solana"
 
 _need_init = (
     "scheduler" not in st.session_state

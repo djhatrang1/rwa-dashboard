@@ -3753,16 +3753,25 @@ _STABLECOIN_GROUPS: list[tuple[str, str, list]] = [
             ("PYUSD",  "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo", "Solana"),
             ("USDe",   "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT", "Solana"),
             ("JupUSD", "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD",  "Solana"),
-            # ── Ethereum mirrors (USDC/USDT/USDe/USD1/USDG/PYUSD only — CASH
-            #    and JupUSD are Solana-native and have no Ethereum deployment).
-            #    Birdeye chain inferred from address; DefiLlama also provides
-            #    historical MC via _STABLECOIN_DEFILLAMA. ───────────────────
+            ("USDS",   "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",  "Solana"),
+            # ── Ethereum mirrors (USDC/USDT/USDe/USD1/USDG/PYUSD/USDS only —
+            #    CASH and JupUSD are Solana-native and have no Ethereum
+            #    deployment). Birdeye chain inferred from address; DefiLlama
+            #    also provides historical MC via _STABLECOIN_DEFILLAMA. ────
             ("USDC",  "0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "Ethereum"),
             ("USDT",  "0xdAC17F958D2ee523a2206206994597C13D831ec7", "Ethereum"),
             ("USDe",  "0x4c9EDD5852cd905f086C759E8383e09bff1E68B3", "Ethereum"),
             ("USD1",  "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d", "Ethereum"),
             ("USDG",  "0xe343167631d89B6Ffc58B88d6b7fb0228795491D", "Ethereum"),
             ("PYUSD", "0x6c3ea9036406852006290770BEdFcAbA0e23A0e8", "Ethereum"),
+            ("USDS",  "0xdC035D45d973E3EC169d2276DDab16f1e407384F", "Ethereum"),
+            # ── Base — only Sky USDS exists there for now; other stables
+            #    will be added as they get tracked. ─────────────────────────
+            ("USDS",  "0x820c137fa70c8691f0e44dc420a5e53c168921dc", "Base"),
+            # ── BNB Chain — Sky USDS has no BSC deployment (Sky bridged to
+            #    Ethereum/Base/Arbitrum/OP/Solana/Avalanche/Unichain only).
+            #    USDT/USDC etc. on BSC come from the existing DefiLlama
+            #    multi-chain coverage on the Ethereum mirror entries. ───
         ],
     ),
 ]
@@ -3787,6 +3796,7 @@ _STABLECOIN_DEFILLAMA: dict = {
     "USDe":  {"type": "stablecoin", "id": 146},
     "USD1":  {"type": "stablecoin", "id": 262},
     "USDG":  {"type": "stablecoin", "id": 286},
+    "USDS":  {"type": "stablecoin", "id": 209},   # Sky Dollar (Maker rebrand)
     # CASH / JupUSD: no DefiLlama coverage at the moment — Solana-only via Birdeye.
 }
 
@@ -4115,7 +4125,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v23-usdc-split"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v24-usds"
 
 _need_init = (
     "scheduler" not in st.session_state

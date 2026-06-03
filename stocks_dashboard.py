@@ -527,10 +527,11 @@ class USDCVolumePuller(DataPuller):
         fig.update_layout(
             hovermode="x unified",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            xaxis=dict(rangeslider=dict(visible=True), type="date"),
             yaxis_tickformat="$~s",
+            # x-axis controls (type=date, rangeslider, range-selector buttons)
+            # are applied uniformly by _chart() — no need to set them here.
         )
-        st.plotly_chart(fig, use_container_width=True)
+        _chart(fig, use_container_width=True)
 
         chain_totals = df.groupby("chain")["volume_usd"].sum().reindex(chain_order)
         cols = st.columns(len(chain_totals))
@@ -1011,12 +1012,12 @@ class SolanaTokenMetricsPuller(DataPuller):
 
         tab_d, tab_w, tab_m = st.tabs(["Daily", "Weekly", "Monthly"])
         with tab_d:
-            st.plotly_chart(self._build_fig(df, height=520), use_container_width=True)
+            _chart(self._build_fig(df, height=520), use_container_width=True)
         with tab_w:
-            st.plotly_chart(self._build_fig(self._resample(df, "W"), height=520),
+            _chart(self._build_fig(self._resample(df, "W"), height=520),
                             use_container_width=True)
         with tab_m:
-            st.plotly_chart(self._build_fig(self._resample(df, "M"), height=520),
+            _chart(self._build_fig(self._resample(df, "M"), height=520),
                             use_container_width=True)
 
     def raw_data_fmt(self) -> dict:
@@ -1046,7 +1047,7 @@ class SolanaTokenMetricsPuller(DataPuller):
             return
 
         df["date"] = pd.to_datetime(df["date"])
-        st.plotly_chart(self._build_fig(df, height=300), use_container_width=True)
+        _chart(self._build_fig(df, height=300), use_container_width=True)
 
 
 def _make_solana_puller(token_name: str, address: str,
@@ -1216,6 +1217,55 @@ def _fetch_dl_stablecoin(stable_id: int) -> dict:
                     out[ch] = series
         _DL_CACHE[key] = (now, out)
         return out
+
+
+def _apply_time_controls(fig: go.Figure) -> go.Figure:
+    """Attach a date rangeslider + quick-range buttons (1M/3M/6M/YTD/1Y/All)
+    to a time-series Plotly figure so viewers can scope the visible window
+    without us baking a fixed range into the layout.
+
+    Applied via a tiny wrapper around every _chart() call in this
+    module — keeps every chart consistent without each builder having to
+    reimplement the same control config. Idempotent: re-calling on an
+    already-decorated fig just overwrites with the same dict.
+
+    Style notes:
+      • thickness=0.05 keeps the slider strip slim (~5% of chart height)
+        so it doesn't eat into the data area on the small 300px charts.
+      • Buttons sit above the plot area (y=1.12) with a dark translucent
+        background that reads on both light and dark themes.
+      • activecolor matches the Birdeye Peak orange used elsewhere.
+    """
+    fig.update_xaxes(
+        type="date",
+        rangeslider=dict(visible=True, thickness=0.05),
+        rangeselector=dict(
+            buttons=[
+                dict(count=1,  label="1M",  step="month", stepmode="backward"),
+                dict(count=3,  label="3M",  step="month", stepmode="backward"),
+                dict(count=6,  label="6M",  step="month", stepmode="backward"),
+                dict(count=1,  label="YTD", step="year",  stepmode="todate"),
+                dict(count=1,  label="1Y",  step="year",  stepmode="backward"),
+                dict(step="all", label="All"),
+            ],
+            bgcolor="rgba(40,40,40,0.7)",
+            activecolor="#FFA500",
+            font=dict(color="white", size=11),
+            x=0, y=1.12, xanchor="left", yanchor="top",
+        ),
+    )
+    return fig
+
+
+def _chart(fig: go.Figure, **kwargs) -> None:
+    """Render a time-series Plotly fig with the standard time controls
+    (rangeslider + 1M/3M/6M/YTD/1Y/All buttons) automatically applied.
+
+    Wraps st.plotly_chart so every chart in the app gets consistent
+    customizable date-range controls without touching each call site
+    individually. Use this instead of st.plotly_chart for any chart
+    whose x-axis is a date."""
+    return st.plotly_chart(_apply_time_controls(fig), **kwargs)
 
 
 def _fmt_usd(v) -> str:
@@ -2122,17 +2172,17 @@ class TokenGroupMetricsPuller(DataPuller):
                 _raw_data_modal(df.sort_values("date", ascending=False), _fmt)
             tab_d, tab_w, tab_m = st.tabs(["Daily", "Weekly", "Monthly"])
             with tab_d:
-                st.plotly_chart(
+                _chart(
                     self._build_fig(df, sorted_tokens, height=450),
                     use_container_width=True,
                 )
             with tab_w:
-                st.plotly_chart(
+                _chart(
                     self._build_fig(self._resample(df, "W"), sorted_tokens, height=450),
                     use_container_width=True,
                 )
             with tab_m:
-                st.plotly_chart(
+                _chart(
                     self._build_fig(self._resample(df, "M"), sorted_tokens, height=450),
                     use_container_width=True,
                 )
@@ -2245,7 +2295,7 @@ class TokenGroupMetricsPuller(DataPuller):
             yaxis=dict(title_text="Market Cap (USD)", tickprefix="$",
                        tickformat="~s", showgrid=True, rangemode="tozero"),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        _chart(fig, use_container_width=True)
 
     @staticmethod
     def _clip_outliers(series: pd.Series, factor: float = 25.0,
@@ -2377,18 +2427,18 @@ class TokenGroupMetricsPuller(DataPuller):
 
             tab_d, tab_w, tab_m = st.tabs(["Daily", "Weekly", "Monthly"])
             with tab_d:
-                st.plotly_chart(
+                _chart(
                     self._build_fig(df_view, sorted_tokens, height=380),
                     use_container_width=True,
                 )
             with tab_w:
-                st.plotly_chart(
+                _chart(
                     self._build_fig(self._resample(df_view, "W"), sorted_tokens,
                                     height=380),
                     use_container_width=True,
                 )
             with tab_m:
-                st.plotly_chart(
+                _chart(
                     self._build_fig(self._resample(df_view, "M"), sorted_tokens,
                                     height=380),
                     use_container_width=True,
@@ -2459,7 +2509,7 @@ class TokenGroupMetricsPuller(DataPuller):
             yaxis=dict(title_text="Market Cap (USD)", tickprefix="$",
                        tickformat="~s", showgrid=True, rangemode="tozero"),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        _chart(fig, use_container_width=True)
 
 
 def _make_stock_group_puller(puller_name: str, label: str,
@@ -4185,7 +4235,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v31-xaut0-solana"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v32-time-controls"
 
 _need_init = (
     "scheduler" not in st.session_state
@@ -4522,17 +4572,17 @@ with tab_stocks:
                     _raw_data_modal(_raw.sort_values("date", ascending=False), _fmt)
                 ctab_d, ctab_w, ctab_m = st.tabs(["Daily", "Weekly", "Monthly"])
                 with ctab_d:
-                    st.plotly_chart(
+                    _chart(
                         _build_combined_stocks_fig(combined_df, labels, "D", 380),
                         use_container_width=True,
                     )
                 with ctab_w:
-                    st.plotly_chart(
+                    _chart(
                         _build_combined_stocks_fig(combined_df, labels, "W", 380),
                         use_container_width=True,
                     )
                 with ctab_m:
-                    st.plotly_chart(
+                    _chart(
                         _build_combined_stocks_fig(combined_df, labels, "M", 380),
                         use_container_width=True,
                     )

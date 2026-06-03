@@ -1238,7 +1238,18 @@ def _apply_time_controls(fig: go.Figure) -> go.Figure:
     """
     fig.update_xaxes(
         type="date",
-        rangeslider=dict(visible=True, thickness=0.05),
+        rangeslider=dict(
+            visible=True,
+            thickness=0.06,
+            # Visible outline so the slider strip reads as its own UI band
+            # rather than blending into the chart background.
+            bordercolor="#888888",
+            borderwidth=1,
+            # Translucent dark fill — lets the auto-rendered mini-chart
+            # traces inside read as desaturated grey on the dark theme
+            # instead of the full-saturation colors of the main chart.
+            bgcolor="rgba(30,30,30,0.6)",
+        ),
         rangeselector=dict(
             buttons=[
                 dict(count=1,  label="1M",  step="month", stepmode="backward"),
@@ -4311,7 +4322,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v35-mc-spike-clip"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v36-slider-border"
 
 _need_init = (
     "scheduler" not in st.session_state

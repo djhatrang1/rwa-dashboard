@@ -84,8 +84,13 @@ class Settings(BaseSettings):
     # CacheDB writes to Postgres instead of the local SQLite file.
     database_url: str = ""
 
-    # Streamlit UI auto-refresh
-    ui_refresh_seconds: int = 30
+    # Streamlit UI auto-refresh. The data-pull cron runs every 6h on
+    # GitHub Actions, so a fast UI refresh cadence buys nothing — it just
+    # re-runs the whole script (chart rebuilds, dropdown resets, scroll
+    # position jumps) while viewers are reading. 1800s = 30 min keeps
+    # the page reasonably fresh without interrupting the viewing
+    # experience. Override via env / st.secrets `ui_refresh_seconds`.
+    ui_refresh_seconds: int = 1800
 
     # `extra = "ignore"` so unused .env / st.secrets keys (e.g. an older
     # ANTHROPIC_API_KEY left over from prior features) don't crash startup.
@@ -4322,7 +4327,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v36-slider-border"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v37-ui-refresh-30m"
 
 _need_init = (
     "scheduler" not in st.session_state
@@ -4371,9 +4376,12 @@ with st.sidebar:
 _chain_label = "ALL CHAINS" if selected_chain == "All chain" else selected_chain.upper()
 
 # ── Top-bar controls — caption + Force Pull, floated next to Deploy ────────────
+_refresh_disp = (f"{settings.ui_refresh_seconds // 60}m"
+                 if settings.ui_refresh_seconds >= 60
+                 else f"{settings.ui_refresh_seconds}s")
 st.markdown(
     f'<span class="peak-sub-anchor"></span>'
-    f'<p class="peak-sub peak-sub-topbar">Refresh <b>{settings.ui_refresh_seconds}s</b> · '
+    f'<p class="peak-sub peak-sub-topbar">Refresh <b>{_refresh_disp}</b> · '
     f'Pull <b>{settings.pull_interval_seconds // 3600}h</b> · '
     f'<code>{datetime.utcnow().strftime("%H:%M")} UTC</code></p>',
     unsafe_allow_html=True,

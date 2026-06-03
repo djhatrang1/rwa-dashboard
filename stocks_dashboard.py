@@ -2247,11 +2247,28 @@ class TokenGroupMetricsPuller(DataPuller):
         )
         st.plotly_chart(fig, use_container_width=True)
 
+    @staticmethod
+    def _clip_outliers(series: pd.Series, factor: float = 10.0) -> pd.Series:
+        """Replace points > factor × global non-zero median with NaN. Used to
+        suppress Birdeye's occasional v_usd glitch days (e.g. a single bad
+        pair trade or aggregator double-count) where the reported daily
+        volume jumps 100-400× a token's normal range. The original cached
+        data is untouched — only the chart view is filtered."""
+        nz = series[series.fillna(0) > 0]
+        if nz.empty:
+            return series
+        threshold = float(nz.median()) * factor
+        if threshold <= 0:
+            return series
+        return series.mask(series > threshold)
+
     # ── Volume chart filtered to one chain (Birdeye OHLCV V3) ──────────────────
     def render_volume_chain(self, chain: str | None = None,
                             include_tokens: set[str] | None = None,
                             exclude_tokens: set[str] | None = None,
-                            key_suffix: str = "") -> None:
+                            key_suffix: str = "",
+                            clip_outliers: bool = False,
+                            outlier_factor: float = 10.0) -> None:
         """Daily trading-volume chart restricted to tokens whose addresses
         live on `chain` (per `_birdeye_chain_for`). When chain=None every
         token in TOKENS is included regardless of source. Reuses _build_fig
@@ -2315,13 +2332,24 @@ class TokenGroupMetricsPuller(DataPuller):
             else:
                 df_view = df
 
+            # Optional outlier clip — drop spike days that exceed factor ×
+            # global non-zero median for each active token. Targeted at
+            # Birdeye v_usd glitches (e.g. USDC Solana Dec 2024 / Jan 2025
+            # cluster with $200-450B reported vs ~\$1B normal). Applied
+            # BEFORE the x-axis trim so the trim's row-total isn't itself
+            # inflated by an outlier in the first non-zero day.
+            active_cols = [self._safe_col(t) for t, _, _ in sorted_tokens
+                           if self._safe_col(t) in df_view.columns]
+            if clip_outliers:
+                for col in active_cols:
+                    df_view[col] = self._clip_outliers(
+                        df_view[col], factor=outlier_factor)
+
             # Trim the x-axis to start at the first day with any non-zero
             # volume across the active tokens. Without this the chart shows
             # a long empty stretch (e.g. 2018-2024 for Solana stables that
             # were only deployed in 2024) because df carries the union of
             # all dates seen across every cached snapshot.
-            active_cols = [self._safe_col(t) for t, _, _ in sorted_tokens
-                           if self._safe_col(t) in df_view.columns]
             if active_cols:
                 _row_total = df_view[active_cols].fillna(0).sum(axis=1)
                 _first_nz  = _row_total[_row_total > 0].index.min()
@@ -4125,7 +4153,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v24-usds"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v25-vol-outlier-clip"
 
 _need_init = (
     "scheduler" not in st.session_state
@@ -4532,12 +4560,19 @@ with tab_stablecoins:
 
             # Split the volume view: USDC's cross-pair v_usd dwarfs every
             # other Solana stable by 10-100×, flattening the rest into the
-            # x-axis. Render two stacks so both views are readable.
+            # x-axis. Render two stacks so both views are readable. The USDC
+            # chart also clips Birdeye-glitch days (>10× global median) so
+            # the late-Dec-2024 / early-Jan-2025 outlier cluster doesn't
+            # squash the rest of the series visually.
             st.subheader(f"{p.GROUP_LABEL} — USDC Daily Trading Volume (Solana)")
-            st.caption("USDC isolated. Birdeye OHLCV V3, v_usd, daily.")
+            st.caption(
+                "USDC isolated · Birdeye OHLCV V3, v_usd, daily · outlier "
+                "days (>10× median) suppressed for readability."
+            )
             p.render_volume_chain(chain="solana",
                                   include_tokens={"USDC"},
-                                  key_suffix="usdc")
+                                  key_suffix="usdc",
+                                  clip_outliers=True)
 
             st.subheader(f"{p.GROUP_LABEL} — Other Stables Daily Trading Volume (Solana)")
             st.caption("Everything except USDC, stacked. "

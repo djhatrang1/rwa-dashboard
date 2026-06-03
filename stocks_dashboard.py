@@ -4153,7 +4153,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v25-vol-outlier-clip"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v26-clip-all-vol"
 
 _need_init = (
     "scheduler" not in st.session_state
@@ -4519,8 +4519,10 @@ with tab_stocks:
                     # and dedupes by symbol, so multi-chain TOKENS entries
                     # (e.g. xStocks / Ondo on Solana + Ethereum + BSC) don't
                     # produce duplicate columns or pollute the Solana chart
-                    # with EVM volume data.
-                    p.render_volume_chain(chain="solana")
+                    # with EVM volume data. clip_outliers suppresses
+                    # Birdeye v_usd glitch days (>10× per-token median).
+                    p.render_volume_chain(chain="solana",
+                                          clip_outliers=True)
             st.divider()
 
 with tab_commodities:
@@ -4531,8 +4533,9 @@ with tab_commodities:
             st.subheader(f"{p.GROUP_LABEL} — Trading Volume (Solana)")
             # Restrict to Solana-native tokens so the Ethereum-only PAXG /
             # XAUT entries (which carry Birdeye Ethereum volume, not Solana)
-            # don't pollute this stack.
-            p.render_volume_chain(chain="solana")
+            # don't pollute this stack. clip_outliers suppresses Birdeye
+            # v_usd glitch days (>10× per-token median).
+            p.render_volume_chain(chain="solana", clip_outliers=True)
 
             st.subheader(f"{p.GROUP_LABEL} — Market Cap by Token")
             st.caption(
@@ -4575,11 +4578,14 @@ with tab_stablecoins:
                                   clip_outliers=True)
 
             st.subheader(f"{p.GROUP_LABEL} — Other Stables Daily Trading Volume (Solana)")
-            st.caption("Everything except USDC, stacked. "
-                       "Birdeye OHLCV V3, v_usd, daily.")
+            st.caption(
+                "Everything except USDC, stacked · Birdeye OHLCV V3, v_usd, "
+                "daily · outlier days (>10× per-token median) suppressed."
+            )
             p.render_volume_chain(chain="solana",
                                   exclude_tokens={"USDC"},
-                                  key_suffix="others")
+                                  key_suffix="others",
+                                  clip_outliers=True)
 
 with tab_treasuries:
     if not treasury_pullers:

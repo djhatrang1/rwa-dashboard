@@ -1392,13 +1392,18 @@ def _render_all_chain_stablecoins() -> None:
             mode="lines", line=dict(width=0.8, color=palette[i % len(palette)]),
             stackgroup="stables", hoverinfo="x+y+name",
         ))
+    # Pad y-axis 10% above the stacked peak so the topmost ribbon isn't
+    # flush with the top tick (see render_market_cap_chain for context).
+    stacked_max = float(wide[mc_cols].ffill().fillna(0).sum(axis=1).max() or 0)
     fig.update_layout(
         height=460, hovermode="x unified",
         margin=dict(t=10, b=10, l=10, r=10),
         legend=dict(orientation="h", yanchor="bottom", y=1.02,
                     xanchor="right", x=1),
         yaxis=dict(tickprefix="$",
-                   tickformat="~s", showgrid=True, rangemode="tozero"),
+                   tickformat="~s", showgrid=True,
+                   range=[0, stacked_max * 1.10] if stacked_max > 0 else None,
+                   rangemode="tozero"),
     )
     _chart(fig, use_container_width=True)
 
@@ -2538,13 +2543,26 @@ class TokenGroupMetricsPuller(DataPuller):
                     customdata=sub[token_name].map(_fmt_usd),
                     hovertemplate="%{fullData.name}: %{customdata}<extra></extra>",
                 ))
+        # Pad y-axis above stacked-peak. Plotly's autorange on stackgroup
+        # figures sometimes picks the rounded nice-tick that equals the
+        # actual peak (e.g. \$15G when stacked total = \$15.40B), clipping
+        # the topmost ribbon. Compute the real stacked max + 10% headroom.
+        y_max = 0.0
+        if stacked:
+            y_max = float(mdf[[t for t, _ in token_series]]
+                          .ffill().fillna(0).sum(axis=1).max() or 0)
+        else:
+            for _t, _s in token_series:
+                y_max = max(y_max, float(_s.max() or 0))
+        y_range = [0, y_max * 1.10] if y_max > 0 else None
         fig.update_layout(
             height=380, hovermode="x unified",
             margin=dict(t=10, b=10, l=10, r=10),
             legend=dict(orientation="h", yanchor="bottom", y=1.02,
                         xanchor="right", x=1),
             yaxis=dict(tickprefix="$",
-                       tickformat="~s", showgrid=True, rangemode="tozero"),
+                       tickformat="~s", showgrid=True,
+                       range=y_range, rangemode="tozero"),
         )
         _chart(fig, use_container_width=True)
 
@@ -2812,13 +2830,24 @@ class TokenGroupMetricsPuller(DataPuller):
                     customdata=sub[col].map(_fmt_usd),
                     hovertemplate="%{fullData.name}: %{customdata}<extra></extra>",
                 ))
+        # Pad y-axis above stacked-peak — see render_market_cap_chain
+        # for the rationale. Same shape: stacked uses per-row sum, line
+        # uses per-trace max. Both get 10% headroom.
+        y_max = 0.0
+        if stacked:
+            y_max = float(mdf[mc_cols].ffill().fillna(0).sum(axis=1).max() or 0)
+        else:
+            for _c in mc_cols:
+                y_max = max(y_max, float(mdf[_c].max() or 0))
+        y_range = [0, y_max * 1.10] if y_max > 0 else None
         fig.update_layout(
             height=380, hovermode="x unified",
             margin=dict(t=10, b=10, l=10, r=10),
             legend=dict(orientation="h", yanchor="bottom", y=1.02,
                         xanchor="right", x=1),
             yaxis=dict(tickprefix="$",
-                       tickformat="~s", showgrid=True, rangemode="tozero"),
+                       tickformat="~s", showgrid=True,
+                       range=y_range, rangemode="tozero"),
         )
         _chart(fig, use_container_width=True)
 
@@ -4546,7 +4575,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v42-no-yaxis-title"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v43-yaxis-headroom"
 
 _need_init = (
     "scheduler" not in st.session_state

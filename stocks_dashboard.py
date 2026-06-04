@@ -69,6 +69,11 @@ class Settings(BaseSettings):
     birdeye_api_key: str = ""
     dune_api_key: str = ""
     allium_api_key: str = ""
+    # CoinGecko Pro key (CG-...). When set, _fetch_coingecko_mc routes to
+    # pro-api.coingecko.com with the x-cg-pro-api-key header and unlocks
+    # days=max history. Empty string → falls back to the rate-limited free
+    # public API.
+    coingecko_api_key: str = ""
 
     # Base URLs
     birdeye_base_url: str = "https://public-api.birdeye.so"
@@ -1594,20 +1599,34 @@ class TokenGroupMetricsPuller(DataPuller):
         Birdeye has no historical market-cap/supply series, so MC is sourced
         from CoinGecko (asset-level, may be cross-chain — see UI caption).
         Cached process-wide (1 h TTL) and serialized via a lock so multiple
-        scheduler threads don't trip CoinGecko's free-tier rate limit.
+        scheduler threads don't trip CoinGecko's rate limit.
+
+        Reads settings.coingecko_api_key (loaded once at module import). When
+        present, routes to pro-api.coingecko.com with x-cg-pro-api-key and
+        days=max for full history; otherwise falls back to the free public
+        API with days=365.
         """
         now = time.time()
         with _CG_MC_LOCK:
             hit = _CG_MC_CACHE.get(cg_id)
             if hit and now - hit[0] < _CG_MC_TTL:
                 return hit[1]
+            cg_key = settings.coingecko_api_key
+            if cg_key:
+                base    = "https://pro-api.coingecko.com/api/v3"
+                headers = {"x-cg-pro-api-key": cg_key}
+                days    = "max"
+            else:
+                base    = "https://api.coingecko.com/api/v3"
+                headers = {}
+                days    = "365"
             caps = None
             for attempt in range(3):
                 try:
                     r = requests.get(
-                        f"https://api.coingecko.com/api/v3/coins/{cg_id}/market_chart",
-                        # days="max" needs a paid key; 365 works on the free tier.
-                        params={"vs_currency": "usd", "days": "365"}, timeout=30,
+                        f"{base}/coins/{cg_id}/market_chart",
+                        params={"vs_currency": "usd", "days": days},
+                        headers=headers, timeout=30,
                     )
                     r.raise_for_status()
                     caps = r.json().get("market_caps", []) or []
@@ -1864,7 +1883,9 @@ class TokenGroupMetricsPuller(DataPuller):
                 if not cg_id:
                     continue
                 if idx > 0:
-                    time.sleep(2.5)   # respect CoinGecko free-tier rate limit
+                    # Free tier needs ~2.5s spacing to stay under 30 calls/min;
+                    # Pro tier (500+ calls/min) only needs a tiny gentle pace.
+                    time.sleep(0.1 if settings.coingecko_api_key else 2.5)
                 for date, mc in self._fetch_coingecko_mc(cg_id).items():
                     mc_by_date[date] = mc_by_date.get(date, 0.0) + mc
             all_dates.update(mc_by_date.keys())
@@ -4327,7 +4348,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v37-ui-refresh-30m"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v38-coingecko-pro"
 
 _need_init = (
     "scheduler" not in st.session_state

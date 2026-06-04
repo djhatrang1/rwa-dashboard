@@ -501,11 +501,17 @@ def _build_lending_stack(metric: str, protocols: list[tuple[str, str]],
         hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
     ))
     y_max = float(totals.max() or 0)
+    # Legend below the chart, NOT above — top placement collides with the
+    # rangeselector buttons (1M/3M/6M/YTD/1Y/All) when the legend wraps
+    # to a second row, which happens reliably in the narrow 2-col layout
+    # with 11 entries (10 protocols + Others). Bottom placement scales to
+    # any number of items without colliding. Bottom margin bumped to fit
+    # the legend rows above the rangeslider strip.
     fig.update_layout(
-        height=420, hovermode="x unified",
-        margin=dict(t=10, b=10, l=10, r=10),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                    xanchor="right", x=1),
+        height=460, hovermode="x unified",
+        margin=dict(t=20, b=90, l=10, r=10),
+        legend=dict(orientation="h", yanchor="top", y=-0.22,
+                    xanchor="center", x=0.5),
         yaxis=dict(showgrid=True, rangemode="tozero",
                    range=[0, y_max * 1.10] if y_max > 0 else None),
     )

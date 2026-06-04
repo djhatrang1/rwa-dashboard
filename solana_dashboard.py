@@ -2,22 +2,30 @@
 
 Lives in the same repo as `stocks_dashboard.py` and shares all its
 infrastructure (Settings, CacheDB, pullers, helpers) via library import.
-The original `stocks_dashboard.py` wraps its UI rendering in a
-`if __name__ == "__main__":` guard so importing it here has no UI
-side effects — just exposes the classes and helpers.
+`stocks_dashboard.py` wraps its UI rendering in `if __name__ == "__main__":`
+so importing it here has no UI side effects — just exposes the classes
+and helpers. Deploy as a second Streamlit Cloud app pointing to this
+file. Reuses the same secrets and writes to the same Postgres cache.
 
-Deploy as a second Streamlit Cloud app pointing to this file. Reuses
-the same secrets (BIRDEYE_API_KEY / COINGECKO_API_KEY / DATABASE_URL)
-and writes to the same Postgres cache as the main dashboard.
+Verticals wired today:
+  • SOL token — price + daily volume from Birdeye OHLCV V3 (close,
+    v_usd, full daily history). Current MC / supply / holders from
+    /defi/token_overview snapshot. Birdeye doesn't expose historical
+    holder count, MC, or supply — drop these per-token seed files at
+    the repo root to backfill:
+        mc_seed_sol_mc.json       — historical market cap
+        mc_seed_sol_supply.json   — historical circulating supply
+        mc_seed_sol_holders.json  — historical holder count
+    Same {"payload": {"mc": [...], "t": [unix_seconds]}} shape as the
+    existing commodity / stablecoin seeds. Until each seed lands, the
+    corresponding chart shows a placeholder noting the current snapshot.
+  • RWA — Solana-only view of the 4 RWA groups (tokenized stocks /
+    commodities / stablecoins / treasuries) from the main dashboard.
 
-Verticals (sidebar):
-  • RWA — Solana-only view of the four RWA groups we already track:
-          tokenized stocks, tokenized commodities, stablecoins,
-          treasuries & MMFs. Implemented today.
-  • Other verticals (SOL token / DEX / Stablecoins / Payments / Foreign
-    L1 / Lending / Perps / Prediction) — listed in the user's spec,
-    pending data-source research + new puller implementations.
-    Added to the sidebar incrementally as each one comes online.
+Other verticals from spec (DEX / Stablecoins / Payments / Foreign L1 /
+Lending / Perps / Prediction) — pending data-source research + new
+puller implementations. Added to the sidebar incrementally as each
+one comes online.
 """
 from __future__ import annotations
 
@@ -53,7 +61,7 @@ treasury_pullers   = [p for p in pullers if getattr(p, "GROUP", "") == "treasuri
 # Only RWA is wired up today. Other verticals from the user's spec are
 # documented in the module docstring; they'll appear here as each gets
 # its data source nailed down.
-_VERTICALS = ["RWA"]
+_VERTICALS = ["SOL token", "RWA"]
 
 with st.sidebar:
     st.markdown(
@@ -70,9 +78,211 @@ with st.sidebar:
     st.divider()
     st.caption(
         "Other verticals coming soon:  \n"
-        "SOL token · DEX · Stablecoins · Payments ·  \n"
-        "Foreign L1 · Lending · Perps · Prediction"
+        "DEX · Stablecoins · Payments · Foreign L1 ·  \n"
+        "Lending · Perps · Prediction"
     )
+
+# ── Cached Birdeye fetchers (used by SOL token vertical) ──────────────────────
+# TTL=1h: OHLCV daily candles don't roll over more than once per UTC day, so
+# refetching more than once per hour is wasted. /defi/token_overview snapshot
+# (price/MC/holders) is even more cache-tolerant since it's only a headline
+# read. Both gracefully degrade to empty when Birdeye 5xxs.
+
+import requests as _requests
+import pandas as _pd
+import json as _json
+import os as _os
+import datetime as _dt
+import plotly.graph_objects as _go
+
+_SOL_ADDRESS = "So11111111111111111111111111111111111111112"
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_sol_ohlcv() -> _pd.DataFrame:
+    """Daily SOL OHLCV from Birdeye V3 — returns DataFrame[date, close, v_usd].
+    Reads BIRDEYE_API_KEY from sd.settings. Empty frame on error."""
+    key = sd.settings.birdeye_api_key
+    if not key:
+        return _pd.DataFrame(columns=["date", "close", "v_usd"])
+    # Birdeye OHLCV V3 requires a unix-second window. Use 2020-01-01 → now+1d
+    # to grab all available history in one call.
+    t_from = int(_dt.datetime(2020, 1, 1, tzinfo=_dt.timezone.utc).timestamp())
+    t_to   = int(_dt.datetime.utcnow().replace(tzinfo=_dt.timezone.utc).timestamp()) + 86400
+    try:
+        r = _requests.get(
+            "https://public-api.birdeye.so/defi/v3/ohlcv",
+            params={"address": _SOL_ADDRESS, "type": "1D",
+                    "time_from": t_from, "time_to": t_to, "currency": "usd"},
+            headers={"X-API-KEY": key, "x-chain": "solana"}, timeout=30)
+        r.raise_for_status()
+        items = (r.json().get("data") or {}).get("items") or []
+    except Exception:
+        return _pd.DataFrame(columns=["date", "close", "v_usd"])
+    rows = [{
+        "date":   _pd.to_datetime(int(p["unix_time"]), unit="s"),
+        "close":  float(p.get("c") or 0),
+        "v_usd":  float(p.get("v_usd") or 0),
+    } for p in items if p.get("unix_time")]
+    df = _pd.DataFrame(rows)
+    # Filter to days with positive close to skip zero-init rows
+    return df[df["close"] > 0].sort_values("date").reset_index(drop=True)
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _fetch_sol_overview() -> dict:
+    """Current SOL snapshot from /defi/token_overview. TTL 15min — short
+    enough to keep the headline metric fresh, long enough to avoid hammering
+    Birdeye on every page rerun."""
+    key = sd.settings.birdeye_api_key
+    if not key:
+        return {}
+    try:
+        r = _requests.get(
+            "https://public-api.birdeye.so/defi/token_overview",
+            params={"address": _SOL_ADDRESS},
+            headers={"X-API-KEY": key, "x-chain": "solana"}, timeout=15)
+        r.raise_for_status()
+        return r.json().get("data") or {}
+    except Exception:
+        return {}
+
+
+def _load_sol_seed(filename: str) -> _pd.DataFrame:
+    """Load a {payload: {mc: [...], t: [unix_seconds]}} seed file (same
+    shape the existing mc_seed_*.json files use) into a 2-col DataFrame.
+    Returns empty if the file doesn't exist. `mc` key is reused for any
+    metric (market cap, supply, holder count) since the seed loader is
+    schema-agnostic."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), filename)
+    if not _os.path.exists(path):
+        return _pd.DataFrame(columns=["date", "value"])
+    try:
+        with open(path) as f:
+            raw = _json.load(f)
+    except Exception:
+        return _pd.DataFrame(columns=["date", "value"])
+    payload = raw.get("payload", raw) if isinstance(raw, dict) else {}
+    vals = payload.get("mc") or payload.get("value") or []
+    ts   = payload.get("t") or []
+    rows = [{"date": _pd.to_datetime(int(t), unit="s"), "value": float(v)}
+            for t, v in zip(ts, vals) if v is not None]
+    return _pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
+
+
+# ── SOL token vertical ────────────────────────────────────────────────────────
+def _render_sol_token() -> None:
+    """SOL price + volume from Birdeye OHLCV V3, current MC/holders/supply
+    from /defi/token_overview snapshot, and (if seed JSONs are present)
+    historical MC, supply, and holder count series."""
+    st.markdown("## SOL token")
+    st.caption(
+        "Native Solana token (wrapped SOL mint "
+        f"`{_SOL_ADDRESS[:6]}…{_SOL_ADDRESS[-4:]}`). Price + volume from "
+        "Birdeye OHLCV V3 daily (close, v_usd); current MC / supply / "
+        "holders from /defi/token_overview. Historical MC / supply / "
+        "holders backfill from seed JSONs at the repo root when present."
+    )
+
+    # ── Headline metrics row ───────────────────────────────────────────────
+    snap = _fetch_sol_overview()
+    if not snap:
+        st.warning("Birdeye token_overview unavailable — try again in a moment "
+                   "(or verify BIRDEYE_API_KEY is set in Streamlit secrets).")
+        return
+
+    price   = float(snap.get("price") or 0)
+    mc      = float(snap.get("marketCap") or 0)
+    vol_24h = float(snap.get("v24hUSD") or 0)
+    holders = int(snap.get("holder") or 0)
+    supply  = float(snap.get("circulatingSupply") or snap.get("totalSupply") or 0)
+    chg_24h = float(snap.get("priceChange24hPercent") or 0)
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Price",       f"${price:,.2f}",
+              delta=f"{chg_24h:+.2f}% (24h)" if chg_24h else None)
+    m2.metric("Market Cap",  f"${mc/1e9:.2f}B" if mc >= 1e9 else f"${mc/1e6:.2f}M")
+    m3.metric("24h Volume",  f"${vol_24h/1e9:.2f}B" if vol_24h >= 1e9 else f"${vol_24h/1e6:.0f}M")
+    m4.metric("Holders",     f"{holders:,}")
+    m5.metric("Circ. Supply",f"{supply/1e6:,.2f}M SOL")
+
+    st.divider()
+
+    # ── OHLCV-backed price + volume charts ─────────────────────────────────
+    with st.spinner("Loading SOL OHLCV history…"):
+        ohlcv = _fetch_sol_ohlcv()
+    if ohlcv.empty:
+        st.warning("Birdeye OHLCV returned no data — try refreshing.")
+        return
+
+    st.subheader("Daily Price (USD)")
+    st.caption(f"Source: Birdeye OHLCV V3, daily close · "
+               f"{len(ohlcv)} days from "
+               f"{ohlcv['date'].min().date()} → {ohlcv['date'].max().date()}")
+    fig_p = _go.Figure()
+    fig_p.add_trace(_go.Scatter(
+        x=ohlcv["date"], y=ohlcv["close"], name="SOL",
+        mode="lines", line=dict(color="#9945FF", width=1.5),
+        hovertemplate="%{y:$,.2f}<extra>SOL</extra>",
+    ))
+    fig_p.update_layout(
+        height=380, hovermode="x unified",
+        margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
+        yaxis=dict(tickprefix="$", tickformat=".2f", showgrid=True,
+                   rangemode="tozero"),
+    )
+    sd._chart(fig_p, use_container_width=True)
+
+    st.subheader("Daily Trading Volume (USD)")
+    st.caption("Source: Birdeye OHLCV V3 v_usd · all venues aggregated")
+    fig_v = _go.Figure()
+    fig_v.add_trace(_go.Bar(
+        x=ohlcv["date"], y=ohlcv["v_usd"], name="Volume",
+        marker_color="#14F195", opacity=0.85,
+        hovertemplate="%{y:$,.0f}<extra>v_usd</extra>",
+    ))
+    fig_v.update_layout(
+        height=320, hovermode="x unified",
+        margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
+        yaxis=dict(tickprefix="$", tickformat="~s", showgrid=True,
+                   rangemode="tozero"),
+    )
+    sd._chart(fig_v, use_container_width=True)
+
+    # ── Optional seed-backed charts (MC, supply, holders) ─────────────────
+    for label, filename, color, fmt in [
+        ("Market Cap",   "mc_seed_sol_mc.json",      "#FF8C42", "${:.2f}B"),
+        ("Circulating Supply",
+                         "mc_seed_sol_supply.json",  "#5BC0EB", "{:,.0f} SOL"),
+        ("Holder Count", "mc_seed_sol_holders.json", "#7DCE82", "{:,.0f}"),
+    ]:
+        st.subheader(label)
+        seed = _load_sol_seed(filename)
+        if seed.empty:
+            st.info(
+                f"No historical {label.lower()} series yet. Drop a seed file "
+                f"named `{filename}` at the repo root with the same shape as "
+                "the existing `mc_seed_*.json` files — "
+                "`{\"payload\": {\"mc\": [values], \"t\": [unix_seconds]}}` — "
+                f"and it'll render here. Current snapshot from Birdeye: "
+                f"**{'$' + str(round(mc/1e9, 2)) + 'B' if 'Market' in label else ('{:,.0f}'.format(supply) + ' SOL' if 'Supply' in label else '{:,}'.format(holders))}**."
+            )
+            continue
+        fig = _go.Figure()
+        fig.add_trace(_go.Scatter(
+            x=seed["date"], y=seed["value"], name=label,
+            mode="lines", line=dict(color=color, width=1.5),
+            hovertemplate=f"{label}: %{{y:,.0f}}<extra></extra>",
+        ))
+        fig.update_layout(
+            height=340, hovermode="x unified",
+            margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
+            yaxis=dict(showgrid=True, rangemode="tozero",
+                       tickprefix=("$" if "Market" in label else ""),
+                       tickformat="~s"),
+        )
+        sd._chart(fig, use_container_width=True)
+
 
 # ── RWA vertical — Solana-only RWA view (4 sub-tabs) ──────────────────────────
 def _render_rwa() -> None:
@@ -214,5 +424,7 @@ def _render_rwa() -> None:
 
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────
-if vertical == "RWA":
+if vertical == "SOL token":
+    _render_sol_token()
+elif vertical == "RWA":
     _render_rwa()

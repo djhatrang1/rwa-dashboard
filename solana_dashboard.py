@@ -355,10 +355,14 @@ def _render_sol_token() -> None:
         sd._chart(fig_h, use_container_width=True, fmt_mode="count")
 
     # ── Optional seed-backed charts (MC, supply) ──────────────────────────
-    for label, filename, color, fmt in [
-        ("Market Cap",   "mc_seed_sol_mc.json",      "#FF8C42", "${:.2f}B"),
-        ("Circulating Supply",
-                         "mc_seed_sol_supply.json",  "#5BC0EB", "{:,.0f} SOL"),
+    # `fmt_mode` controls y-axis prefix: 'currency' adds '$', 'count' doesn't.
+    # `snapshot_str` is the headline-metric formatted current value, used in
+    # the "drop a seed file" placeholder message when the JSON is missing.
+    for label, filename, color, fmt_mode, snapshot_str in [
+        ("Market Cap",         "mc_seed_sol_mc.json",     "#FF8C42",
+                                "currency", f"${mc/1e9:.2f}B"),
+        ("Circulating Supply", "mc_seed_sol_supply.json", "#5BC0EB",
+                                "count",    f"{supply:,.0f} SOL"),
     ]:
         st.subheader(label)
         seed = _load_sol_seed(filename)
@@ -369,7 +373,7 @@ def _render_sol_token() -> None:
                 "the existing `mc_seed_*.json` files — "
                 "`{\"payload\": {\"mc\": [values], \"t\": [unix_seconds]}}` — "
                 f"and it'll render here. Current snapshot from Birdeye: "
-                f"**{'$' + str(round(mc/1e9, 2)) + 'B' if 'Market' in label else ('{:,.0f}'.format(supply) + ' SOL' if 'Supply' in label else '{:,}'.format(holders))}**."
+                f"**{snapshot_str}**."
             )
             continue
         fig = _go.Figure()
@@ -378,14 +382,20 @@ def _render_sol_token() -> None:
             mode="lines", line=dict(color=color, width=1.5),
             hovertemplate=f"{label}: %{{y:,.0f}}<extra></extra>",
         ))
+        # Tight y-axis range so the line uses the full vertical space instead
+        # of being a near-flat trace bunched up against the chart top.
+        # Floor: 95% of min — for SOL supply that's 537M × 0.95 ≈ 510M, so
+        # the chart starts around 500M instead of 0 and the supply growth
+        # actually reads. Ceiling: 105% of max for a bit of headroom above
+        # the latest value.
+        y_min, y_max = float(seed["value"].min()), float(seed["value"].max())
+        y_range = [y_min * 0.95, y_max * 1.05] if y_max > 0 else None
         fig.update_layout(
             height=340, hovermode="x unified",
             margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
-            yaxis=dict(showgrid=True, rangemode="tozero",
-                       tickprefix=("$" if "Market" in label else ""),
-                       tickformat="~s"),
+            yaxis=dict(showgrid=True, range=y_range),
         )
-        sd._chart(fig, use_container_width=True)
+        sd._chart(fig, use_container_width=True, fmt_mode=fmt_mode)
 
 
 # ── RWA vertical — Solana-only RWA view (4 sub-tabs) ──────────────────────────

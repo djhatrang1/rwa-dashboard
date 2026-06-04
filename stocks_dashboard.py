@@ -1481,15 +1481,111 @@ def _apply_time_controls(fig: go.Figure) -> go.Figure:
     return fig
 
 
+def _apply_b_format_to_yaxes(fig: go.Figure) -> go.Figure:
+    """Replace Plotly's SI tick labels (G for giga) with the more readable
+    B / M / K suffixes that finance dashboards use. Plotly's `tickformat='~s'`
+    has no `B` option in its D3 vocabulary, so the only way to get a `B`
+    label is to override `tickvals` + `ticktext` explicitly.
+
+    Walks every y-axis on the figure (yaxis, yaxis2, …). If the axis already
+    has explicit tickvals (e.g. _build_fig precomputes them), reformat those.
+    Otherwise generate ~6 nice-step ticks from the axis's explicit range, or
+    fall back to scanning trace y values when no range was set.
+
+    Safe to no-op when there's no data and idempotent — re-calling on an
+    already-decorated fig overwrites with the same tickvals/ticktext."""
+    import math
+
+    def fmt(v) -> str:
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return ""
+        if v == 0:
+            return "$0"
+        a = abs(v); sign = "-" if v < 0 else ""
+        if a >= 1e12: return f"{sign}${a/1e12:.1f}T"
+        if a >= 1e9:  return f"{sign}${a/1e9:.1f}B"
+        if a >= 1e6:  return f"{sign}${a/1e6:.1f}M"
+        if a >= 1e3:  return f"{sign}${a/1e3:.1f}K"
+        return f"{sign}${a:.2f}" if a < 10 else f"{sign}${a:.0f}"
+
+    def nice_ticks(lo: float, hi: float, target: int = 6) -> list[float]:
+        if hi <= lo:
+            return []
+        rough = (hi - lo) / target
+        mag = 10 ** math.floor(math.log10(rough)) if rough > 0 else 1
+        step = 10 * mag
+        for nice in (1, 2, 2.5, 5, 10):
+            if rough / mag <= nice:
+                step = nice * mag
+                break
+        ticks: list[float] = []
+        v = math.ceil(lo / step) * step
+        while v <= hi * 1.001:
+            ticks.append(v)
+            v += step
+        return ticks
+
+    for ax_name in ("yaxis", "yaxis2", "yaxis3", "yaxis4"):
+        try:
+            ax = fig.layout[ax_name]
+        except (KeyError, AttributeError):
+            continue
+        if ax is None:
+            continue
+        # Use existing tickvals when the chart pre-computed them
+        # (e.g. _build_fig does); otherwise derive from range or trace data.
+        vals = list(ax.tickvals) if ax.tickvals else None
+        if vals is None:
+            rng = ax.range
+            if rng is not None and len(rng) == 2:
+                vals = nice_ticks(float(rng[0]), float(rng[1]))
+            else:
+                ax_id = "y" if ax_name == "yaxis" else "y" + ax_name[len("yaxis"):]
+                ys: list[float] = []
+                for tr in fig.data:
+                    t_yaxis = getattr(tr, "yaxis", None) or "y"
+                    if t_yaxis != ax_id:
+                        continue
+                    y = getattr(tr, "y", None)
+                    if y is None:
+                        continue
+                    for v in y:
+                        try:
+                            f = float(v)
+                            if f == f:  # exclude NaN
+                                ys.append(f)
+                        except (TypeError, ValueError):
+                            continue
+                if ys:
+                    vals = nice_ticks(0.0, max(ys) * 1.05)
+        if not vals:
+            continue
+        ax.tickmode = "array"
+        ax.tickvals = vals
+        ax.ticktext = [fmt(v) for v in vals]
+        # Strip any prior formatting that would conflict with our explicit
+        # labels (Plotly otherwise re-applies tickprefix/tickformat on top
+        # of ticktext, producing weird "$$1.5B" style labels).
+        if ax.tickformat:
+            ax.tickformat = ""
+        if ax.tickprefix:
+            ax.tickprefix = ""
+    return fig
+
+
 def _chart(fig: go.Figure, **kwargs) -> None:
     """Render a time-series Plotly fig with the standard time controls
-    (rangeslider + 1M/3M/6M/YTD/1Y/All buttons) automatically applied.
+    (rangeslider + 1M/3M/6M/YTD/1Y/All buttons) and B/M/K-formatted y-axis
+    labels (vs Plotly's default SI which uses 'G' for billions).
 
     Wraps st.plotly_chart so every chart in the app gets consistent
-    customizable date-range controls without touching each call site
-    individually. Use this instead of st.plotly_chart for any chart
-    whose x-axis is a date."""
-    return st.plotly_chart(_apply_time_controls(fig), **kwargs)
+    customizable date-range controls + readable y-axis tick labels without
+    touching each call site individually. Use this instead of st.plotly_chart
+    for any chart whose x-axis is a date."""
+    return st.plotly_chart(
+        _apply_b_format_to_yaxes(_apply_time_controls(fig)), **kwargs)
 
 
 def _fmt_usd(v) -> str:
@@ -4575,7 +4671,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v43-yaxis-headroom"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v44-b-format"
 
 _need_init = (
     "scheduler" not in st.session_state

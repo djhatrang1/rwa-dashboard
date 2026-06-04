@@ -1103,6 +1103,12 @@ _SOLANA_TOKENS: list[tuple[str, str, datetime]] = [
     ("ZORA",  "soKqZS9pASwBNS46G388nhK7XVtPaTyReffXEd3zora",   datetime(2024, 1, 1)),
     ("NEAR",  "3ZLekZYq2qkZiSpnSvabjit34tUkjSwD1JFuW9as9wBG",  datetime(2024, 1, 1)),
     ("TRX",   "GbbesPbaYh5uiAZSYNXTc7w9jty1rpg3P9L4JeN4LkKc",  datetime(2024, 1, 1)),
+    # ── More BTC variants on Solana — Birdeye-verified MCs below ─────────
+    ("wfragBTC", "WFRGB49tP8CdKubqCdt5Spo2BdGS4BpgoinNER5TYUm", datetime(2024, 1, 1)),   # Fragmetric staked-BTC ~$0.56M
+    ("tBTC",     "6DNSN2BJsaPFdFFc1zP37kkeNe4Usc1Sqkzr9C9vPWcU", datetime(2024, 1, 1)),   # Threshold Network tBTC v2 ~$1.4M
+    ("LBTC",     "LBTCgU4b3wsFKsPwBn1rRZDx5DoFutM6RPiEt1TPDsY", datetime(2024, 1, 1)),    # Lombard Staked BTC ~$6.8M
+    ("zBTC",     "zBTCug3er3tLyffELcvDNrKkCymbPWysGcWihESYfLg", datetime(2024, 1, 1)),    # Zeus Network zBTC ~$6.1M
+    ("xBTC",     "CtzPWv73Sn1dMGVU3ZtLv9yWSyUAanBni19YWDaznnkn", datetime(2024, 1, 1)),   # OKX Wrapped BTC ~$22.4M
 ]
 
 # ── Stablecoin token registry (name, address, history_start, defillama_stable_id) ─
@@ -4696,7 +4702,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict) -> None:
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v50-foreign-l1"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v51-btc-variants"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────

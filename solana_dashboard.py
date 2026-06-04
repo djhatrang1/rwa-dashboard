@@ -481,23 +481,36 @@ def _render_stablecoins() -> None:
 # other foreign L1 native (HYPE/ZEC/MON/AVAX/STRK/WBNB/ZORA/NEAR/TRX) goes
 # into Others. Each group renders as MC stack + volume stack, 2 cols.
 _FOREIGN_L1_GROUPS: list[tuple[str, list[str]]] = [
-    ("BTC",    ["cbBTC", "WBTC"]),
+    # BTC group: 7 variants ranked by latest MC (largest at top of stack so
+    # they read first in the legend; ordering is rendering-only, the
+    # aggregate sums are independent of list order).
+    ("BTC",    ["cbBTC", "WBTC", "xBTC", "LBTC", "zBTC", "tBTC", "wfragBTC"]),
     ("ETH",    ["WETH"]),
     ("Others", ["HYPE", "ZEC", "MON", "AVAX", "STRK",
                 "WBNB", "ZORA", "NEAR", "TRX"]),
 ]
 # Per-token color so the same token reads the same in both charts within a
-# section. Tunable; defaults to a 10-color palette cycle for unknowns.
+# section. Tunable; defaults to '#888888' for unknown symbols.
 _FOREIGN_L1_COLORS: dict[str, str] = {
-    # Brand-correct + high-contrast within group. cbBTC uses Coinbase
-    # blue (it's the Coinbase-issued wrapped BTC) and WBTC keeps the
-    # canonical Bitcoin orange — easy to tell apart in the stack.
-    "cbBTC": "#0052FF", "WBTC":  "#F7931A",
-    "WETH":  "#627EEA",                                 # Ethereum blue
-    "HYPE":  "#9945FF", "ZEC":   "#FEE440",            # Others — diverse hues
-    "MON":   "#5BC0EB", "AVAX":  "#E84142", "STRK":  "#7DCE82",
-    "WBNB":  "#F3BA2F", "ZORA":  "#A4036F", "NEAR":  "#00C08B",
-    "TRX":   "#FF060A",
+    # BTC group — 7 distinct hues so each ribbon reads apart in the stack.
+    # cbBTC anchored to Coinbase brand blue; the rest pick complementary
+    # high-contrast colors (no two BTC variants share a similar palette
+    # so the stacked area + stacked bars are visually decomposable).
+    "cbBTC":   "#0052FF",   # Coinbase blue (cbBTC = Coinbase wrap)
+    "WBTC":    "#F7931A",   # Bitcoin orange (canonical wrapped BTC)
+    "xBTC":    "#00C08B",   # OKX green (xBTC = OKX wrap)
+    "LBTC":    "#9945FF",   # Lombard purple
+    "zBTC":    "#FFD500",   # Zeus yellow
+    "tBTC":    "#E84142",   # Threshold red
+    "wfragBTC":"#FF8C42",   # Fragmetric orange variant
+
+    "WETH":    "#627EEA",   # Ethereum blue
+
+    # Others — diverse hues across 9 tokens
+    "HYPE":    "#7DCE82", "ZEC":     "#FEE440",
+    "MON":     "#5BC0EB", "AVAX":    "#A4036F", "STRK":  "#FB8B24",
+    "WBNB":    "#F3BA2F", "ZORA":    "#9B5DE5", "NEAR":  "#00BBF9",
+    "TRX":     "#FF060A",
 }
 
 

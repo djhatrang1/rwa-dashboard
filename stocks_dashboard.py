@@ -1421,8 +1421,8 @@ def _render_all_chain_stablecoins() -> None:
     cat_disp["Price"]    = cat_disp["price_usd"].map(lambda v: f"${v:,.4f}")
     cat_disp["24h Δ %"]  = cat_disp["mc_change_24h_pct"].map(lambda v: f"{v:+.2f}%")
     st.dataframe(
-        cat_disp[["rank","symbol","name","MC","24h Vol","Price","24h Δ %"]]
-            .rename(columns={"rank":"Rank","symbol":"Symbol","name":"Name"}),
+        cat_disp[["symbol","name","MC","24h Vol","24h Δ %"]]
+            .rename(columns={"symbol":"Symbol","name":"Name"}),
         use_container_width=True, hide_index=True, height=520,
     )
 
@@ -4546,7 +4546,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v40-stables-partial-day-fix"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v41-stables-trim"
 
 _need_init = (
     "scheduler" not in st.session_state
@@ -4855,22 +4855,27 @@ if selected_chain != "Solana":
     with chain_tabs[2]:
         # Stablecoins trade in size on Ethereum (USDT/USDC do billions/day),
         # so the non-Solana tab gets a Birdeye volume chart above MC.
-        # When viewing All-chain, prepend the cross-source aggregate view
-        # (DefiLlama per-chain stacked + CoinGecko top-50 catalog) above the
-        # per-token detail rendering. The single-chain views skip this since
-        # the same data would be redundant with the per-chain stacked chart
-        # already rendered above them.
         if dl_chain is None:
+            # All-chain: render the cross-source aggregate view (DefiLlama
+            # per-chain stacked + CoinGecko top-50 catalog). Skip
+            # _render_chain_group here — its volume sub-chart needs a
+            # specific birdeye chain (which is None on All-chain) and the
+            # per-token MC chart it would render is summed across chains
+            # already covered by the aggregate above. Instead, render just
+            # the per-token MC chart directly under a fresh heading.
             _render_all_chain_stablecoins()
             st.divider()
-            st.subheader("Per-token detail — tracked stablecoins")
+            st.subheader("Stablecoins Market Cap by Token")
             st.caption(
-                "The 9 hand-tracked stablecoins we follow per-chain in this "
-                "dashboard (USDC, USDT, PYUSD, USDe, USD1, USDG, CASH, "
-                "JupUSD, USDS) shown summed across every chain they're on."
+                "Each tracked stablecoin's market cap summed across every "
+                "chain it's deployed on. Useful for comparing token-level "
+                "trajectories that the per-chain stack above doesn't show."
             )
-        _render_chain_group("Stablecoins", stablecoin_pullers,
-                            show_volume=True)
+            for p in stablecoin_pullers:
+                p.render_market_cap_chain(chain=None, stacked=True)
+        else:
+            _render_chain_group("Stablecoins", stablecoin_pullers,
+                                show_volume=True)
     with chain_tabs[3]:
         _render_chain_group("Treasuries & MMFs", treasury_pullers)
     st.stop()

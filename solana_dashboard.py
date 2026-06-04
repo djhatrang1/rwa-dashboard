@@ -489,7 +489,10 @@ _FOREIGN_L1_GROUPS: list[tuple[str, list[str]]] = [
 # Per-token color so the same token reads the same in both charts within a
 # section. Tunable; defaults to a 10-color palette cycle for unknowns.
 _FOREIGN_L1_COLORS: dict[str, str] = {
-    "cbBTC": "#F7931A", "WBTC":  "#FF8C42",            # BTC oranges
+    # Brand-correct + high-contrast within group. cbBTC uses Coinbase
+    # blue (it's the Coinbase-issued wrapped BTC) and WBTC keeps the
+    # canonical Bitcoin orange — easy to tell apart in the stack.
+    "cbBTC": "#0052FF", "WBTC":  "#F7931A",
     "WETH":  "#627EEA",                                 # Ethereum blue
     "HYPE":  "#9945FF", "ZEC":   "#FEE440",            # Others — diverse hues
     "MON":   "#5BC0EB", "AVAX":  "#E84142", "STRK":  "#7DCE82",

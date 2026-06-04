@@ -1692,8 +1692,16 @@ def _chart(fig: go.Figure, fmt_mode: str = "currency",
     non-date column. `raw_filename` controls the downloaded CSV's name
     (defaults to raw_key)."""
     if raw_df is not None and raw_key is not None:
-        if st.button("📋", key=f"raw_btn_{raw_key}", help="View raw data"):
-            _raw_data_modal(raw_df, raw_fmt, raw_filename or raw_key)
+        # Tuck the 📋 button into a tight right-aligned column so it sits
+        # at the top-right corner of the chart card instead of taking a
+        # full row by itself. The thin left spacer pushes the button to
+        # the rightmost ~6% of the row.
+        _, _btn_col = st.columns([0.94, 0.06])
+        with _btn_col:
+            if st.button("📋", key=f"raw_btn_{raw_key}",
+                         help="View raw data"):
+                _raw_data_modal(raw_df, raw_fmt,
+                                raw_filename or raw_key)
     return st.plotly_chart(
         _apply_b_format_to_yaxes(_apply_time_controls(fig), fmt_mode=fmt_mode),
         **kwargs)

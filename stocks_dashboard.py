@@ -1692,16 +1692,34 @@ def _chart(fig: go.Figure, fmt_mode: str = "currency",
     non-date column. `raw_filename` controls the downloaded CSV's name
     (defaults to raw_key)."""
     if raw_df is not None and raw_key is not None:
-        # Tuck the 📋 button into a tight right-aligned column so it sits
-        # at the top-right corner of the chart card instead of taking a
-        # full row by itself. The thin left spacer pushes the button to
-        # the rightmost ~6% of the row.
-        _, _btn_col = st.columns([0.94, 0.06])
+        # CSS shrinks the 📋 button + pulls its row down ~40px so it
+        # visually sits on the same band as the chart's rangeselector
+        # (1M/3M/6M/YTD/1Y/All) instead of taking its own full row.
+        # Scoped via a unique wrapper class so it only targets buttons
+        # we render from _chart() — leaves other Streamlit buttons alone.
+        st.markdown("""
+        <style>
+        div.chart-raw-btn-row {
+            margin-bottom: -52px;
+            position: relative;
+            z-index: 10;
+        }
+        div.chart-raw-btn-row div[data-testid="stButton"] > button {
+            padding: 0 6px !important;
+            min-width: 32px !important;
+            height: 30px !important;
+            font-size: 14px !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        st.markdown('<div class="chart-raw-btn-row">', unsafe_allow_html=True)
+        _, _btn_col = st.columns([0.96, 0.04])
         with _btn_col:
             if st.button("📋", key=f"raw_btn_{raw_key}",
                          help="View raw data"):
                 _raw_data_modal(raw_df, raw_fmt,
                                 raw_filename or raw_key)
+        st.markdown('</div>', unsafe_allow_html=True)
     return st.plotly_chart(
         _apply_b_format_to_yaxes(_apply_time_controls(fig), fmt_mode=fmt_mode),
         **kwargs)

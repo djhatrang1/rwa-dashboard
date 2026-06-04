@@ -475,6 +475,97 @@ def _fetch_solana_lending_history(slug: str) -> _pd.DataFrame:
     return _pd.DataFrame(rows)
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_lending_per_asset_history(slug: str, top_n: int = 8) -> tuple:
+    """Per-asset historical supply + borrow within one Solana lending
+    protocol. DefiLlama doesn't split Kamino into Main/JLP/Altcoin sub-
+    markets, but `chainTvls.Solana.tokensInUsd` gives a per-token daily
+    USD breakdown which is more granular than per-market anyway.
+
+    Returns (wide_df, top_assets) where:
+      • wide_df has columns [date, supply_<TOKEN>, borrow_<TOKEN>, ...,
+        supply_others, borrow_others]
+      • top_assets is the ordered list of top-N asset symbols (largest
+        combined supply+borrow at latest snapshot)
+    """
+    try:
+        r = _requests.get(f"https://api.llama.fi/protocol/{slug}", timeout=30)
+        r.raise_for_status()
+        d = r.json()
+    except Exception:
+        return _pd.DataFrame(), []
+    ct = d.get("chainTvls", {})
+    sup_pts = (ct.get("Solana") or {}).get("tokensInUsd", []) or []
+    bor_pts = (ct.get("Solana-borrowed") or {}).get("tokensInUsd", []) or []
+    if not sup_pts:
+        return _pd.DataFrame(), []
+
+    # Pick top-N by latest-snapshot (supply + borrow combined)
+    latest_sup = sup_pts[-1].get("tokens", {}) or {}
+    latest_bor = bor_pts[-1].get("tokens", {}) if bor_pts else {}
+    combined = {a: (latest_sup.get(a, 0) + latest_bor.get(a, 0))
+                for a in set(latest_sup) | set(latest_bor)}
+    top_assets = [a for a, _ in sorted(combined.items(), key=lambda kv: -kv[1])[:top_n]]
+
+    # Build wide frame
+    rows: dict[int, dict] = {}
+    for p in sup_pts:
+        ts = int(p["date"]); tokens = p.get("tokens") or {}
+        rows.setdefault(ts, {})
+        for a in top_assets:
+            rows[ts][f"supply_{a}"] = float(tokens.get(a, 0) or 0)
+        rows[ts]["supply_others"] = float(sum(
+            v for k, v in tokens.items() if k not in top_assets and v))
+    for p in bor_pts:
+        ts = int(p["date"]); tokens = p.get("tokens") or {}
+        rows.setdefault(ts, {})
+        for a in top_assets:
+            rows[ts][f"borrow_{a}"] = float(tokens.get(a, 0) or 0)
+        rows[ts]["borrow_others"] = float(sum(
+            v for k, v in tokens.items() if k not in top_assets and v))
+
+    wide_rows = []
+    for ts in sorted(rows):
+        r0 = {"date": _pd.to_datetime(ts, unit="s")}
+        r0.update(rows[ts])
+        wide_rows.append(r0)
+    wide = _pd.DataFrame(wide_rows)
+    # Fill any missing per-asset cells (e.g. asset existed in supply but
+    # not in borrow on a given day) with 0.
+    for a in top_assets:
+        for prefix in ("supply_", "borrow_"):
+            col = f"{prefix}{a}"
+            if col not in wide.columns:
+                wide[col] = 0.0
+            wide[col] = wide[col].fillna(0.0)
+    wide["supply_others"] = wide.get("supply_others", 0.0).fillna(0.0)
+    wide["borrow_others"] = wide.get("borrow_others", 0.0).fillna(0.0)
+    return wide, top_assets
+
+
+def _render_protocol_asset_breakdown(slug: str, display_name: str) -> None:
+    """Render a per-asset supply + borrow stack pair for one Solana
+    lending protocol. Used for Kamino + Jupiter sections (the two
+    largest by far, individually deserving their own breakdown)."""
+    wide, top_assets = _fetch_lending_per_asset_history(slug, top_n=8)
+    if wide.empty or not top_assets:
+        st.info(f"No per-asset history available for {display_name}.")
+        return
+    # Build the (slug, label) tuples expected by _build_lending_stack —
+    # here the 'slug' coordinate IS the asset symbol since columns are
+    # supply_<ASSET> / borrow_<ASSET>.
+    protocols = [(a, a) for a in top_assets]
+    palette = ["#FF8C42", "#5BC0EB", "#7DCE82", "#9B5DE5", "#F15BB5",
+               "#FEE440", "#00BBF9", "#00F5D4", "#888888"]   # last = Others
+    c_left, c_right = st.columns(2, gap="medium")
+    with c_left:
+        st.markdown(f"**{display_name} — Supply by Asset**")
+        _build_lending_stack("supply", protocols, wide, palette)
+    with c_right:
+        st.markdown(f"**{display_name} — Borrow by Asset**")
+        _build_lending_stack("borrow", protocols, wide, palette)
+
+
 def _build_lending_stack(metric: str, protocols: list[tuple[str, str]],
                         wide: _pd.DataFrame, palette: list[str]) -> None:
     """metric = 'supply' or 'borrow'. protocols = [(slug, display_name)].
@@ -619,17 +710,42 @@ def _render_lending() -> None:
         st.markdown("**Total Borrow by Protocol**")
         _build_lending_stack("borrow", protocols, wide, palette)
 
-    # ── Catalog table (all 36 with current snapshot) ───────────────────────
+    # ── Kamino per-asset breakdown ──────────────────────────────────────────
     st.divider()
-    st.subheader("All Solana lending protocols")
-    st.caption("Sortable. Click column headers to re-sort.")
-    cat_disp = catalog.copy()
-    cat_disp["Supply"] = cat_disp["supply"].map(lambda v: f"${v/1e6:.2f}M")
-    cat_disp = cat_disp.rename(columns={
-        "name": "Name", "category": "Category", "slug": "DefiLlama slug",
-    })
-    st.dataframe(cat_disp[["Name", "Category", "Supply", "DefiLlama slug"]],
-                 use_container_width=True, hide_index=True, height=520)
+    st.subheader("Kamino Lend — by asset")
+    st.caption(
+        "Per-asset supply and borrow within Kamino's Solana markets. "
+        "DefiLlama doesn't split Kamino into Main / JLP / Altcoin "
+        "sub-markets, but its `tokensInUsd` field gives a per-token "
+        "daily breakdown — top 8 assets by combined supply+borrow are "
+        "shown, the rest aggregated as 'Others'."
+    )
+    _render_protocol_asset_breakdown("kamino-lend", "Kamino Lend")
+
+    # ── Jupiter Lend per-asset breakdown ────────────────────────────────────
+    st.divider()
+    st.subheader("Jupiter Lend — by asset")
+    st.caption(
+        "Per-asset supply and borrow within Jupiter Lend on Solana. "
+        "Jupiter is a single-market protocol on DefiLlama; the breakdown "
+        "below is by deposited / borrowed asset (top 8 + Others)."
+    )
+    _render_protocol_asset_breakdown("jupiter-lend", "Jupiter Lend")
+
+    # ── Catalog table (collapsed by default — drilldown for power users) ───
+    st.divider()
+    with st.expander(f"All Solana lending protocols ({len(catalog)})",
+                     expanded=False):
+        st.caption("Sortable. Click column headers to re-sort.")
+        cat_disp = catalog.copy()
+        cat_disp["Supply"] = cat_disp["supply"].map(lambda v: f"${v/1e6:.2f}M")
+        cat_disp = cat_disp.rename(columns={
+            "name": "Name", "category": "Category", "slug": "DefiLlama slug",
+        })
+        st.dataframe(
+            cat_disp[["Name", "Category", "Supply", "DefiLlama slug"]],
+            use_container_width=True, hide_index=True, height=520,
+        )
 
 
 # ── Stablecoins vertical — Solana-only stablecoin MC + volume ─────────────────

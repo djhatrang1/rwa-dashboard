@@ -539,15 +539,28 @@ def _fetch_lending_per_asset_history(slug: str, top_n: int = 20) -> tuple:
                                             key=lambda kv: -kv[1])]
     latest_ranked   = [a for a, _ in sorted(asset_latest.items(),
                                             key=lambda kv: -kv[1])]
-    INT_QUOTA = max(1, top_n - 5)   # most slots to integral
-    LAT_QUOTA = 5                   # rest to today's top
+    INT_QUOTA = max(1, top_n - 5)   # baseline allocation to integral
     top_assets: list[str] = []
     seen: set[str] = set()
+    # First: integral top INT_QUOTA (historical heavyweights + consistent)
     for a in integral_ranked[:INT_QUOTA]:
         if a and a not in seen:
             top_assets.append(a); seen.add(a)
-    for a in latest_ranked[:LAT_QUOTA]:
-        if a and a not in seen and len(top_assets) < top_n:
+    # Then: fill remaining slots from latest (catches new entrants).
+    # No LAT_QUOTA cap — keep adding until we hit top_n OR run out, so
+    # dedup overlap doesn't cost us slots (without this we'd land at
+    # 15-16 named ribbons instead of the requested top_n=20).
+    for a in latest_ranked:
+        if len(top_assets) >= top_n:
+            break
+        if a and a not in seen:
+            top_assets.append(a); seen.add(a)
+    # Finally: if still short (e.g. very small protocol with <20 unique
+    # assets ever), keep going through integral overflow.
+    for a in integral_ranked[INT_QUOTA:]:
+        if len(top_assets) >= top_n:
+            break
+        if a and a not in seen:
             top_assets.append(a); seen.add(a)
 
     # Build wide frame
@@ -590,7 +603,7 @@ def _render_protocol_asset_breakdown(slug: str, display_name: str) -> None:
     """Render a per-asset supply + borrow stack pair for one Solana
     lending protocol. Used for Kamino + Jupiter sections (the two
     largest by far, individually deserving their own breakdown)."""
-    wide, top_assets = _fetch_lending_per_asset_history(slug, top_n=10)
+    wide, top_assets = _fetch_lending_per_asset_history(slug, top_n=20)
     if wide.empty or not top_assets:
         st.info(f"No per-asset history available for {display_name}.")
         return

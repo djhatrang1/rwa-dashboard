@@ -1394,7 +1394,17 @@ def _render_all_chain_stablecoins() -> None:
         ))
     # Pad y-axis 10% above the stacked peak so the topmost ribbon isn't
     # flush with the top tick (see render_market_cap_chain for context).
-    stacked_max = float(wide[mc_cols].ffill().fillna(0).sum(axis=1).max() or 0)
+    totals = wide[mc_cols].ffill().fillna(0).sum(axis=1)
+    stacked_max = float(totals.max() or 0)
+    # Bonus "Total" line in the unified hover tooltip — see
+    # render_market_cap_chain for the rationale.
+    fig.add_trace(go.Scatter(
+        x=wide["date"], y=totals, name="Total",
+        mode="lines", line=dict(width=0, color="rgba(0,0,0,0)"),
+        showlegend=False, stackgroup=None,
+        customdata=totals.map(_fmt_usd),
+        hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+    ))
     fig.update_layout(
         height=460, hovermode="x unified",
         margin=dict(t=10, b=10, l=10, r=10),
@@ -2643,14 +2653,31 @@ class TokenGroupMetricsPuller(DataPuller):
         # figures sometimes picks the rounded nice-tick that equals the
         # actual peak (e.g. \$15G when stacked total = \$15.40B), clipping
         # the topmost ribbon. Compute the real stacked max + 10% headroom.
+        # Also compute the row-wise total to drive the bonus "Total" line
+        # in the unified hover tooltip (added below as an invisible trace).
         y_max = 0.0
+        totals: pd.Series | None = None
         if stacked:
-            y_max = float(mdf[[t for t, _ in token_series]]
-                          .ffill().fillna(0).sum(axis=1).max() or 0)
+            token_names = [t for t, _ in token_series]
+            totals = mdf[token_names].ffill().fillna(0).sum(axis=1)
+            y_max = float(totals.max() or 0)
         else:
             for _t, _s in token_series:
                 y_max = max(y_max, float(_s.max() or 0))
         y_range = [0, y_max * 1.10] if y_max > 0 else None
+
+        # Invisible "Total" trace — adds a bold Total line to the unified
+        # hover tooltip without drawing anything on the chart itself
+        # (line.width=0 + showlegend=False). Added LAST so it renders at
+        # the BOTTOM of the tooltip, summarizing the per-token rows above.
+        if stacked and totals is not None:
+            fig.add_trace(go.Scatter(
+                x=mdf["date"], y=totals, name="Total",
+                mode="lines", line=dict(width=0, color="rgba(0,0,0,0)"),
+                showlegend=False, stackgroup=None,
+                customdata=totals.map(_fmt_usd),
+                hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+            ))
         fig.update_layout(
             height=380, hovermode="x unified",
             margin=dict(t=10, b=10, l=10, r=10),
@@ -2930,12 +2957,25 @@ class TokenGroupMetricsPuller(DataPuller):
         # for the rationale. Same shape: stacked uses per-row sum, line
         # uses per-trace max. Both get 10% headroom.
         y_max = 0.0
+        totals: pd.Series | None = None
         if stacked:
-            y_max = float(mdf[mc_cols].ffill().fillna(0).sum(axis=1).max() or 0)
+            totals = mdf[mc_cols].ffill().fillna(0).sum(axis=1)
+            y_max = float(totals.max() or 0)
         else:
             for _c in mc_cols:
                 y_max = max(y_max, float(mdf[_c].max() or 0))
         y_range = [0, y_max * 1.10] if y_max > 0 else None
+
+        # Bonus "Total" line in the unified hover tooltip — see
+        # render_market_cap_chain for the rationale.
+        if stacked and totals is not None:
+            fig.add_trace(go.Scatter(
+                x=mdf["date"], y=totals, name="Total",
+                mode="lines", line=dict(width=0, color="rgba(0,0,0,0)"),
+                showlegend=False, stackgroup=None,
+                customdata=totals.map(_fmt_usd),
+                hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+            ))
         fig.update_layout(
             height=380, hovermode="x unified",
             margin=dict(t=10, b=10, l=10, r=10),
@@ -4696,7 +4736,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v45-more-gold"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v46-hover-total"
 
 _need_init = (
     "scheduler" not in st.session_state

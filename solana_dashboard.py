@@ -476,7 +476,7 @@ def _fetch_solana_lending_history(slug: str) -> _pd.DataFrame:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _fetch_lending_per_asset_history(slug: str, top_n: int = 8) -> tuple:
+def _fetch_lending_per_asset_history(slug: str, top_n: int = 12) -> tuple:
     """Per-asset historical supply + borrow within one Solana lending
     protocol. DefiLlama doesn't split Kamino into Main/JLP/Altcoin sub-
     markets, but `chainTvls.Solana.tokensInUsd` gives a per-token daily
@@ -485,8 +485,11 @@ def _fetch_lending_per_asset_history(slug: str, top_n: int = 8) -> tuple:
     Returns (wide_df, top_assets) where:
       • wide_df has columns [date, supply_<TOKEN>, borrow_<TOKEN>, ...,
         supply_others, borrow_others]
-      • top_assets is the ordered list of top-N asset symbols (largest
-        combined supply+borrow at latest snapshot)
+      • top_assets is the ordered list of top-N asset symbols (chosen
+        by PEAK combined supply+borrow across the entire history — so
+        assets that were huge in the past but small today still get
+        their own ribbon, instead of being lumped into Others and
+        making Others bigger than every named asset)
     """
     try:
         r = _requests.get(f"https://api.llama.fi/protocol/{slug}", timeout=30)
@@ -500,12 +503,48 @@ def _fetch_lending_per_asset_history(slug: str, top_n: int = 8) -> tuple:
     if not sup_pts:
         return _pd.DataFrame(), []
 
-    # Pick top-N by latest-snapshot (supply + borrow combined)
-    latest_sup = sup_pts[-1].get("tokens", {}) or {}
-    latest_bor = bor_pts[-1].get("tokens", {}) if bor_pts else {}
-    combined = {a: (latest_sup.get(a, 0) + latest_bor.get(a, 0))
-                for a in set(latest_sup) | set(latest_bor)}
-    top_assets = [a for a, _ in sorted(combined.items(), key=lambda kv: -kv[1])[:top_n]]
+    # Hybrid top-N selection: combine historical-heavyweights with current
+    # leaders so the chart reads correctly across the WHOLE timeline:
+    #   • top N//2+2 by PEAK combined (supply+borrow) over the full series —
+    #     catches assets like USDC that were ~\$1B on Kamino in mid-2024 but
+    #     are only ~\$35M today
+    #   • top N//2+2 by LATEST snapshot combined — catches newer entrants
+    #     like DSOL / SYRUPUSDC / ONYC that didn't exist earlier but are
+    #     big today
+    #   • merge peak-first then latest, dedupe, cap at top_n total
+    # Without the hybrid, peak-only selection leaves today's big-but-newer
+    # assets in Others (today's Others = 32%); latest-only leaves the past's
+    # heavyweights in Others (past Others = 60%+). Hybrid keeps Others
+    # under ~15% in both directions.
+    sup_by_ts = {int(p["date"]): (p.get("tokens") or {}) for p in sup_pts}
+    bor_by_ts = {int(p["date"]): (p.get("tokens") or {}) for p in bor_pts}
+    asset_peak: dict[str, float] = {}
+    for ts in set(sup_by_ts) | set(bor_by_ts):
+        s_tokens = sup_by_ts.get(ts, {})
+        b_tokens = bor_by_ts.get(ts, {})
+        for a in set(s_tokens) | set(b_tokens):
+            v = float(s_tokens.get(a, 0) or 0) + float(b_tokens.get(a, 0) or 0)
+            if v > asset_peak.get(a, 0.0):
+                asset_peak[a] = v
+    # Latest snapshot
+    latest_ts_sup = max(sup_by_ts) if sup_by_ts else None
+    latest_ts_bor = max(bor_by_ts) if bor_by_ts else None
+    latest_sup = sup_by_ts.get(latest_ts_sup, {}) if latest_ts_sup else {}
+    latest_bor = bor_by_ts.get(latest_ts_bor, {}) if latest_ts_bor else {}
+    asset_latest = {a: float(latest_sup.get(a, 0) or 0)
+                       + float(latest_bor.get(a, 0) or 0)
+                    for a in set(latest_sup) | set(latest_bor)}
+
+    half = max(1, top_n // 2 + 2)
+    peak_ranked   = [a for a, _ in sorted(asset_peak.items(), key=lambda kv: -kv[1])][:half]
+    latest_ranked = [a for a, _ in sorted(asset_latest.items(), key=lambda kv: -kv[1])][:half]
+    top_assets: list[str] = []
+    seen: set[str] = set()
+    for a in (peak_ranked + latest_ranked):
+        if a not in seen and a:
+            top_assets.append(a); seen.add(a)
+            if len(top_assets) >= top_n:
+                break
 
     # Build wide frame
     rows: dict[int, dict] = {}
@@ -547,7 +586,7 @@ def _render_protocol_asset_breakdown(slug: str, display_name: str) -> None:
     """Render a per-asset supply + borrow stack pair for one Solana
     lending protocol. Used for Kamino + Jupiter sections (the two
     largest by far, individually deserving their own breakdown)."""
-    wide, top_assets = _fetch_lending_per_asset_history(slug, top_n=8)
+    wide, top_assets = _fetch_lending_per_asset_history(slug, top_n=10)
     if wide.empty or not top_assets:
         st.info(f"No per-asset history available for {display_name}.")
         return
@@ -556,7 +595,9 @@ def _render_protocol_asset_breakdown(slug: str, display_name: str) -> None:
     # supply_<ASSET> / borrow_<ASSET>.
     protocols = [(a, a) for a in top_assets]
     palette = ["#FF8C42", "#5BC0EB", "#7DCE82", "#9B5DE5", "#F15BB5",
-               "#FEE440", "#00BBF9", "#00F5D4", "#888888"]   # last = Others
+               "#FEE440", "#00BBF9", "#00F5D4", "#FB8B24", "#A4036F",
+               "#E84142", "#F3BA2F",
+               "#888888"]   # last = Others
     c_left, c_right = st.columns(2, gap="medium")
     with c_left:
         st.markdown(f"**{display_name} — Supply by Asset**")

@@ -476,7 +476,7 @@ def _fetch_solana_lending_history(slug: str) -> _pd.DataFrame:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _fetch_lending_per_asset_history(slug: str, top_n: int = 12) -> tuple:
+def _fetch_lending_per_asset_history(slug: str, top_n: int = 20) -> tuple:
     """Per-asset historical supply + borrow within one Solana lending
     protocol. DefiLlama doesn't split Kamino into Main/JLP/Altcoin sub-
     markets, but `chainTvls.Solana.tokensInUsd` gives a per-token daily
@@ -503,30 +503,30 @@ def _fetch_lending_per_asset_history(slug: str, top_n: int = 12) -> tuple:
     if not sup_pts:
         return _pd.DataFrame(), []
 
-    # Hybrid top-N selection: combine historical-heavyweights with current
-    # leaders so the chart reads correctly across the WHOLE timeline:
-    #   • top N//2+2 by PEAK combined (supply+borrow) over the full series —
-    #     catches assets like USDC that were ~\$1B on Kamino in mid-2024 but
-    #     are only ~\$35M today
-    #   • top N//2+2 by LATEST snapshot combined — catches newer entrants
-    #     like DSOL / SYRUPUSDC / ONYC that didn't exist earlier but are
-    #     big today
-    #   • merge peak-first then latest, dedupe, cap at top_n total
-    # Without the hybrid, peak-only selection leaves today's big-but-newer
-    # assets in Others (today's Others = 32%); latest-only leaves the past's
-    # heavyweights in Others (past Others = 60%+). Hybrid keeps Others
-    # under ~15% in both directions.
+    # Top-N selection: hybrid of INTEGRAL (cumulative supply+borrow $-days)
+    # + LATEST snapshot.
+    #   • Integral catches assets that mattered historically — both brief
+    #     spikes (e.g. WIF in 2024) and consistently-medium assets (BSOL
+    #     at \$80M for 200 days contributes more area than a 1-week spike
+    #     to \$200M).
+    #   • Latest catches NEW assets that didn't accumulate integral yet
+    #     (e.g. USDE only existed a few months on Kamino → integral rank
+    #     ~25, but it's #1 on today's snapshot at \$237M).
+    # Take 15 from integral + 5 from latest (deduped), cap at top_n.
+    # Pure integral leaves today's Others at ~40% because new entrants
+    # are missed; pure latest leaves past Others at ~60%+ because
+    # historical heavyweights have shrunk. Hybrid keeps Others under
+    # ~15% across the entire timeline.
     sup_by_ts = {int(p["date"]): (p.get("tokens") or {}) for p in sup_pts}
     bor_by_ts = {int(p["date"]): (p.get("tokens") or {}) for p in bor_pts}
-    asset_peak: dict[str, float] = {}
+    asset_integral: dict[str, float] = {}
     for ts in set(sup_by_ts) | set(bor_by_ts):
         s_tokens = sup_by_ts.get(ts, {})
         b_tokens = bor_by_ts.get(ts, {})
         for a in set(s_tokens) | set(b_tokens):
             v = float(s_tokens.get(a, 0) or 0) + float(b_tokens.get(a, 0) or 0)
-            if v > asset_peak.get(a, 0.0):
-                asset_peak[a] = v
-    # Latest snapshot
+            asset_integral[a] = asset_integral.get(a, 0.0) + v
+
     latest_ts_sup = max(sup_by_ts) if sup_by_ts else None
     latest_ts_bor = max(bor_by_ts) if bor_by_ts else None
     latest_sup = sup_by_ts.get(latest_ts_sup, {}) if latest_ts_sup else {}
@@ -535,16 +535,20 @@ def _fetch_lending_per_asset_history(slug: str, top_n: int = 12) -> tuple:
                        + float(latest_bor.get(a, 0) or 0)
                     for a in set(latest_sup) | set(latest_bor)}
 
-    half = max(1, top_n // 2 + 2)
-    peak_ranked   = [a for a, _ in sorted(asset_peak.items(), key=lambda kv: -kv[1])][:half]
-    latest_ranked = [a for a, _ in sorted(asset_latest.items(), key=lambda kv: -kv[1])][:half]
+    integral_ranked = [a for a, _ in sorted(asset_integral.items(),
+                                            key=lambda kv: -kv[1])]
+    latest_ranked   = [a for a, _ in sorted(asset_latest.items(),
+                                            key=lambda kv: -kv[1])]
+    INT_QUOTA = max(1, top_n - 5)   # most slots to integral
+    LAT_QUOTA = 5                   # rest to today's top
     top_assets: list[str] = []
     seen: set[str] = set()
-    for a in (peak_ranked + latest_ranked):
-        if a not in seen and a:
+    for a in integral_ranked[:INT_QUOTA]:
+        if a and a not in seen:
             top_assets.append(a); seen.add(a)
-            if len(top_assets) >= top_n:
-                break
+    for a in latest_ranked[:LAT_QUOTA]:
+        if a and a not in seen and len(top_assets) < top_n:
+            top_assets.append(a); seen.add(a)
 
     # Build wide frame
     rows: dict[int, dict] = {}
@@ -596,7 +600,8 @@ def _render_protocol_asset_breakdown(slug: str, display_name: str) -> None:
     protocols = [(a, a) for a in top_assets]
     palette = ["#FF8C42", "#5BC0EB", "#7DCE82", "#9B5DE5", "#F15BB5",
                "#FEE440", "#00BBF9", "#00F5D4", "#FB8B24", "#A4036F",
-               "#E84142", "#F3BA2F",
+               "#E84142", "#F3BA2F", "#0052FF", "#F7931A", "#9945FF",
+               "#FFD500", "#00C08B", "#627EEA", "#FF6B6B", "#4ECDC4",
                "#888888"]   # last = Others
     c_left, c_right = st.columns(2, gap="medium")
     with c_left:

@@ -957,18 +957,18 @@ class SolanaTokenMetricsPuller(DataPuller):
         )
         if show_mc:
             layout["yaxis"] = dict(
-                title_text=self.MC_CHART_LABEL, tickprefix="$", tickformat="~s",
+                tickprefix="$", tickformat="~s",
                 tickmode="array", tickvals=mc_ticks, range=[0, mc_ticks[-1]],
                 showgrid=True,
             )
             layout["yaxis2"] = dict(
-                title_text="Volume (USD)", tickprefix="$", tickformat="~s",
+                tickprefix="$", tickformat="~s",
                 tickmode="array", tickvals=vol_ticks, range=[0, vol_ticks[-1]],
                 showgrid=False, overlaying="y", side="right",
             )
         else:
             layout["yaxis"] = dict(
-                title_text="Volume (USD)", tickprefix="$", tickformat="~s",
+                tickprefix="$", tickformat="~s",
                 tickmode="array", tickvals=vol_ticks, range=[0, vol_ticks[-1]],
                 showgrid=True,
             )
@@ -1397,7 +1397,7 @@ def _render_all_chain_stablecoins() -> None:
         margin=dict(t=10, b=10, l=10, r=10),
         legend=dict(orientation="h", yanchor="bottom", y=1.02,
                     xanchor="right", x=1),
-        yaxis=dict(title_text="Market Cap (USD)", tickprefix="$",
+        yaxis=dict(tickprefix="$",
                    tickformat="~s", showgrid=True, rangemode="tozero"),
     )
     _chart(fig, use_container_width=True)
@@ -2362,18 +2362,18 @@ class TokenGroupMetricsPuller(DataPuller):
         )
         if has_mc:
             layout_kwargs["yaxis"]  = dict(
-                title_text="Total Market Cap (USD)", tickprefix="$", tickformat="~s",
+                tickprefix="$", tickformat="~s",
                 tickmode="array", tickvals=mc_ticks, range=[0, mc_ticks[-1]],
                 showgrid=True,
             )
             layout_kwargs["yaxis2"] = dict(
-                title_text="Daily Volume (USD)", tickprefix="$", tickformat="~s",
+                tickprefix="$", tickformat="~s",
                 tickmode="array", tickvals=vol_ticks, range=[0, vol_ticks[-1]],
                 showgrid=False, overlaying="y", side="right",
             )
         else:
             layout_kwargs["yaxis"] = dict(
-                title_text="Daily Volume (USD)", tickprefix="$", tickformat="~s",
+                tickprefix="$", tickformat="~s",
                 tickmode="array", tickvals=vol_ticks, range=[0, vol_ticks[-1]],
                 showgrid=True,
             )
@@ -2543,7 +2543,7 @@ class TokenGroupMetricsPuller(DataPuller):
             margin=dict(t=10, b=10, l=10, r=10),
             legend=dict(orientation="h", yanchor="bottom", y=1.02,
                         xanchor="right", x=1),
-            yaxis=dict(title_text="Market Cap (USD)", tickprefix="$",
+            yaxis=dict(tickprefix="$",
                        tickformat="~s", showgrid=True, rangemode="tozero"),
         )
         _chart(fig, use_container_width=True)
@@ -2817,7 +2817,7 @@ class TokenGroupMetricsPuller(DataPuller):
             margin=dict(t=10, b=10, l=10, r=10),
             legend=dict(orientation="h", yanchor="bottom", y=1.02,
                         xanchor="right", x=1),
-            yaxis=dict(title_text="Market Cap (USD)", tickprefix="$",
+            yaxis=dict(tickprefix="$",
                        tickformat="~s", showgrid=True, rangemode="tozero"),
         )
         _chart(fig, use_container_width=True)
@@ -4546,7 +4546,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v41-stables-trim"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v42-no-yaxis-title"
 
 _need_init = (
     "scheduler" not in st.session_state
@@ -4717,7 +4717,7 @@ def _build_combined_stocks_fig(df: pd.DataFrame, labels: list[str],
         legend=dict(orientation="h", yanchor="bottom", y=1.02,
                     xanchor="right", x=1),
         yaxis=dict(
-            title_text="Volume (USD)", tickprefix="$", tickformat="~s",
+            tickprefix="$", tickformat="~s",
             tickmode="array", tickvals=ticks, range=[0, ticks[-1]],
             showgrid=True,
         ),

@@ -742,8 +742,13 @@ class SolanaTokenMetricsPuller(DataPuller):
         return out
 
     # ── Primary fetch: token-level OHLCV ──────────────────────────────────────
-    def _try_token_ohlcv(self, headers: dict, time_to: int,
-                         circ_supply: float | None) -> pd.DataFrame | None:
+    def _try_token_ohlcv(self, headers: dict, time_to: int) -> pd.DataFrame | None:
+        # MC is no longer computed here. It used to be price × today's supply
+        # applied across all historical days, which over/under-states past
+        # MC whenever supply changes. fetch() now snapshots today's MC from
+        # Birdeye Token Overview + carries forward prior snapshots + applies
+        # any mc_seed_<symbol>.json on disk — matching the commodity / stable
+        # / treasury puller pattern.
         rows = self._paginated_ohlcv(headers, self.ADDRESS, self.START_TS, time_to,
                                      endpoint="token")
         if not rows:
@@ -752,7 +757,7 @@ class SolanaTokenMetricsPuller(DataPuller):
         df["date"]           = pd.to_datetime(df["unixTime"], unit="s").dt.strftime("%Y-%m-%d")
         df["price_usd"]      = df["c"]
         df["volume_usd"]     = df["v"] * df["c"]   # v = native token units; ×price → USD
-        df["market_cap_usd"] = df["price_usd"] * circ_supply if circ_supply else None
+        df["market_cap_usd"] = None                # filled by fetch() (snapshot + carry-forward + seed)
         return df[["date", "price_usd", "volume_usd", "market_cap_usd"]]
 
     # ── Fallback fetch: aggregate top pairs' OHLCV ────────────────────────────
@@ -787,8 +792,7 @@ class SolanaTokenMetricsPuller(DataPuller):
                     all_pairs.append(p)
         return all_pairs
 
-    def _try_pair_ohlcv(self, headers: dict, time_to: int,
-                        circ_supply: float | None) -> pd.DataFrame:
+    def _try_pair_ohlcv(self, headers: dict, time_to: int) -> pd.DataFrame:
         pairs = self._fetch_all_pairs(headers)
 
         STABLE = {self._USDC_MINT, self._USDT_MINT}
@@ -868,7 +872,7 @@ class SolanaTokenMetricsPuller(DataPuller):
                 "date"          : date,
                 "price_usd"     : price,
                 "volume_usd"    : vol_by_day[date],
-                "market_cap_usd": price * circ_supply if price and circ_supply else None,
+                "market_cap_usd": None,    # filled by fetch() via snapshot + carry-forward + seed
             })
         df = pd.DataFrame(out_rows)
         df.attrs["volume_source"] = "pair-aggregation (top pairs)"
@@ -876,25 +880,91 @@ class SolanaTokenMetricsPuller(DataPuller):
 
     # ── Public fetch ──────────────────────────────────────────────────────────
     def fetch(self) -> pd.DataFrame:
-        headers    = {"X-API-KEY": self.settings.birdeye_api_key, "x-chain": "solana"}
-        time_to    = int(datetime.utcnow().timestamp())
-        circ_supply = self._fetch_circ_supply(headers)
+        headers = {"X-API-KEY": self.settings.birdeye_api_key, "x-chain": "solana"}
+        time_to = int(datetime.utcnow().timestamp())
 
-        # Try fast token-level OHLCV first; fall back to pair aggregation
-        df = self._try_token_ohlcv(headers, time_to, circ_supply)
+        # Price + volume from OHLCV (no MC computed there anymore — see below).
+        df = self._try_token_ohlcv(headers, time_to)
         if df is None or df.empty:
             self.logger.info("%s: token OHLCV empty — falling back to pair aggregation",
                              self.TOKEN_NAME)
-            df = self._try_pair_ohlcv(headers, time_to, circ_supply)
+            df = self._try_pair_ohlcv(headers, time_to)
 
-        # For stablecoins with a DeFiLlama ID, overwrite market_cap_usd with
-        # real historical circulating supply so the chart line is meaningful.
-        if not df.empty and self.DEFILLAMA_STABLE_ID:
+        if df.empty:
+            return df
+
+        # ── Market cap: snapshot + carry-forward + seed ──────────────────
+        # Replaces the old "price × today's supply" approximation. Matches
+        # the commodity / stable / treasury puller pattern:
+        #   1. Carry forward whatever MC values were already cached from
+        #      prior pulls (so each pull only ADDS today's snapshot rather
+        #      than replacing the whole series).
+        #   2. Apply mc_seed_<symbol>.json or mc_seed_<address>.json if
+        #      present on disk — same shape as the commodity/stable seeds
+        #      ({"payload": {"mc": [...], "t": [unix_seconds]}}). Used to
+        #      backfill historical MC before per-pull snapshotting started.
+        #   3. Overwrite today's row with a fresh Birdeye Token Overview
+        #      snapshot — `marketCap` field, which equals price × on-chain
+        #      circulating supply at the pull moment (the correct MC, not
+        #      a wrong-supply approximation).
+        # The series builds up over time — first pull only has today; after
+        # N days the chart shows N points (plus whatever the seed provides).
+        df["market_cap_usd"] = None
+        today_str = datetime.utcnow().strftime("%Y-%m-%d")
+
+        # (1) Carry-forward prior cached values.
+        prior = self.get_latest()
+        if prior is not None and not prior.empty and "market_cap_usd" in prior.columns:
+            prior_mc = dict(zip(prior["date"], prior["market_cap_usd"]))
+            df["market_cap_usd"] = df["date"].map(prior_mc)
+
+        # (2) Seed JSON — keyed by lowercase symbol OR lowercase address so
+        # users can name the file whichever way they prefer. Seeds OVERWRITE
+        # carry-forward values (they're user-supplied authoritative history,
+        # whereas carry-forward might be stale snapshots — or, during the
+        # transition from the old price×supply MC source, outright wrong).
+        # combine_first: keep seed where present, fall back to existing
+        # market_cap_usd (carry-forward) where seed has no entry for the day.
+        seed_all = _load_mc_seed()
+        seed = (seed_all.get(self.TOKEN_NAME.lower())
+                or seed_all.get(str(self.ADDRESS).lower()) or {})
+        if seed:
+            seeded = df["date"].map(seed)
+            df["market_cap_usd"] = seeded.combine_first(df["market_cap_usd"])
+
+        # (3) Today's Birdeye Token Overview snapshot — always wins.
+        today_mc = self._fetch_overview_mc(headers)
+        if today_mc is not None:
+            df.loc[df["date"] == today_str, "market_cap_usd"] = today_mc
+
+        # For stablecoins with a DefiLlama ID, prefer real historical circ
+        # supply over the snapshot path — overwrites everything above with
+        # DefiLlama's daily series (used to be the only path).
+        if self.DEFILLAMA_STABLE_ID:
             supply_by_day = self._fetch_defillama_supply()
             if supply_by_day:
                 df["market_cap_usd"] = df["date"].map(supply_by_day)
 
         return df
+
+    def _fetch_overview_mc(self, headers: dict) -> float | None:
+        """Today's market cap from Birdeye /defi/token_overview (the
+        `marketCap` field). Returns None on any error so fetch() can fall
+        through to the carry-forward / seed path without crashing."""
+        try:
+            r = requests.get(
+                f"{self.settings.birdeye_base_url}/defi/token_overview",
+                params={"address": self.ADDRESS},
+                headers=headers, timeout=15,
+            )
+            r.raise_for_status()
+            mc = (r.json().get("data") or {}).get("marketCap")
+            return float(mc) if mc else None
+        except Exception as exc:
+            self.logger.warning(
+                "%s: Birdeye Token Overview MC fetch failed (%s)",
+                self.TOKEN_NAME, exc)
+            return None
 
     # ── Resampling helper ─────────────────────────────────────────────────────
     @staticmethod
@@ -4702,7 +4772,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict) -> None:
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v51-btc-variants"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v52-mc-snapshot"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────

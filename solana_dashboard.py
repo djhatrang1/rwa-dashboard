@@ -586,16 +586,21 @@ def _fetch_lending_per_asset_history(slug: str, top_n: int = 20) -> tuple:
         r0.update(rows[ts])
         wide_rows.append(r0)
     wide = _pd.DataFrame(wide_rows)
-    # Fill any missing per-asset cells (e.g. asset existed in supply but
-    # not in borrow on a given day) with 0.
+    # Ensure every expected column exists, but LEAVE NaN values intact so
+    # the downstream ffill in _build_lending_stack can bridge data gaps
+    # (DefiLlama occasionally has a day where supply data is present but
+    # borrow is missing — e.g. Kamino Jan 23, 2025 — and zero-filling here
+    # would defeat the carry-forward, producing a visible $0 cliff in
+    # the stacked area chart).
     for a in top_assets:
         for prefix in ("supply_", "borrow_"):
             col = f"{prefix}{a}"
             if col not in wide.columns:
-                wide[col] = 0.0
-            wide[col] = wide[col].fillna(0.0)
-    wide["supply_others"] = wide.get("supply_others", 0.0).fillna(0.0)
-    wide["borrow_others"] = wide.get("borrow_others", 0.0).fillna(0.0)
+                wide[col] = float("nan")
+    if "supply_others" not in wide.columns:
+        wide["supply_others"] = float("nan")
+    if "borrow_others" not in wide.columns:
+        wide["borrow_others"] = float("nan")
     return wide, top_assets
 
 

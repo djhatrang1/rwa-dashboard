@@ -4563,277 +4563,6 @@ if _os.getenv("PULL_ONLY") == "1":
 #    streamlit run stocks_dashboard.py
 # ══════════════════════════════════════════════════════════════════════════════
 
-st.set_page_config(
-    page_title="Solana Tokenized Stocks · Birdeye Peak",
-    page_icon="assets/logos/Birdeye_Peak_Logomark_White.svg",
-    layout="wide",
-)
-
-# ── Birdeye Peak branding (theme, fonts, logo) ────────────────────────────────
-import base64 as _b64
-from pathlib import Path as _Path
-
-_ASSET_DIR = _Path(__file__).parent / "assets"
-
-
-def _asset_b64(rel: str) -> str:
-    try:
-        return _b64.b64encode((_ASSET_DIR / rel).read_bytes()).decode()
-    except Exception:
-        return ""
-
-
-def _asset_text(rel: str) -> str:
-    try:
-        return (_ASSET_DIR / rel).read_text()
-    except Exception:
-        return ""
-
-
-_PEAK_FONT_B64 = _asset_b64("fonts/Indivisible_SemiBold.otf")
-_PEAK_LOGO_SVG = _asset_text("logos/Birdeye_Peak_Horizontal_White.svg")
-
-# Streamlit Cloud injects extra header buttons (Share, pencil-edit, GitHub icon)
-# that local runs don't have. Detect via the Cloud-only mount path so we can
-# push our floated header controls further left and avoid overlapping them.
-_IS_CLOUD = os.path.exists("/mount/src")
-_TOPBAR_FORCE_PULL_RIGHT = "13rem" if _IS_CLOUD else "8rem"
-_TOPBAR_CAPTION_RIGHT    = "20rem" if _IS_CLOUD else "15rem"
-
-st.markdown(
-    f"""
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
-    @font-face {{
-        font-family: 'Indivisible';
-        src: url(data:font/otf;base64,{_PEAK_FONT_B64}) format('opentype');
-        font-weight: 600; font-style: normal; font-display: swap;
-    }}
-    :root {{
-        --peak-bg: #141414; --peak-container: #1d1b19; --peak-elevated: #262320;
-        --peak-primary: #d2b58f; --peak-primary-hover: #c59c72; --peak-primary-active: #cc8943;
-        --peak-text: #ffffff; --peak-text-secondary: #BBA68F;
-        --peak-divider: rgba(255,255,255,0.10);
-    }}
-    html, body, .stApp, [data-testid="stAppViewContainer"] {{
-        background-color: var(--peak-bg) !important;
-        color: var(--peak-text);
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    }}
-    [data-testid="stHeader"] {{ background: transparent !important; }}
-    /* Hide the native running / Stop status widget (we show our own spinner) */
-    [data-testid="stStatusWidget"] {{ display: none !important; }}
-    /* Tighten top padding so the page title lines up with the sidebar CHAINS label */
-    [data-testid="stMainBlockContainer"], .block-container {{ padding-top: 18px !important; }}
-    [data-testid="stSidebar"] {{
-        background-color: var(--peak-container) !important;
-        border-right: 1px solid var(--peak-divider);
-    }}
-    h1, h2, h3, h4, h5, h6 {{
-        font-family: 'Inter', sans-serif !important;
-        color: var(--peak-text); font-weight: 600;
-    }}
-    /* Chart section titles (st.subheader → h3) — smaller than the page title */
-    [data-testid="stHeading"] h3, h3 {{
-        font-size: 20px !important; line-height: 1.35 !important;
-    }}
-    /* Hero header */
-    .peak-header {{ display: flex; align-items: center; gap: 16px; }}
-    .peak-logo svg {{ height: 30px; width: auto; display: block; }}
-    .peak-title {{
-        font-family: 'Indivisible', 'Inter', sans-serif !important;
-        font-weight: 600 !important; font-size: 50px !important; line-height: 56px !important;
-        letter-spacing: 0.02em; text-transform: uppercase;
-        color: var(--peak-text-secondary) !important; margin: 0 !important;
-    }}
-    .peak-subtitle {{
-        font-family: 'Inter', sans-serif; font-size: 16px !important; font-weight: 500;
-        color: rgba(255, 255, 255, 0.6) !important; letter-spacing: 0.02em; margin: 2px 0 0 !important;
-    }}
-    .peak-sub {{ color: var(--peak-text-secondary); font-size: 14px; margin: 0; }}
-    .peak-sub b {{ color: var(--peak-text); font-weight: 600; }}
-    .peak-sub code {{
-        background: var(--peak-elevated); color: var(--peak-primary);
-        padding: 2px 6px; border-radius: 4px; font-size: 12px;
-    }}
-    /* Tabs — tan accent instead of default red */
-    .stTabs [data-baseweb="tab-list"] {{ border-bottom: 1px solid var(--peak-divider); }}
-    .stTabs [data-baseweb="tab"] {{ color: var(--peak-text-secondary); }}
-    .stTabs [aria-selected="true"] {{ color: var(--peak-primary) !important; }}
-    .stTabs [data-baseweb="tab-highlight"],
-    .stTabs [data-baseweb="tab-border"] {{ background-color: var(--peak-primary) !important; }}
-    /* Buttons */
-    .stButton > button {{
-        background-color: var(--peak-primary); color: #1d1b19;
-        border: 1px solid var(--peak-primary); border-radius: 4px; font-weight: 600;
-    }}
-    .stButton > button:hover {{
-        background-color: var(--peak-primary-hover);
-        border-color: var(--peak-primary-hover); color: #141414;
-    }}
-    .stButton > button:active {{ background-color: var(--peak-primary-active) !important; }}
-    /* Misc */
-    hr {{ border-color: var(--peak-divider) !important; }}
-    a, a:visited {{ color: var(--peak-primary) !important; }}
-    [data-testid="stMetricValue"] {{ color: var(--peak-text); }}
-    /* Chain navigation (sidebar) */
-    .peak-nav-title {{
-        font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 600;
-        letter-spacing: 0.08em; color: var(--peak-text-secondary);
-        margin: 4px 0 10px; text-transform: uppercase;
-    }}
-    [data-testid="stSidebar"] [role="radiogroup"] label {{ padding: 6px 4px; }}
-    /* Empty-chain placeholder */
-    .peak-empty {{
-        margin-top: 1.5rem; padding: 4rem 1rem; text-align: center;
-        color: var(--peak-text-secondary); font-size: 18px;
-        border: 1px dashed var(--peak-divider); border-radius: 8px;
-        background: var(--peak-container);
-    }}
-    /* Caption (refresh / pull cadence / timestamp) floated into the top bar */
-    .peak-sub-anchor {{ display: none; }}
-    [data-testid="stElementContainer"]:has(.peak-sub-anchor),
-    .element-container:has(.peak-sub-anchor) {{
-        position: fixed; top: 0; right: {_TOPBAR_CAPTION_RIGHT}; height: 3.75rem;
-        display: flex; align-items: center; justify-content: flex-end;
-        width: auto !important; margin: 0 !important; padding: 0 !important;
-        z-index: 999991;
-    }}
-    .peak-sub-topbar {{
-        margin: 0 !important; font-size: 13px;
-        white-space: nowrap; text-align: right;
-        position: relative; top: -8px;
-    }}
-    /* Force-pull button floated into the top bar, styled like the Deploy button */
-    .st-key-force_pull_header {{
-        position: fixed; top: 0; right: {_TOPBAR_FORCE_PULL_RIGHT}; height: 3.75rem;
-        display: flex; align-items: center;
-        width: auto !important; min-height: 0 !important;
-        margin: 0 !important; padding: 0 !important;
-        z-index: 999992;
-    }}
-    .st-key-force_pull_header button {{
-        background: transparent !important; border: none !important;
-        box-shadow: none !important; color: var(--peak-text) !important;
-        height: 2.1rem; min-height: 0; padding: 0.2rem 0.5rem;
-        font-size: 14px; font-weight: 400; border-radius: 4px;
-    }}
-    .st-key-force_pull_header button:hover {{
-        background: rgba(255,255,255,0.08) !important;
-        color: var(--peak-text) !important;
-    }}
-    /* Raw-data icons — pinned to each chart's tab row, far right, borderless */
-    .st-key-combined_chart,
-    [class*="st-key-chartwrap_"] {{ position: relative; }}
-    [class*="st-key-raw_"] {{
-        position: absolute; top: 8px; right: 0; z-index: 5;
-        width: auto !important; min-height: 0 !important;
-        margin: 0 !important; padding: 0 !important;
-    }}
-    [class*="st-key-raw_"] button {{
-        background: transparent !important; border: none !important;
-        box-shadow: none !important; color: var(--peak-text-secondary) !important;
-        min-height: 0 !important; height: auto !important;
-        padding: 2px 4px !important; font-size: 18px; line-height: 1;
-    }}
-    [class*="st-key-raw_"] button:hover {{
-        color: var(--peak-text) !important; background: transparent !important;
-    }}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-# ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
-# Version key: bump whenever the puller list or class hierarchy changes so that
-# stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v47-stocks-mc"
-
-_need_init = (
-    "scheduler" not in st.session_state
-    or st.session_state.get("_pullers_version") != _PULLERS_VERSION
-)
-if _need_init:
-    # Shut down old scheduler if one exists
-    _old_sched = st.session_state.get("scheduler")
-    if _old_sched is not None:
-        try:
-            _old_sched.shutdown()
-        except Exception:
-            pass
-    _pullers = init_pullers(settings, cache_db)
-    # On Streamlit Cloud the GitHub Actions cron pulls every 6h, so an
-    # in-process APScheduler is duplicate work AND a big memory hog
-    # (each puller holds its TOKENS list + APScheduler holds the whole
-    # scheduler thread + job state). Skip it on Cloud; keep it locally so
-    # `streamlit run` still auto-refreshes data during dev.
-    if _IS_CLOUD:
-        _sched = None
-    else:
-        _sched = PullScheduler(settings)
-        for _p in _pullers:
-            _sched.register(_p)
-        _sched.start()
-    st.session_state["scheduler"]       = _sched
-    st.session_state["pullers"]         = _pullers
-    st.session_state["_pullers_version"] = _PULLERS_VERSION
-
-scheduler: PullScheduler | None = st.session_state["scheduler"]
-pullers: List[DataPuller] = st.session_state["pullers"]
-
-# ── Auto-refresh ──────────────────────────────────────────────────────────────
-st_autorefresh(interval=settings.ui_refresh_seconds * 1_000, key="dashboard_refresh")
-
-# ── Sidebar: chain navigation ─────────────────────────────────────────────────
-_CHAINS = ["All chain", "Solana", "Ethereum", "BNB Chain", "Base"]
-with st.sidebar:
-    st.markdown('<p class="peak-nav-title">Chains</p>', unsafe_allow_html=True)
-    selected_chain = st.radio(
-        "Chain", _CHAINS, index=1,
-        label_visibility="collapsed", key="chain_nav",
-    )
-
-_chain_label = "ALL CHAINS" if selected_chain == "All chain" else selected_chain.upper()
-
-# ── Top-bar controls — caption + Force Pull, floated next to Deploy ────────────
-_refresh_disp = (f"{settings.ui_refresh_seconds // 60}m"
-                 if settings.ui_refresh_seconds >= 60
-                 else f"{settings.ui_refresh_seconds}s")
-st.markdown(
-    f'<span class="peak-sub-anchor"></span>'
-    f'<p class="peak-sub peak-sub-topbar">Refresh <b>{_refresh_disp}</b> · '
-    f'Pull <b>{settings.pull_interval_seconds // 3600}h</b> · '
-    f'<code>{datetime.utcnow().strftime("%H:%M")} UTC</code></p>',
-    unsafe_allow_html=True,
-)
-if st.button("⟳ Force Pull", key="force_pull_header",
-             help="Pull all data sources now"):
-    with st.spinner("Pulling all data sources…"):
-        for _p in pullers:
-            try:
-                _p.pull()
-            except Exception as _exc:
-                st.toast(f"Pull failed: {_p.name}", icon="⚠️")
-    st.toast("Force pull complete", icon="✅")
-    st.rerun()
-
-# ── Header ────────────────────────────────────────────────────────────────────
-st.markdown(
-    f'<p class="peak-title">RWA DASHBOARD</p>'
-    f'<p class="peak-subtitle">{selected_chain}</p>',
-    unsafe_allow_html=True,
-)
-st.divider()
-
-# ── Combined tokenized-stocks overview helpers ────────────────────────────────
-
-_STOCKS_PROJECT_COLORS: dict[str, str] = {
-    "PreStocks": "#d2b58f",  # tan/7
-    "xStocks":   "#6F97D5",  # navy/6
-    "Ondo":      "#6FD58F",  # green/6
-}
-
-
 def _combined_stocks_df(pullers: list) -> pd.DataFrame | None:
     """Merge per-group daily DataFrames into one wide table.
 
@@ -4926,297 +4655,580 @@ def _build_combined_stocks_fig(df: pd.DataFrame, labels: list[str],
     return fig
 
 
-# ── Tabs ──────────────────────────────────────────────────────────────────────
-solana_pullers      = [p for p in pullers if getattr(p, "GROUP", "") == "solana_tokens"]
-stocks_pullers      = [p for p in pullers if getattr(p, "GROUP", "") == "tokenized_stocks"]
-commodity_pullers   = [p for p in pullers if getattr(p, "GROUP", "") == "tokenized_commodities"]
-stablecoin_pullers  = [p for p in pullers if getattr(p, "GROUP", "") == "stablecoins"]
-treasury_pullers    = [p for p in pullers if getattr(p, "GROUP", "") == "treasuries"]
-usdc_pullers        = [p for p in pullers
-                       if getattr(p, "GROUP", "") not in
-                          ("solana_tokens", "tokenized_stocks", "stablecoins")]
-
-# ── Raw-data modal ────────────────────────────────────────────────────────────
-@st.dialog("📋 Raw Data", width="large")
+# ── Raw-data modal (module-level so solana_dashboard.py can import it) ───────
 def _raw_data_modal(df: pd.DataFrame, fmt: dict) -> None:
     st.dataframe(df.style.format(fmt), use_container_width=True)
 
 
-# Full-screen dialog — opens when any "⛶" button is clicked
-@st.dialog("📈 Full Chart", width="large")
-def _fullscreen_chart() -> None:
-    token_name = st.session_state.get("_fullscreen_token", "")
-    puller = next((p for p in solana_pullers if p.TOKEN_NAME == token_name), None)
-    if puller is None:
-        st.warning("Token not found.")
-        return
-    st.subheader(f"{puller.TOKEN_NAME} — Market Cap & Volume (Solana)")
-    puller.render()
+# Version key: bump whenever the puller list / class hierarchy changes so that
+# stale session-state instances (from before a code reload) are discarded.
+# Exposed at module level so solana_dashboard.py can use it for its own
+# session-state version-gating without re-defining a parallel constant.
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v48-lib-mode"
 
-# Map the sidebar chain label to DefiLlama's chain name (None = aggregate all).
-_CHAIN_TO_DL = {
-    "Solana":    "Solana",
-    "Ethereum":  "Ethereum",
-    "BNB Chain": "Binance",
-    "Base":      "Base",
-    "All chain": None,
-}
 
-if selected_chain != "Solana":
-    # Other chains mirror Solana's tab layout (Tokenized stocks / Commodities /
-    # Stablecoins / Treasuries & MMFs) so future charts have a stable home on
-    # every chain. Each tab renders the chain-filtered MC chart for its group.
-    # Birdeye is queried first (Solana addresses only return on Solana), so
-    # non-Solana series come from DefiLlama. Groups without coverage for the
-    # selected chain show an empty-state message instead of disappearing.
-    dl_chain = _CHAIN_TO_DL.get(selected_chain)
-    scope_label = "all chains" if dl_chain is None else selected_chain
+# ── Module guard ────────────────────────────────────────────────────────────
+# When imported as a library (e.g. by solana_dashboard.py) the UI rendering
+# block below is skipped — only the helpers, classes, Settings, CacheDB,
+# and init_pullers() are exposed. When run directly via `streamlit run
+# stocks_dashboard.py` (__name__ == '__main__'), the original RWA dashboard
+# renders as before. The PULL_ONLY block above this guard runs regardless,
+# so `python scripts/run_pull.py` still pulls without depending on UI state.
+if __name__ == "__main__":
+    st.set_page_config(
+        page_title="Solana Tokenized Stocks · Birdeye Peak",
+        page_icon="assets/logos/Birdeye_Peak_Logomark_White.svg",
+        layout="wide",
+    )
 
-    # Sidebar chain label → Birdeye x-chain value. None when the puller
-    # already infers the chain from each token's address (no extra volume
-    # chart) or when "All chain" is selected.
-    _BIRDEYE_CHAIN = {
-        "Ethereum":  "ethereum",
-        "BNB Chain": "bsc",
-        "Base":      "base",
-    }
-    birdeye_chain = _BIRDEYE_CHAIN.get(selected_chain)
+    # ── Birdeye Peak branding (theme, fonts, logo) ────────────────────────────────
+    import base64 as _b64
+    from pathlib import Path as _Path
 
-    def _puller_has_chain(puller, chain_canonical: str | None) -> bool:
-        """True if `puller.TOKENS` has at least one entry whose declared
-        chain matches `chain_canonical` (DefiLlama-style name). When
-        `chain_canonical is None` (the All-chain view) returns True so every
-        puller renders. DefiLlama-only coverage doesn't count here — we only
-        suppress pullers whose TOKENS registry doesn't even list the chain."""
-        if not chain_canonical:
-            return True
-        want = chain_canonical.lower()
-        for tok in puller.TOKENS:
+    _ASSET_DIR = _Path(__file__).parent / "assets"
+
+
+    def _asset_b64(rel: str) -> str:
+        try:
+            return _b64.b64encode((_ASSET_DIR / rel).read_bytes()).decode()
+        except Exception:
+            return ""
+
+
+    def _asset_text(rel: str) -> str:
+        try:
+            return (_ASSET_DIR / rel).read_text()
+        except Exception:
+            return ""
+
+
+    _PEAK_FONT_B64 = _asset_b64("fonts/Indivisible_SemiBold.otf")
+    _PEAK_LOGO_SVG = _asset_text("logos/Birdeye_Peak_Horizontal_White.svg")
+
+    # Streamlit Cloud injects extra header buttons (Share, pencil-edit, GitHub icon)
+    # that local runs don't have. Detect via the Cloud-only mount path so we can
+    # push our floated header controls further left and avoid overlapping them.
+    _IS_CLOUD = os.path.exists("/mount/src")
+    _TOPBAR_FORCE_PULL_RIGHT = "13rem" if _IS_CLOUD else "8rem"
+    _TOPBAR_CAPTION_RIGHT    = "20rem" if _IS_CLOUD else "15rem"
+
+    st.markdown(
+        f"""
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+        @font-face {{
+            font-family: 'Indivisible';
+            src: url(data:font/otf;base64,{_PEAK_FONT_B64}) format('opentype');
+            font-weight: 600; font-style: normal; font-display: swap;
+        }}
+        :root {{
+            --peak-bg: #141414; --peak-container: #1d1b19; --peak-elevated: #262320;
+            --peak-primary: #d2b58f; --peak-primary-hover: #c59c72; --peak-primary-active: #cc8943;
+            --peak-text: #ffffff; --peak-text-secondary: #BBA68F;
+            --peak-divider: rgba(255,255,255,0.10);
+        }}
+        html, body, .stApp, [data-testid="stAppViewContainer"] {{
+            background-color: var(--peak-bg) !important;
+            color: var(--peak-text);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        }}
+        [data-testid="stHeader"] {{ background: transparent !important; }}
+        /* Hide the native running / Stop status widget (we show our own spinner) */
+        [data-testid="stStatusWidget"] {{ display: none !important; }}
+        /* Tighten top padding so the page title lines up with the sidebar CHAINS label */
+        [data-testid="stMainBlockContainer"], .block-container {{ padding-top: 18px !important; }}
+        [data-testid="stSidebar"] {{
+            background-color: var(--peak-container) !important;
+            border-right: 1px solid var(--peak-divider);
+        }}
+        h1, h2, h3, h4, h5, h6 {{
+            font-family: 'Inter', sans-serif !important;
+            color: var(--peak-text); font-weight: 600;
+        }}
+        /* Chart section titles (st.subheader → h3) — smaller than the page title */
+        [data-testid="stHeading"] h3, h3 {{
+            font-size: 20px !important; line-height: 1.35 !important;
+        }}
+        /* Hero header */
+        .peak-header {{ display: flex; align-items: center; gap: 16px; }}
+        .peak-logo svg {{ height: 30px; width: auto; display: block; }}
+        .peak-title {{
+            font-family: 'Indivisible', 'Inter', sans-serif !important;
+            font-weight: 600 !important; font-size: 50px !important; line-height: 56px !important;
+            letter-spacing: 0.02em; text-transform: uppercase;
+            color: var(--peak-text-secondary) !important; margin: 0 !important;
+        }}
+        .peak-subtitle {{
+            font-family: 'Inter', sans-serif; font-size: 16px !important; font-weight: 500;
+            color: rgba(255, 255, 255, 0.6) !important; letter-spacing: 0.02em; margin: 2px 0 0 !important;
+        }}
+        .peak-sub {{ color: var(--peak-text-secondary); font-size: 14px; margin: 0; }}
+        .peak-sub b {{ color: var(--peak-text); font-weight: 600; }}
+        .peak-sub code {{
+            background: var(--peak-elevated); color: var(--peak-primary);
+            padding: 2px 6px; border-radius: 4px; font-size: 12px;
+        }}
+        /* Tabs — tan accent instead of default red */
+        .stTabs [data-baseweb="tab-list"] {{ border-bottom: 1px solid var(--peak-divider); }}
+        .stTabs [data-baseweb="tab"] {{ color: var(--peak-text-secondary); }}
+        .stTabs [aria-selected="true"] {{ color: var(--peak-primary) !important; }}
+        .stTabs [data-baseweb="tab-highlight"],
+        .stTabs [data-baseweb="tab-border"] {{ background-color: var(--peak-primary) !important; }}
+        /* Buttons */
+        .stButton > button {{
+            background-color: var(--peak-primary); color: #1d1b19;
+            border: 1px solid var(--peak-primary); border-radius: 4px; font-weight: 600;
+        }}
+        .stButton > button:hover {{
+            background-color: var(--peak-primary-hover);
+            border-color: var(--peak-primary-hover); color: #141414;
+        }}
+        .stButton > button:active {{ background-color: var(--peak-primary-active) !important; }}
+        /* Misc */
+        hr {{ border-color: var(--peak-divider) !important; }}
+        a, a:visited {{ color: var(--peak-primary) !important; }}
+        [data-testid="stMetricValue"] {{ color: var(--peak-text); }}
+        /* Chain navigation (sidebar) */
+        .peak-nav-title {{
+            font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 600;
+            letter-spacing: 0.08em; color: var(--peak-text-secondary);
+            margin: 4px 0 10px; text-transform: uppercase;
+        }}
+        [data-testid="stSidebar"] [role="radiogroup"] label {{ padding: 6px 4px; }}
+        /* Empty-chain placeholder */
+        .peak-empty {{
+            margin-top: 1.5rem; padding: 4rem 1rem; text-align: center;
+            color: var(--peak-text-secondary); font-size: 18px;
+            border: 1px dashed var(--peak-divider); border-radius: 8px;
+            background: var(--peak-container);
+        }}
+        /* Caption (refresh / pull cadence / timestamp) floated into the top bar */
+        .peak-sub-anchor {{ display: none; }}
+        [data-testid="stElementContainer"]:has(.peak-sub-anchor),
+        .element-container:has(.peak-sub-anchor) {{
+            position: fixed; top: 0; right: {_TOPBAR_CAPTION_RIGHT}; height: 3.75rem;
+            display: flex; align-items: center; justify-content: flex-end;
+            width: auto !important; margin: 0 !important; padding: 0 !important;
+            z-index: 999991;
+        }}
+        .peak-sub-topbar {{
+            margin: 0 !important; font-size: 13px;
+            white-space: nowrap; text-align: right;
+            position: relative; top: -8px;
+        }}
+        /* Force-pull button floated into the top bar, styled like the Deploy button */
+        .st-key-force_pull_header {{
+            position: fixed; top: 0; right: {_TOPBAR_FORCE_PULL_RIGHT}; height: 3.75rem;
+            display: flex; align-items: center;
+            width: auto !important; min-height: 0 !important;
+            margin: 0 !important; padding: 0 !important;
+            z-index: 999992;
+        }}
+        .st-key-force_pull_header button {{
+            background: transparent !important; border: none !important;
+            box-shadow: none !important; color: var(--peak-text) !important;
+            height: 2.1rem; min-height: 0; padding: 0.2rem 0.5rem;
+            font-size: 14px; font-weight: 400; border-radius: 4px;
+        }}
+        .st-key-force_pull_header button:hover {{
+            background: rgba(255,255,255,0.08) !important;
+            color: var(--peak-text) !important;
+        }}
+        /* Raw-data icons — pinned to each chart's tab row, far right, borderless */
+        .st-key-combined_chart,
+        [class*="st-key-chartwrap_"] {{ position: relative; }}
+        [class*="st-key-raw_"] {{
+            position: absolute; top: 8px; right: 0; z-index: 5;
+            width: auto !important; min-height: 0 !important;
+            margin: 0 !important; padding: 0 !important;
+        }}
+        [class*="st-key-raw_"] button {{
+            background: transparent !important; border: none !important;
+            box-shadow: none !important; color: var(--peak-text-secondary) !important;
+            min-height: 0 !important; height: auto !important;
+            padding: 2px 4px !important; font-size: 18px; line-height: 1;
+        }}
+        [class*="st-key-raw_"] button:hover {{
+            color: var(--peak-text) !important; background: transparent !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
+    _need_init = (
+        "scheduler" not in st.session_state
+        or st.session_state.get("_pullers_version") != _PULLERS_VERSION
+    )
+    if _need_init:
+        # Shut down old scheduler if one exists
+        _old_sched = st.session_state.get("scheduler")
+        if _old_sched is not None:
             try:
-                if puller._token_chain(tok).lower() == want:
-                    return True
+                _old_sched.shutdown()
             except Exception:
-                continue
-        return False
-
-    def _render_chain_group(group_label: str, group_pullers: list,
-                            show_volume: bool = False) -> None:
-        """Render every puller in a group, filtered to the active chain.
-        Pullers whose TOKENS registry has no entries on the active chain are
-        skipped entirely (e.g. PreStocks on Ethereum/BNB Chain — Solana-only)
-        instead of emitting an empty 'no data yet' panel.
-        If show_volume=True, also render a per-chain Birdeye volume chart
-        above the market-cap chart."""
-        if not group_pullers:
-            st.info(
-                f"No {group_label.lower()} tracked on {scope_label} yet. "
-                "Drop tokens into the group registry to populate this tab.")
-            return
-        active_pullers = [p for p in group_pullers
-                          if _puller_has_chain(p, dl_chain)]
-        if not active_pullers:
-            st.info(
-                f"No {group_label.lower()} deployed on {scope_label} yet. "
-                "Tokens in this group are tracked on other chains only.")
-            return
-        any_data = False
-        for p in active_pullers:
-            heading = getattr(p, "GROUP_LABEL", "") or group_label
-            if show_volume and birdeye_chain:
-                st.subheader(f"{heading} — Trading Volume ({scope_label})")
-                p.render_volume_chain(chain=birdeye_chain)
-            st.subheader(f"{heading} — Market Cap ({scope_label})")
-            st.caption(
-                f"Per-token market cap on {scope_label}. Birdeye first; "
-                "DefiLlama free API supplies multi-chain history where "
-                "Birdeye has no coverage.")
-            p.render_market_cap_chain(chain=dl_chain, stacked=True)
-            any_data = True
-        if not any_data:
-            st.info(f"No {group_label.lower()} data on {scope_label} yet.")
-
-    chain_tabs = st.tabs([
-        "Tokenized stocks",
-        "Tokenized commodities",
-        "Stablecoins",
-        "Treasuries & MMFs",
-    ])
-    with chain_tabs[0]:
-        # xStocks now has Birdeye-native EVM volume (Backed.fi deploys the
-        # same 0x proxy on Ethereum + BSC), so the non-Solana stock tabs get
-        # a real volume chart on top of the per-chain MC chart.
-        _render_chain_group("Tokenized Stocks", stocks_pullers,
-                            show_volume=True)
-    with chain_tabs[1]:
-        # Commodities is the only group with Birdeye-native volume on
-        # Ethereum today (PAXG / XAUT). Other chains will populate once
-        # their addresses are wired into the TOKENS list.
-        _render_chain_group("Tokenized Commodities", commodity_pullers,
-                            show_volume=True)
-    with chain_tabs[2]:
-        # Stablecoins trade in size on Ethereum (USDT/USDC do billions/day),
-        # so the non-Solana tab gets a Birdeye volume chart above MC.
-        if dl_chain is None:
-            # All-chain: render the cross-source aggregate view (DefiLlama
-            # per-chain stacked + CoinGecko top-50 catalog). Skip
-            # _render_chain_group here — its volume sub-chart needs a
-            # specific birdeye chain (which is None on All-chain) and the
-            # per-token MC chart it would render is summed across chains
-            # already covered by the aggregate above. Instead, render just
-            # the per-token MC chart directly under a fresh heading.
-            _render_all_chain_stablecoins()
-            st.divider()
-            st.subheader("Stablecoins Market Cap by Token")
-            st.caption(
-                "Each tracked stablecoin's market cap summed across every "
-                "chain it's deployed on. Useful for comparing token-level "
-                "trajectories that the per-chain stack above doesn't show."
-            )
-            for p in stablecoin_pullers:
-                p.render_market_cap_chain(chain=None, stacked=True)
+                pass
+        _pullers = init_pullers(settings, cache_db)
+        # On Streamlit Cloud the GitHub Actions cron pulls every 6h, so an
+        # in-process APScheduler is duplicate work AND a big memory hog
+        # (each puller holds its TOKENS list + APScheduler holds the whole
+        # scheduler thread + job state). Skip it on Cloud; keep it locally so
+        # `streamlit run` still auto-refreshes data during dev.
+        if _IS_CLOUD:
+            _sched = None
         else:
-            _render_chain_group("Stablecoins", stablecoin_pullers,
+            _sched = PullScheduler(settings)
+            for _p in _pullers:
+                _sched.register(_p)
+            _sched.start()
+        st.session_state["scheduler"]       = _sched
+        st.session_state["pullers"]         = _pullers
+        st.session_state["_pullers_version"] = _PULLERS_VERSION
+
+    scheduler: PullScheduler | None = st.session_state["scheduler"]
+    pullers: List[DataPuller] = st.session_state["pullers"]
+
+    # ── Puller groupings — bind once for the rest of the UI render ───────────────
+    solana_pullers      = [p for p in pullers if getattr(p, "GROUP", "") == "solana_tokens"]
+    stocks_pullers      = [p for p in pullers if getattr(p, "GROUP", "") == "tokenized_stocks"]
+    commodity_pullers   = [p for p in pullers if getattr(p, "GROUP", "") == "tokenized_commodities"]
+    stablecoin_pullers  = [p for p in pullers if getattr(p, "GROUP", "") == "stablecoins"]
+    treasury_pullers    = [p for p in pullers if getattr(p, "GROUP", "") == "treasuries"]
+    usdc_pullers        = [p for p in pullers
+                           if getattr(p, "GROUP", "") not in
+                              ("solana_tokens", "tokenized_stocks", "stablecoins")]
+
+    # ── Auto-refresh ──────────────────────────────────────────────────────────────
+    st_autorefresh(interval=settings.ui_refresh_seconds * 1_000, key="dashboard_refresh")
+
+    # ── Sidebar: chain navigation ─────────────────────────────────────────────────
+    _CHAINS = ["All chain", "Solana", "Ethereum", "BNB Chain", "Base"]
+    with st.sidebar:
+        st.markdown('<p class="peak-nav-title">Chains</p>', unsafe_allow_html=True)
+        selected_chain = st.radio(
+            "Chain", _CHAINS, index=1,
+            label_visibility="collapsed", key="chain_nav",
+        )
+
+    _chain_label = "ALL CHAINS" if selected_chain == "All chain" else selected_chain.upper()
+
+    # ── Top-bar controls — caption + Force Pull, floated next to Deploy ────────────
+    _refresh_disp = (f"{settings.ui_refresh_seconds // 60}m"
+                     if settings.ui_refresh_seconds >= 60
+                     else f"{settings.ui_refresh_seconds}s")
+    st.markdown(
+        f'<span class="peak-sub-anchor"></span>'
+        f'<p class="peak-sub peak-sub-topbar">Refresh <b>{_refresh_disp}</b> · '
+        f'Pull <b>{settings.pull_interval_seconds // 3600}h</b> · '
+        f'<code>{datetime.utcnow().strftime("%H:%M")} UTC</code></p>',
+        unsafe_allow_html=True,
+    )
+    if st.button("⟳ Force Pull", key="force_pull_header",
+                 help="Pull all data sources now"):
+        with st.spinner("Pulling all data sources…"):
+            for _p in pullers:
+                try:
+                    _p.pull()
+                except Exception as _exc:
+                    st.toast(f"Pull failed: {_p.name}", icon="⚠️")
+        st.toast("Force pull complete", icon="✅")
+        st.rerun()
+
+    # ── Header ────────────────────────────────────────────────────────────────────
+    st.markdown(
+        f'<p class="peak-title">RWA DASHBOARD</p>'
+        f'<p class="peak-subtitle">{selected_chain}</p>',
+        unsafe_allow_html=True,
+    )
+    st.divider()
+
+    # ── Combined tokenized-stocks overview helpers ────────────────────────────────
+
+    _STOCKS_PROJECT_COLORS: dict[str, str] = {
+        "PreStocks": "#d2b58f",  # tan/7
+        "xStocks":   "#6F97D5",  # navy/6
+        "Ondo":      "#6FD58F",  # green/6
+    }
+
+
+
+
+    @st.dialog("📋 Raw Data", width="large")
+    @st.dialog("📈 Full Chart", width="large")
+    def _fullscreen_chart() -> None:
+        token_name = st.session_state.get("_fullscreen_token", "")
+        puller = next((p for p in solana_pullers if p.TOKEN_NAME == token_name), None)
+        if puller is None:
+            st.warning("Token not found.")
+            return
+        st.subheader(f"{puller.TOKEN_NAME} — Market Cap & Volume (Solana)")
+        puller.render()
+
+    # Map the sidebar chain label to DefiLlama's chain name (None = aggregate all).
+    _CHAIN_TO_DL = {
+        "Solana":    "Solana",
+        "Ethereum":  "Ethereum",
+        "BNB Chain": "Binance",
+        "Base":      "Base",
+        "All chain": None,
+    }
+
+    if selected_chain != "Solana":
+        # Other chains mirror Solana's tab layout (Tokenized stocks / Commodities /
+        # Stablecoins / Treasuries & MMFs) so future charts have a stable home on
+        # every chain. Each tab renders the chain-filtered MC chart for its group.
+        # Birdeye is queried first (Solana addresses only return on Solana), so
+        # non-Solana series come from DefiLlama. Groups without coverage for the
+        # selected chain show an empty-state message instead of disappearing.
+        dl_chain = _CHAIN_TO_DL.get(selected_chain)
+        scope_label = "all chains" if dl_chain is None else selected_chain
+
+        # Sidebar chain label → Birdeye x-chain value. None when the puller
+        # already infers the chain from each token's address (no extra volume
+        # chart) or when "All chain" is selected.
+        _BIRDEYE_CHAIN = {
+            "Ethereum":  "ethereum",
+            "BNB Chain": "bsc",
+            "Base":      "base",
+        }
+        birdeye_chain = _BIRDEYE_CHAIN.get(selected_chain)
+
+        def _puller_has_chain(puller, chain_canonical: str | None) -> bool:
+            """True if `puller.TOKENS` has at least one entry whose declared
+            chain matches `chain_canonical` (DefiLlama-style name). When
+            `chain_canonical is None` (the All-chain view) returns True so every
+            puller renders. DefiLlama-only coverage doesn't count here — we only
+            suppress pullers whose TOKENS registry doesn't even list the chain."""
+            if not chain_canonical:
+                return True
+            want = chain_canonical.lower()
+            for tok in puller.TOKENS:
+                try:
+                    if puller._token_chain(tok).lower() == want:
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        def _render_chain_group(group_label: str, group_pullers: list,
+                                show_volume: bool = False) -> None:
+            """Render every puller in a group, filtered to the active chain.
+            Pullers whose TOKENS registry has no entries on the active chain are
+            skipped entirely (e.g. PreStocks on Ethereum/BNB Chain — Solana-only)
+            instead of emitting an empty 'no data yet' panel.
+            If show_volume=True, also render a per-chain Birdeye volume chart
+            above the market-cap chart."""
+            if not group_pullers:
+                st.info(
+                    f"No {group_label.lower()} tracked on {scope_label} yet. "
+                    "Drop tokens into the group registry to populate this tab.")
+                return
+            active_pullers = [p for p in group_pullers
+                              if _puller_has_chain(p, dl_chain)]
+            if not active_pullers:
+                st.info(
+                    f"No {group_label.lower()} deployed on {scope_label} yet. "
+                    "Tokens in this group are tracked on other chains only.")
+                return
+            any_data = False
+            for p in active_pullers:
+                heading = getattr(p, "GROUP_LABEL", "") or group_label
+                if show_volume and birdeye_chain:
+                    st.subheader(f"{heading} — Trading Volume ({scope_label})")
+                    p.render_volume_chain(chain=birdeye_chain)
+                st.subheader(f"{heading} — Market Cap ({scope_label})")
+                st.caption(
+                    f"Per-token market cap on {scope_label}. Birdeye first; "
+                    "DefiLlama free API supplies multi-chain history where "
+                    "Birdeye has no coverage.")
+                p.render_market_cap_chain(chain=dl_chain, stacked=True)
+                any_data = True
+            if not any_data:
+                st.info(f"No {group_label.lower()} data on {scope_label} yet.")
+
+        chain_tabs = st.tabs([
+            "Tokenized stocks",
+            "Tokenized commodities",
+            "Stablecoins",
+            "Treasuries & MMFs",
+        ])
+        with chain_tabs[0]:
+            # xStocks now has Birdeye-native EVM volume (Backed.fi deploys the
+            # same 0x proxy on Ethereum + BSC), so the non-Solana stock tabs get
+            # a real volume chart on top of the per-chain MC chart.
+            _render_chain_group("Tokenized Stocks", stocks_pullers,
                                 show_volume=True)
-    with chain_tabs[3]:
-        _render_chain_group("Treasuries & MMFs", treasury_pullers)
-    st.stop()
+        with chain_tabs[1]:
+            # Commodities is the only group with Birdeye-native volume on
+            # Ethereum today (PAXG / XAUT). Other chains will populate once
+            # their addresses are wired into the TOKENS list.
+            _render_chain_group("Tokenized Commodities", commodity_pullers,
+                                show_volume=True)
+        with chain_tabs[2]:
+            # Stablecoins trade in size on Ethereum (USDT/USDC do billions/day),
+            # so the non-Solana tab gets a Birdeye volume chart above MC.
+            if dl_chain is None:
+                # All-chain: render the cross-source aggregate view (DefiLlama
+                # per-chain stacked + CoinGecko top-50 catalog). Skip
+                # _render_chain_group here — its volume sub-chart needs a
+                # specific birdeye chain (which is None on All-chain) and the
+                # per-token MC chart it would render is summed across chains
+                # already covered by the aggregate above. Instead, render just
+                # the per-token MC chart directly under a fresh heading.
+                _render_all_chain_stablecoins()
+                st.divider()
+                st.subheader("Stablecoins Market Cap by Token")
+                st.caption(
+                    "Each tracked stablecoin's market cap summed across every "
+                    "chain it's deployed on. Useful for comparing token-level "
+                    "trajectories that the per-chain stack above doesn't show."
+                )
+                for p in stablecoin_pullers:
+                    p.render_market_cap_chain(chain=None, stacked=True)
+            else:
+                _render_chain_group("Stablecoins", stablecoin_pullers,
+                                    show_volume=True)
+        with chain_tabs[3]:
+            _render_chain_group("Treasuries & MMFs", treasury_pullers)
+        st.stop()
 
-tab_stocks, tab_commodities, tab_stablecoins, tab_treasuries = st.tabs(
-    ["Tokenized stocks", "Tokenized commodities", "Stablecoins", "Treasuries & MMFs"])
+    tab_stocks, tab_commodities, tab_stablecoins, tab_treasuries = st.tabs(
+        ["Tokenized stocks", "Tokenized commodities", "Stablecoins", "Treasuries & MMFs"])
 
-with tab_stocks:
-    if not stocks_pullers:
-        st.info("No tokenized stock group pullers registered.")
-    else:
-        # ── Combined overview: all projects in one chart ───────────────────
-        st.subheader("All Tokenized Stocks — Volume by Project")
-        combined_df = _combined_stocks_df(stocks_pullers)
-        if combined_df is None:
-            st.info("Waiting for first pull…")
+    with tab_stocks:
+        if not stocks_pullers:
+            st.info("No tokenized stock group pullers registered.")
         else:
-            labels = [p.GROUP_LABEL for p in stocks_pullers]
-            _raw = combined_df.copy()
-            _present = [l for l in labels if l in _raw.columns]
-            _raw["Total"] = _raw[_present].fillna(0).sum(axis=1)
-            _fmt = {col: "${:,.0f}" for col in _present + ["Total"]}
+            # ── Combined overview: all projects in one chart ───────────────────
+            st.subheader("All Tokenized Stocks — Volume by Project")
+            combined_df = _combined_stocks_df(stocks_pullers)
+            if combined_df is None:
+                st.info("Waiting for first pull…")
+            else:
+                labels = [p.GROUP_LABEL for p in stocks_pullers]
+                _raw = combined_df.copy()
+                _present = [l for l in labels if l in _raw.columns]
+                _raw["Total"] = _raw[_present].fillna(0).sum(axis=1)
+                _fmt = {col: "${:,.0f}" for col in _present + ["Total"]}
 
-            with st.container(key="combined_chart"):
-                # Raw-data icon — pinned onto the tab row, far right (see CSS)
-                if st.button("📋", key="raw_combined_stocks", help="View raw data"):
-                    _raw_data_modal(_raw.sort_values("date", ascending=False), _fmt)
-                ctab_d, ctab_w, ctab_m = st.tabs(["Daily", "Weekly", "Monthly"])
-                with ctab_d:
-                    _chart(
-                        _build_combined_stocks_fig(combined_df, labels, "D", 380),
-                        use_container_width=True,
-                    )
-                with ctab_w:
-                    _chart(
-                        _build_combined_stocks_fig(combined_df, labels, "W", 380),
-                        use_container_width=True,
-                    )
-                with ctab_m:
-                    _chart(
-                        _build_combined_stocks_fig(combined_df, labels, "M", 380),
-                        use_container_width=True,
-                    )
-        st.divider()
-
-        # ── Per-group breakdowns — 2 per row ──────────────────────────────
-        for row_start in range(0, len(stocks_pullers), 2):
-            col_a, col_b = st.columns(2, gap="medium")
-            for col, p in zip(
-                (col_a, col_b),
-                stocks_pullers[row_start : row_start + 2],
-            ):
-                with col:
-                    st.subheader(p.GROUP_LABEL)
-                    # Chain-aware renderer reads the chain-suffixed vol col
-                    # and dedupes by symbol, so multi-chain TOKENS entries
-                    # (e.g. xStocks / Ondo on Solana + Ethereum + BSC) don't
-                    # produce duplicate columns or pollute the Solana chart
-                    # with EVM volume data. clip_outliers suppresses
-                    # Birdeye v_usd glitch days (>10× per-token median).
-                    p.render_volume_chain(chain="solana",
-                                          clip_outliers=True)
+                with st.container(key="combined_chart"):
+                    # Raw-data icon — pinned onto the tab row, far right (see CSS)
+                    if st.button("📋", key="raw_combined_stocks", help="View raw data"):
+                        _raw_data_modal(_raw.sort_values("date", ascending=False), _fmt)
+                    ctab_d, ctab_w, ctab_m = st.tabs(["Daily", "Weekly", "Monthly"])
+                    with ctab_d:
+                        _chart(
+                            _build_combined_stocks_fig(combined_df, labels, "D", 380),
+                            use_container_width=True,
+                        )
+                    with ctab_w:
+                        _chart(
+                            _build_combined_stocks_fig(combined_df, labels, "W", 380),
+                            use_container_width=True,
+                        )
+                    with ctab_m:
+                        _chart(
+                            _build_combined_stocks_fig(combined_df, labels, "M", 380),
+                            use_container_width=True,
+                        )
             st.divider()
 
-with tab_commodities:
-    if not commodity_pullers:
-        st.info("No tokenized commodity pullers registered.")
-    else:
-        for p in commodity_pullers:
-            st.subheader(f"{p.GROUP_LABEL} — Trading Volume (Solana)")
-            # Restrict to Solana-native tokens so the Ethereum-only PAXG /
-            # XAUT entries (which carry Birdeye Ethereum volume, not Solana)
-            # don't pollute this stack. clip_outliers suppresses Birdeye
-            # v_usd glitch days (>10× per-token median).
-            p.render_volume_chain(chain="solana", clip_outliers=True)
+            # ── Per-group breakdowns — 2 per row ──────────────────────────────
+            for row_start in range(0, len(stocks_pullers), 2):
+                col_a, col_b = st.columns(2, gap="medium")
+                for col, p in zip(
+                    (col_a, col_b),
+                    stocks_pullers[row_start : row_start + 2],
+                ):
+                    with col:
+                        st.subheader(p.GROUP_LABEL)
+                        # Chain-aware renderer reads the chain-suffixed vol col
+                        # and dedupes by symbol, so multi-chain TOKENS entries
+                        # (e.g. xStocks / Ondo on Solana + Ethereum + BSC) don't
+                        # produce duplicate columns or pollute the Solana chart
+                        # with EVM volume data. clip_outliers suppresses
+                        # Birdeye v_usd glitch days (>10× per-token median).
+                        p.render_volume_chain(chain="solana",
+                                              clip_outliers=True)
+                st.divider()
 
-            st.subheader(f"{p.GROUP_LABEL} — Market Cap by Token")
-            st.caption(
-                "Solana-only market cap per token, stacked. Sourced from "
-                "DefiLlama (XAUM) plus Solscan-seeded history for GOLD / "
-                "VNXAU / PAXG-bridge / XAUt0 and same-day Birdeye Token "
-                "Overview snapshots — total band height = total tokenized "
-                "gold MC on Solana."
-            )
-            p.render_market_cap_chain(chain="Solana", stacked=True)
+    with tab_commodities:
+        if not commodity_pullers:
+            st.info("No tokenized commodity pullers registered.")
+        else:
+            for p in commodity_pullers:
+                st.subheader(f"{p.GROUP_LABEL} — Trading Volume (Solana)")
+                # Restrict to Solana-native tokens so the Ethereum-only PAXG /
+                # XAUT entries (which carry Birdeye Ethereum volume, not Solana)
+                # don't pollute this stack. clip_outliers suppresses Birdeye
+                # v_usd glitch days (>10× per-token median).
+                p.render_volume_chain(chain="solana", clip_outliers=True)
 
-with tab_stablecoins:
-    if not stablecoin_pullers:
-        st.info("No stablecoin pullers registered.")
-    else:
-        for p in stablecoin_pullers:
-            st.subheader(f"{p.GROUP_LABEL} — Market Cap (Solana)")
-            st.caption(
-                "Solana-only market cap per token, stacked. Sourced from "
-                "DefiLlama (free API, daily history) plus the Solscan-derived "
-                "seed JSONs and same-day Birdeye Token Overview snapshots."
-            )
-            # Chain-aware renderer reads mc_<sym>_solana_usd (DefiLlama +
-            # seed + Birdeye snapshot all converge into this col) and dedupes
-            # by symbol so multi-chain TOKENS entries don't break the chart.
-            p.render_market_cap_chain(chain="Solana", stacked=True)
+                st.subheader(f"{p.GROUP_LABEL} — Market Cap by Token")
+                st.caption(
+                    "Solana-only market cap per token, stacked. Sourced from "
+                    "DefiLlama (XAUM) plus Solscan-seeded history for GOLD / "
+                    "VNXAU / PAXG-bridge / XAUt0 and same-day Birdeye Token "
+                    "Overview snapshots — total band height = total tokenized "
+                    "gold MC on Solana."
+                )
+                p.render_market_cap_chain(chain="Solana", stacked=True)
 
-            # Split the volume view: USDC's cross-pair v_usd dwarfs every
-            # other Solana stable by 10-100×, flattening the rest into the
-            # x-axis. Render two stacks so both views are readable. The USDC
-            # chart also clips Birdeye-glitch days (>10× global median) so
-            # the late-Dec-2024 / early-Jan-2025 outlier cluster doesn't
-            # squash the rest of the series visually.
-            st.subheader(f"{p.GROUP_LABEL} — USDC + USDT Daily Trading Volume (Solana)")
-            st.caption(
-                "USDC + USDT stacked · Birdeye OHLCV V3, v_usd, daily · "
-                "outlier days (>25× median) suppressed for readability — "
-                "keeps the legit Jan 18-20 2025 TRUMP-launch burst (~20×)."
-            )
-            p.render_volume_chain(chain="solana",
-                                  include_tokens={"USDC", "USDT"},
-                                  key_suffix="usdc_usdt",
-                                  clip_outliers=True)
+    with tab_stablecoins:
+        if not stablecoin_pullers:
+            st.info("No stablecoin pullers registered.")
+        else:
+            for p in stablecoin_pullers:
+                st.subheader(f"{p.GROUP_LABEL} — Market Cap (Solana)")
+                st.caption(
+                    "Solana-only market cap per token, stacked. Sourced from "
+                    "DefiLlama (free API, daily history) plus the Solscan-derived "
+                    "seed JSONs and same-day Birdeye Token Overview snapshots."
+                )
+                # Chain-aware renderer reads mc_<sym>_solana_usd (DefiLlama +
+                # seed + Birdeye snapshot all converge into this col) and dedupes
+                # by symbol so multi-chain TOKENS entries don't break the chart.
+                p.render_market_cap_chain(chain="Solana", stacked=True)
 
-            st.subheader(f"{p.GROUP_LABEL} — Other Stables Daily Trading Volume (Solana)")
-            st.caption(
-                "Everything except USDC + USDT, stacked · Birdeye OHLCV V3, "
-                "v_usd, daily · outlier days (>25× per-token median) suppressed."
-            )
-            p.render_volume_chain(chain="solana",
-                                  exclude_tokens={"USDC", "USDT"},
-                                  key_suffix="others",
-                                  clip_outliers=True)
+                # Split the volume view: USDC's cross-pair v_usd dwarfs every
+                # other Solana stable by 10-100×, flattening the rest into the
+                # x-axis. Render two stacks so both views are readable. The USDC
+                # chart also clips Birdeye-glitch days (>10× global median) so
+                # the late-Dec-2024 / early-Jan-2025 outlier cluster doesn't
+                # squash the rest of the series visually.
+                st.subheader(f"{p.GROUP_LABEL} — USDC + USDT Daily Trading Volume (Solana)")
+                st.caption(
+                    "USDC + USDT stacked · Birdeye OHLCV V3, v_usd, daily · "
+                    "outlier days (>25× median) suppressed for readability — "
+                    "keeps the legit Jan 18-20 2025 TRUMP-launch burst (~20×)."
+                )
+                p.render_volume_chain(chain="solana",
+                                      include_tokens={"USDC", "USDT"},
+                                      key_suffix="usdc_usdt",
+                                      clip_outliers=True)
 
-with tab_treasuries:
-    if not treasury_pullers:
-        st.info("No treasury pullers registered.")
-    else:
-        for p in treasury_pullers:
-            st.subheader(f"{p.GROUP_LABEL} — Market Cap (Solana)")
-            st.caption(
-                "Per-token market cap on Solana, from DefiLlama's free API "
-                "(daily history). These tokens have no on-chain trading "
-                "activity tracked; only market cap is shown. Pick a different "
-                "chain in the sidebar to see the same data for that chain."
-            )
-            p.render_market_cap_chain(chain="Solana", stacked=True)
+                st.subheader(f"{p.GROUP_LABEL} — Other Stables Daily Trading Volume (Solana)")
+                st.caption(
+                    "Everything except USDC + USDT, stacked · Birdeye OHLCV V3, "
+                    "v_usd, daily · outlier days (>25× per-token median) suppressed."
+                )
+                p.render_volume_chain(chain="solana",
+                                      exclude_tokens={"USDC", "USDT"},
+                                      key_suffix="others",
+                                      clip_outliers=True)
+
+    with tab_treasuries:
+        if not treasury_pullers:
+            st.info("No treasury pullers registered.")
+        else:
+            for p in treasury_pullers:
+                st.subheader(f"{p.GROUP_LABEL} — Market Cap (Solana)")
+                st.caption(
+                    "Per-token market cap on Solana, from DefiLlama's free API "
+                    "(daily history). These tokens have no on-chain trading "
+                    "activity tracked; only market cap is shown. Pick a different "
+                    "chain in the sidebar to see the same data for that chain."
+                )
+                p.render_market_cap_chain(chain="Solana", stacked=True)
 

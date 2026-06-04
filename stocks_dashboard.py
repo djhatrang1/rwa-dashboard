@@ -1229,6 +1229,180 @@ def _fetch_dl_stablecoin(stable_id: int) -> dict:
         return out
 
 
+# ── All-chain stablecoins aggregate (DefiLlama per-chain + CoinGecko catalog) ──
+# These power the All-chain → Stablecoins tab. Both sources are cached server-
+# side (TTL=1h via @st.cache_data) — stablecoin chain totals only move a few
+# percent intra-day, and the existing 4h GitHub Actions pull cron doesn't touch
+# these endpoints. CoinGecko Pro is required for the catalog (free tier rate-
+# limits would knock /coins/markets calls out of any meaningful TTL window).
+
+# Top chains we render in the stacked-area breakdown. Picked by DefiLlama
+# /stablecoincharts/{chain} current totals — these 10 cover ~95% of stablecoin
+# MC on chains DefiLlama tracks. Order is intentional: largest at the bottom
+# of the stack so smaller chains read on top. Tron's chart endpoint reports
+# only ~$1.4B vs the $90B in its /stablecoins catalog because DefiLlama's per-
+# chain chart counts USDT-Tron under a different chain alias (a known platform
+# quirk — see DefiLlama's stablecoin bridging tracker for the breakdown).
+_ALL_CHAIN_STABLE_TOP = [
+    "Ethereum", "Solana", "Hyperliquid L1", "BSC", "Base",
+    "Arbitrum", "Polygon", "Tron", "Avalanche", "Aptos",
+]
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_stablecoin_chain_chart(chain: str) -> pd.DataFrame:
+    """DefiLlama /stablecoincharts/{chain} → DataFrame[date, mc_usd]. Returns
+    an empty DataFrame on any error so callers can skip the chain without
+    blowing up the whole stack."""
+    try:
+        r = requests.get(
+            f"https://stablecoins.llama.fi/stablecoincharts/{chain}", timeout=30)
+        r.raise_for_status()
+        pts = r.json() or []
+    except Exception as exc:
+        log.warning("DefiLlama stablecoincharts/%s failed: %s", chain, exc)
+        return pd.DataFrame(columns=["date", "mc_usd"])
+    rows = []
+    for p in pts:
+        try:
+            d  = pd.to_datetime(int(p["date"]), unit="s").strftime("%Y-%m-%d")
+            mc = float((p.get("totalCirculatingUSD") or {}).get("peggedUSD") or 0)
+            if mc > 0:
+                rows.append({"date": d, "mc_usd": mc})
+        except (KeyError, TypeError, ValueError):
+            continue
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_cg_stablecoins_catalog(per_page: int = 50) -> pd.DataFrame:
+    """CoinGecko Pro /coins/markets?category=stablecoins → top-N catalog.
+    Empty DataFrame if no API key is configured or the call fails."""
+    key = settings.coingecko_api_key
+    if not key:
+        return pd.DataFrame()
+    try:
+        r = requests.get(
+            "https://pro-api.coingecko.com/api/v3/coins/markets",
+            params={"vs_currency": "usd", "category": "stablecoins",
+                    "order": "market_cap_desc", "per_page": per_page, "page": 1,
+                    "sparkline": "false"},
+            headers={"x-cg-pro-api-key": key}, timeout=30)
+        r.raise_for_status()
+        rows = r.json() or []
+    except Exception as exc:
+        log.warning("CoinGecko stablecoins catalog fetch failed: %s", exc)
+        return pd.DataFrame()
+    df = pd.DataFrame([{
+        "rank":             c.get("market_cap_rank"),
+        "symbol":           (c.get("symbol") or "").upper(),
+        "name":             c.get("name"),
+        "market_cap_usd":   c.get("market_cap") or 0,
+        "vol_24h_usd":      c.get("total_volume") or 0,
+        "price_usd":        c.get("current_price") or 0,
+        "mc_change_24h_pct": c.get("market_cap_change_percentage_24h") or 0,
+    } for c in rows])
+    return df
+
+
+def _render_all_chain_stablecoins() -> None:
+    """The new All-chain → Stablecoins composite view. Three blocks:
+      1. Headline metric — total stablecoin MC on the top tracked chains
+      2. Per-chain stacked area chart — historical MC split by chain
+      3. CoinGecko top-50 catalog table — global MC + 24h vol per stablecoin
+    Data sources: DefiLlama per-chain historical, CoinGecko Pro for catalog."""
+    # ── Pull per-chain frames (concurrent-safe via @st.cache_data) ─────────
+    chain_frames: dict[str, pd.DataFrame] = {}
+    with st.spinner("Loading stablecoin chain history…"):
+        for ch in _ALL_CHAIN_STABLE_TOP:
+            df = _fetch_stablecoin_chain_chart(ch)
+            if not df.empty:
+                chain_frames[ch] = df
+
+    if not chain_frames:
+        st.warning("DefiLlama stablecoin endpoints returned no data — try again "
+                   "in a moment (their stablecoins.llama.fi host sometimes 5xxs).")
+        return
+
+    # ── Wide frame: one column per chain ───────────────────────────────────
+    wide = None
+    for ch, df in chain_frames.items():
+        renamed = df.rename(columns={"mc_usd": f"mc_{ch}_usd"})
+        renamed["date"] = pd.to_datetime(renamed["date"])
+        wide = renamed if wide is None else wide.merge(renamed, on="date", how="outer")
+    wide = wide.sort_values("date").reset_index(drop=True)
+
+    # ── Headline metric: latest total across tracked chains ────────────────
+    mc_cols = [c for c in wide.columns if c.startswith("mc_") and c.endswith("_usd")]
+    latest_row = wide.iloc[-1]
+    total_latest = float(latest_row[mc_cols].sum())
+    prev_row = wide.iloc[-2] if len(wide) > 1 else latest_row
+    delta = total_latest - float(prev_row[mc_cols].sum())
+    pct = (delta / float(prev_row[mc_cols].sum()) * 100) if prev_row[mc_cols].sum() else 0
+    st.metric(
+        f"Total stablecoin MC on top {len(chain_frames)} chains",
+        f"${total_latest/1e9:.2f}B",
+        delta=f"{'+' if delta >= 0 else ''}${delta/1e9:.2f}B  ({pct:+.2f}%)",
+    )
+
+    # ── Stacked area: per-chain breakdown over time ────────────────────────
+    st.subheader("Stablecoin Market Cap by Chain — Stacked Historical")
+    st.caption(
+        "Per-chain stablecoin circulating supply, sourced from "
+        "DefiLlama `/stablecoincharts/{chain}`. Top 10 chains by latest MC "
+        "shown stacked; bottom layer is the largest chain. CoinGecko doesn't "
+        "expose a per-chain split, so this view uses DefiLlama exclusively. "
+        "Tron under-reports here vs its catalog total (~$90B) — DefiLlama's "
+        "per-chain endpoint counts USDT-Tron under a different chain bucket."
+    )
+    fig = go.Figure()
+    # Sort chains by latest MC so the stack reads largest-at-bottom
+    sorted_chains = sorted(chain_frames.keys(),
+                           key=lambda c: -float(latest_row.get(f"mc_{c}_usd", 0) or 0))
+    palette = ["#FF8C42", "#5BC0EB", "#7DCE82", "#9B5DE5", "#F15BB5",
+               "#FEE440", "#00BBF9", "#00F5D4", "#FB8B24", "#A4036F"]
+    for i, ch in enumerate(sorted_chains):
+        col = f"mc_{ch}_usd"
+        y = wide[col].ffill().fillna(0.0)
+        fig.add_trace(go.Scatter(
+            x=wide["date"], y=y, name=ch,
+            mode="lines", line=dict(width=0.8, color=palette[i % len(palette)]),
+            stackgroup="stables", hoverinfo="x+y+name",
+        ))
+    fig.update_layout(
+        height=460, hovermode="x unified",
+        margin=dict(t=10, b=10, l=10, r=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1),
+        yaxis=dict(title_text="Market Cap (USD)", tickprefix="$",
+                   tickformat="~s", showgrid=True, rangemode="tozero"),
+    )
+    _chart(fig, use_container_width=True)
+
+    # ── CoinGecko top-N table ──────────────────────────────────────────────
+    st.subheader("Top Stablecoins by Global Market Cap")
+    st.caption(
+        "Source: CoinGecko Pro `/coins/markets?category=stablecoins`. "
+        "MC is **global** (summed across every chain the token is deployed on); "
+        "for the per-chain split see the stacked chart above."
+    )
+    cat = _fetch_cg_stablecoins_catalog(per_page=50)
+    if cat.empty:
+        st.info("CoinGecko catalog unavailable — verify COINGECKO_API_KEY is set "
+                "and the Pro key is valid.")
+        return
+    # Render as a sortable dataframe with formatted columns
+    cat_disp = cat.copy()
+    cat_disp["MC"]       = cat_disp["market_cap_usd"].map(lambda v: f"${v/1e9:.2f}B")
+    cat_disp["24h Vol"]  = cat_disp["vol_24h_usd"].map(lambda v: f"${v/1e9:.2f}B")
+    cat_disp["Price"]    = cat_disp["price_usd"].map(lambda v: f"${v:,.4f}")
+    cat_disp["24h Δ %"]  = cat_disp["mc_change_24h_pct"].map(lambda v: f"{v:+.2f}%")
+    st.dataframe(
+        cat_disp[["rank","symbol","name","MC","24h Vol","Price","24h Δ %"]]
+            .rename(columns={"rank":"Rank","symbol":"Symbol","name":"Name"}),
+        use_container_width=True, hide_index=True, height=520,
+    )
+
+
 def _apply_time_controls(fig: go.Figure) -> go.Figure:
     """Attach a date rangeslider + quick-range buttons (1M/3M/6M/YTD/1Y/All)
     to a time-series Plotly figure so viewers can scope the visible window
@@ -4348,7 +4522,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v38-coingecko-pro"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v39-allchain-stables"
 
 _need_init = (
     "scheduler" not in st.session_state
@@ -4657,6 +4831,20 @@ if selected_chain != "Solana":
     with chain_tabs[2]:
         # Stablecoins trade in size on Ethereum (USDT/USDC do billions/day),
         # so the non-Solana tab gets a Birdeye volume chart above MC.
+        # When viewing All-chain, prepend the cross-source aggregate view
+        # (DefiLlama per-chain stacked + CoinGecko top-50 catalog) above the
+        # per-token detail rendering. The single-chain views skip this since
+        # the same data would be redundant with the per-chain stacked chart
+        # already rendered above them.
+        if dl_chain is None:
+            _render_all_chain_stablecoins()
+            st.divider()
+            st.subheader("Per-token detail — tracked stablecoins")
+            st.caption(
+                "The 9 hand-tracked stablecoins we follow per-chain in this "
+                "dashboard (USDC, USDT, PYUSD, USDe, USD1, USDG, CASH, "
+                "JupUSD, USDS) shown summed across every chain they're on."
+            )
         _render_chain_group("Stablecoins", stablecoin_pullers,
                             show_volume=True)
     with chain_tabs[3]:

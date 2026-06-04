@@ -287,10 +287,32 @@ def _render_sol_token() -> None:
     sd._chart(fig_p, use_container_width=True)
 
     st.subheader("Daily Trading Volume (USD)")
-    st.caption("Source: Birdeye OHLCV V3 v_usd · all venues aggregated")
+    st.caption(
+        "Source: Birdeye OHLCV V3 v_usd · all venues aggregated · outlier "
+        "days suppressed (>50× global median) — catches Birdeye v_usd "
+        "glitches like 2023-01-03 reporting \\$41T (50,466× median) and "
+        "the Apr-2026 \\$89-440B cluster; preserves the Jan 18-20 2025 "
+        "TRUMP-launch burst (~32× median, real)."
+    )
+    # Reuse the puller's static outlier clipper but disable the
+    # min_retained guard for SOL. The default (0.5) protects sparse-but-
+    # real distributions (e.g. USDe stablecoin with low median + occasional
+    # legit burst days). SOL has the OPPOSITE problem: one absurd Birdeye
+    # glitch day (2023-01-03 reported \$41T, 50,466× median) is so massive
+    # it singlehandedly accounts for >97% of total cumulative v_usd, so
+    # clipping it would leave <50% retained → guard would trip and
+    # preserve the glitch. Forcing min_retained=0 lets the clip do its job.
+    # factor=50 (vs the 25 we use on stablecoin/commodity charts) is the
+    # right cutoff for SOL: catches the 2023-01-03 glitch (\$41T = 50,466×
+    # median) + the suspect April-2026 cluster (\$89B-\$440B, 100-536×),
+    # but preserves the legit Jan 18-20 2025 TRUMP-launch burst (\$24B-
+    # \$33B = 29-40× median). On a token with this much real daily volume
+    # variance, the tighter 25× threshold would over-clip.
+    v_clipped = sd.TokenGroupMetricsPuller._clip_outliers(
+        ohlcv["v_usd"], factor=50.0, min_retained=0.0)
     fig_v = _go.Figure()
     fig_v.add_trace(_go.Bar(
-        x=ohlcv["date"], y=ohlcv["v_usd"], name="Volume",
+        x=ohlcv["date"], y=v_clipped, name="Volume",
         marker_color="#14F195", opacity=0.85,
         hovertemplate="%{y:$,.0f}<extra>v_usd</extra>",
     ))

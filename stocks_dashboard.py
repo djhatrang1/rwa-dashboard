@@ -4655,6 +4655,15 @@ def _build_combined_stocks_fig(df: pd.DataFrame, labels: list[str],
     return fig
 
 
+# Per-project line color for the combined stocks chart (module-level so
+# _build_combined_stocks_fig can reach it from anywhere).
+_STOCKS_PROJECT_COLORS: dict[str, str] = {
+    "PreStocks": "#d2b58f",  # tan/7
+    "xStocks":   "#6F97D5",  # navy/6
+    "Ondo":      "#6FD58F",  # green/6
+}
+
+
 # ── Raw-data modal (module-level so solana_dashboard.py can import it) ───────
 def _raw_data_modal(df: pd.DataFrame, fmt: dict) -> None:
     st.dataframe(df.style.format(fmt), use_container_width=True)
@@ -4664,7 +4673,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict) -> None:
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v48-lib-mode"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v49-lib-mode-colors"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────
@@ -4945,11 +4954,7 @@ if __name__ == "__main__":
 
     # ── Combined tokenized-stocks overview helpers ────────────────────────────────
 
-    _STOCKS_PROJECT_COLORS: dict[str, str] = {
-        "PreStocks": "#d2b58f",  # tan/7
-        "xStocks":   "#6F97D5",  # navy/6
-        "Ondo":      "#6FD58F",  # green/6
-    }
+    # Moved to module level — see _STOCKS_PROJECT_COLORS def above the guard.
 
 
 

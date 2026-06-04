@@ -475,26 +475,153 @@ def _render_stablecoins() -> None:
                               clip_outliers=True)
 
 
-# ── Foreign L1 tokens vertical — bridged/wrapped assets from other chains ────
-def _render_foreign_l1() -> None:
-    """Foreign L1 / L2 tokens deployed on Solana (Wormhole / Coinbase /
-    LayerZero / native bridges). Revives the dormant `_SOLANA_TOKENS`
-    registry from the original sop_base.py — 12 tokens spanning every
-    major chain that has a Solana presence (WETH, HYPE, ZEC, MON, cbBTC,
-    WBTC, AVAX, STRK, WBNB, ZORA, NEAR, TRX).
+# ── Foreign L1 tokens vertical — grouped by underlying asset class ────────────
+# Group by what the underlying asset IS, not the bridge tech. Same Bitcoin
+# represented two ways (cbBTC + WBTC) lives in BTC; WETH alone in ETH; every
+# other foreign L1 native (HYPE/ZEC/MON/AVAX/STRK/WBNB/ZORA/NEAR/TRX) goes
+# into Others. Each group renders as MC stack + volume stack, 2 cols.
+_FOREIGN_L1_GROUPS: list[tuple[str, list[str]]] = [
+    ("BTC",    ["cbBTC", "WBTC"]),
+    ("ETH",    ["WETH"]),
+    ("Others", ["HYPE", "ZEC", "MON", "AVAX", "STRK",
+                "WBNB", "ZORA", "NEAR", "TRX"]),
+]
+# Per-token color so the same token reads the same in both charts within a
+# section. Tunable; defaults to a 10-color palette cycle for unknowns.
+_FOREIGN_L1_COLORS: dict[str, str] = {
+    "cbBTC": "#F7931A", "WBTC":  "#FF8C42",            # BTC oranges
+    "WETH":  "#627EEA",                                 # Ethereum blue
+    "HYPE":  "#9945FF", "ZEC":   "#FEE440",            # Others — diverse hues
+    "MON":   "#5BC0EB", "AVAX":  "#E84142", "STRK":  "#7DCE82",
+    "WBNB":  "#F3BA2F", "ZORA":  "#A4036F", "NEAR":  "#00C08B",
+    "TRX":   "#FF060A",
+}
 
-    Layout: 2-column grid of compact charts, each with the token's
-    headline metrics (price · MC · 24h vol) above a 300px daily OHLCV
-    chart. Per-puller render() is the full version (3-tab D/W/M); this
-    uses render_compact() so 12 tokens fit on one scrollable page."""
+
+def _build_foreign_l1_group_charts(group_label: str, pullers: list) -> None:
+    """For one group of foreign-L1 pullers, render a stacked-area MC chart
+    in the left column and a stacked-bar daily-volume chart in the right
+    column. Both share x-axis (date) and aggregate across group members.
+    Empty pullers are skipped silently — a group with zero ready pullers
+    emits an info message instead of two blank charts."""
+    # Pull each member's daily series and align on date via outer-join merge.
+    frames: dict[str, _pd.DataFrame] = {}
+    for p in pullers:
+        df = p.get_latest()
+        if df is None or df.empty:
+            continue
+        df = df[["date", "market_cap_usd", "volume_usd"]].copy()
+        df["date"] = _pd.to_datetime(df["date"])
+        frames[p.TOKEN_NAME] = df
+    if not frames:
+        st.info(
+            f"No {group_label} group data cached yet. "
+            "Trigger a pull via `PULL_GROUP=solana_tokens "
+            "python scripts/run_pull.py`."
+        )
+        return
+
+    # Build a wide frame: one mc_<sym> + one vol_<sym> column per token.
+    wide = None
+    for sym, df in frames.items():
+        renamed = df.rename(columns={
+            "market_cap_usd": f"mc_{sym}", "volume_usd": f"vol_{sym}",
+        })
+        wide = renamed if wide is None else wide.merge(renamed, on="date", how="outer")
+    wide = wide.sort_values("date").reset_index(drop=True)
+
+    mc_cols  = [f"mc_{s}"  for s in frames]
+    vol_cols = [f"vol_{s}" for s in frames]
+    # Drop leading rows where every token is NaN (before any group member
+    # had data). Trims the x-axis to the first day at least one token was live.
+    keep = wide[mc_cols].notna().any(axis=1)
+    wide = wide.loc[keep].reset_index(drop=True)
+
+    col_left, col_right = st.columns(2, gap="medium")
+
+    # ── Left: stacked-area MC ───────────────────────────────────────────
+    with col_left:
+        st.markdown(f"**{group_label} — Aggregated Market Cap**")
+        fig_mc = _go.Figure()
+        totals_mc = wide[mc_cols].ffill().fillna(0).sum(axis=1)
+        for sym in frames:
+            color = _FOREIGN_L1_COLORS.get(sym, "#888888")
+            y = wide[f"mc_{sym}"].ffill().fillna(0.0)
+            fig_mc.add_trace(_go.Scatter(
+                x=wide["date"], y=y, name=sym,
+                mode="lines", line=dict(width=0.8, color=color),
+                stackgroup="mc", hoverinfo="x+y+name",
+                customdata=y.map(sd._fmt_usd),
+                hovertemplate=f"{sym}: %{{customdata}}<extra></extra>",
+            ))
+        # Invisible Total trace → 'Total: $X.XB' line in unified hover.
+        fig_mc.add_trace(_go.Scatter(
+            x=wide["date"], y=totals_mc, name="Total",
+            mode="lines", line=dict(width=0, color="rgba(0,0,0,0)"),
+            showlegend=False, stackgroup=None,
+            customdata=totals_mc.map(sd._fmt_usd),
+            hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+        ))
+        y_max_mc = float(totals_mc.max() or 0)
+        fig_mc.update_layout(
+            height=360, hovermode="x unified",
+            margin=dict(t=10, b=10, l=10, r=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                        xanchor="right", x=1),
+            yaxis=dict(showgrid=True, rangemode="tozero",
+                       range=[0, y_max_mc * 1.10] if y_max_mc > 0 else None),
+        )
+        sd._chart(fig_mc, use_container_width=True)
+
+    # ── Right: stacked-bar daily volume ─────────────────────────────────
+    with col_right:
+        st.markdown(f"**{group_label} — Aggregated Daily Volume**")
+        fig_v = _go.Figure()
+        totals_v = wide[vol_cols].fillna(0).sum(axis=1).replace(0, float("nan"))
+        for sym in frames:
+            color = _FOREIGN_L1_COLORS.get(sym, "#888888")
+            # Replace 0s with NaN so the bar doesn't render — Plotly draws
+            # a 0-height tick mark otherwise that visually fills the day.
+            y = wide[f"vol_{sym}"].replace(0, float("nan"))
+            fig_v.add_trace(_go.Bar(
+                x=wide["date"], y=y, name=sym,
+                marker_color=color, opacity=0.8,
+                customdata=y.map(sd._fmt_usd),
+                hovertemplate=f"{sym}: %{{customdata}}<extra></extra>",
+            ))
+        fig_v.add_trace(_go.Scatter(
+            x=wide["date"], y=totals_v, name="Total",
+            mode="lines", line=dict(width=0, color="rgba(0,0,0,0)"),
+            showlegend=False,
+            customdata=totals_v.map(sd._fmt_usd),
+            hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+        ))
+        y_max_v = float(totals_v.max() or 0)
+        fig_v.update_layout(
+            height=360, hovermode="x unified", barmode="stack",
+            margin=dict(t=10, b=10, l=10, r=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                        xanchor="right", x=1),
+            yaxis=dict(showgrid=True, rangemode="tozero",
+                       range=[0, y_max_v * 1.10] if y_max_v > 0 else None),
+        )
+        sd._chart(fig_v, use_container_width=True)
+
+
+def _render_foreign_l1() -> None:
+    """Foreign L1 / L2 tokens deployed on Solana, grouped by underlying
+    asset class: BTC (cbBTC + WBTC), ETH (WETH), Others (everything else).
+    Each section renders aggregated MC (stacked area, left) + aggregated
+    daily volume (stacked bar, right). The 'Total' line in each hover
+    tooltip sums the stack at the hovered date."""
     st.markdown("## Foreign L1 tokens")
     st.caption(
-        "Native tokens from other chains bridged or wrapped onto Solana. "
-        "Each card shows the Solana-side market cap (price × on-chain "
-        "supply on the Solana mint) — not the underlying asset's global "
-        "MC. Sourced from Birdeye OHLCV V3 (token endpoint primary, "
+        "Native tokens from other chains bridged or wrapped onto Solana, "
+        "grouped by underlying asset. Each group shows aggregated MC + "
+        "daily volume from the Solana-side mints (price × on-chain "
+        "supply). Sourced from Birdeye OHLCV V3 — token endpoint primary, "
         "pair-aggregation fallback for bridged tokens with empty token "
-        "OHLCV like HYPE)."
+        "OHLCV like HYPE."
     )
 
     if not solana_native_pullers:
@@ -506,40 +633,16 @@ def _render_foreign_l1() -> None:
         )
         return
 
-    # Sort by latest MC so the largest tokens (cbBTC / WBTC / WETH) land
-    # at the top of the page — quick visual scan of who dominates.
-    def _latest_mc(p):
-        df = p.get_latest()
-        if df is None or df.empty: return 0.0
-        last = df.sort_values("date").iloc[-1]
-        return float(last.get("market_cap_usd") or 0)
+    # Build a name → puller lookup so we can grab group members by symbol.
+    by_name = {getattr(p, "TOKEN_NAME", ""): p for p in solana_native_pullers}
 
-    sorted_pullers = sorted(solana_native_pullers, key=_latest_mc, reverse=True)
-
-    for row_start in range(0, len(sorted_pullers), 2):
-        col_a, col_b = st.columns(2, gap="medium")
-        for col, p in zip((col_a, col_b),
-                          sorted_pullers[row_start: row_start + 2]):
-            with col:
-                # Per-token headline + chart. render_compact is chart-only
-                # (300px), so add headline metrics + label above it manually
-                # for readability — full puller.render() would add 3 tabs
-                # × 520px which blows up the page on 12 tokens.
-                df = p.get_latest()
-                if df is None or df.empty:
-                    st.subheader(p.TOKEN_NAME)
-                    st.caption("Waiting for first pull…")
-                    continue
-                latest = df.sort_values("date").iloc[-1]
-                price  = float(latest.get("price_usd") or 0)
-                vol    = float(latest.get("volume_usd") or 0)
-                mc     = float(latest.get("market_cap_usd") or 0)
-                st.subheader(f"{p.TOKEN_NAME} — ${mc/1e6:.1f}M MC")
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Price",      f"${price:,.4f}" if price < 100 else f"${price:,.2f}")
-                m2.metric("Market Cap", f"${mc/1e6:.2f}M")
-                m3.metric("24h Vol",    f"${vol/1e6:.2f}M")
-                p.render_compact()
+    for group_label, members in _FOREIGN_L1_GROUPS:
+        st.subheader(group_label)
+        group_pullers = [by_name[m] for m in members if m in by_name]
+        if not group_pullers:
+            st.info(f"No active pullers in the {group_label} group.")
+            continue
+        _build_foreign_l1_group_charts(group_label, group_pullers)
         st.divider()
 
 

@@ -46,8 +46,25 @@ import stocks_dashboard as sd
 # ── Puller initialization (cached in session_state — avoids 30s+ reinit) ──────
 # Mirrors the pattern from the parent dashboard. Version-gated so a bumped
 # _PULLERS_VERSION on the lib side automatically forces a fresh init here too.
-if (st.session_state.get("solana_dash_pullers_version") != sd._PULLERS_VERSION
-        or "solana_dash_pullers" not in st.session_state):
+# Two-part validity check: version mismatch OR a known group is missing.
+# The group-presence check catches a Streamlit Cloud edge case where
+# session_state survives across a partial code reload — version key
+# tracks the lib commit, but if the cached pullers list was built
+# before a new GROUP existed (e.g. 'solana_tokens' added later) the
+# version-only check fires only on the version bump and the next user
+# session can latch onto stale state. Re-init whenever any expected
+# group is absent so the cache self-heals.
+_EXPECTED_GROUPS = ("solana_tokens", "tokenized_stocks", "tokenized_commodities",
+                    "stablecoins", "treasuries")
+def _pullers_stale() -> bool:
+    cached = st.session_state.get("solana_dash_pullers")
+    if cached is None: return True
+    if st.session_state.get("solana_dash_pullers_version") != sd._PULLERS_VERSION:
+        return True
+    present = {getattr(p, "GROUP", "") for p in cached}
+    return any(g not in present for g in _EXPECTED_GROUPS)
+
+if _pullers_stale():
     st.session_state["solana_dash_pullers"] = sd.init_pullers(sd.settings, sd.cache_db)
     st.session_state["solana_dash_pullers_version"] = sd._PULLERS_VERSION
 

@@ -129,6 +129,59 @@ def _fetch_sol_ohlcv() -> _pd.DataFrame:
     return df[df["close"] > 0].sort_values("date").reset_index(drop=True)
 
 
+@st.cache_data(ttl=21600, show_spinner=False)
+def _fetch_sol_holders_history() -> _pd.DataFrame:
+    """Daily holder count from Birdeye /token/v1/holder/chart.
+
+    The endpoint caps `count` at 100 rows per call (per Birdeye docs), so
+    we paginate backwards from today by sliding the `to` parameter to one
+    second before the oldest timestamp returned. Loop terminates when a
+    response comes back empty or hits the same first row twice. TTL 6h —
+    holder count is daily-granular and the underlying numbers don't move
+    hour-to-hour, so a long TTL saves ~20 paginated calls per cache miss.
+
+    Returns DataFrame[date, holder] sorted ascending."""
+    key = sd.settings.birdeye_api_key
+    if not key:
+        return _pd.DataFrame(columns=["date", "holder"])
+    H = {"X-API-KEY": key, "x-chain": "solana"}
+    URL = "https://public-api.birdeye.so/token/v1/holder/chart"
+    out: list[dict] = []
+    seen_oldest: int | None = None
+    cursor_to = int(_dt.datetime.utcnow().replace(tzinfo=_dt.timezone.utc)
+                     .timestamp())
+    # Hard cap: 30 paginated calls × 100/call = 3000 days of history (~8y),
+    # more than enough for any Solana token and a backstop against runaway
+    # loops if Birdeye starts returning weird overlapping windows.
+    for _ in range(30):
+        try:
+            r = _requests.get(URL, params={
+                "token_address": _SOL_ADDRESS, "chart_type": "1d",
+                "from": 1, "to": cursor_to, "count": 100,
+            }, headers=H, timeout=30)
+            r.raise_for_status()
+            items = r.json().get("data") or []
+        except Exception:
+            break
+        if not items:
+            break
+        # API returns newest → oldest; the oldest is at the end.
+        oldest = min(int(p["timestamp"]) for p in items)
+        if seen_oldest is not None and oldest >= seen_oldest:
+            break    # same window as previous call — Birdeye gave us nothing new
+        out.extend(items)
+        seen_oldest = oldest
+        cursor_to = oldest - 1   # step back one second past the oldest row
+    if not out:
+        return _pd.DataFrame(columns=["date", "holder"])
+    df = _pd.DataFrame([{
+        "date":   _pd.to_datetime(int(p["timestamp"]), unit="s"),
+        "holder": int(p.get("holder") or 0),
+    } for p in out])
+    return (df.drop_duplicates(subset=["date"])
+              .sort_values("date").reset_index(drop=True))
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def _fetch_sol_overview() -> dict:
     """Current SOL snapshot from /defi/token_overview. TTL 15min — short
@@ -249,12 +302,39 @@ def _render_sol_token() -> None:
     )
     sd._chart(fig_v, use_container_width=True)
 
-    # ── Optional seed-backed charts (MC, supply, holders) ─────────────────
+    # ── Holder Count chart — Birdeye /token/v1/holder/chart ───────────────
+    st.subheader("Holder Count")
+    st.caption(
+        "Source: Birdeye `/token/v1/holder/chart` daily, paginated. "
+        "Net-change percentages reflect day-over-day deltas in unique "
+        "holder addresses."
+    )
+    with st.spinner("Loading SOL holder history…"):
+        holders_df = _fetch_sol_holders_history()
+    if holders_df.empty:
+        st.info(
+            f"Birdeye holder-chart endpoint returned nothing — current "
+            f"snapshot from /defi/token_overview: **{holders:,}**."
+        )
+    else:
+        fig_h = _go.Figure()
+        fig_h.add_trace(_go.Scatter(
+            x=holders_df["date"], y=holders_df["holder"], name="Holders",
+            mode="lines", line=dict(color="#7DCE82", width=1.5),
+            hovertemplate="Holders: %{y:,.0f}<extra></extra>",
+        ))
+        fig_h.update_layout(
+            height=340, hovermode="x unified",
+            margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
+            yaxis=dict(showgrid=True, rangemode="tozero", tickformat=","),
+        )
+        sd._chart(fig_h, use_container_width=True)
+
+    # ── Optional seed-backed charts (MC, supply) ──────────────────────────
     for label, filename, color, fmt in [
         ("Market Cap",   "mc_seed_sol_mc.json",      "#FF8C42", "${:.2f}B"),
         ("Circulating Supply",
                          "mc_seed_sol_supply.json",  "#5BC0EB", "{:,.0f} SOL"),
-        ("Holder Count", "mc_seed_sol_holders.json", "#7DCE82", "{:,.0f}"),
     ]:
         st.subheader(label)
         seed = _load_sol_seed(filename)

@@ -4273,6 +4273,26 @@ _TOKENIZED_COMMODITY_GROUPS: list[tuple[str, str, list]] = [
             #    reference / future per-chain Birdeye calls. ─────────────────
             ("PAXG", "0x45804880De22913dAFE09f4980848ECE6EcbAf78", "Ethereum"),
             ("XAUT", "0x68749665FF8D2d112Fa859AA293F07A622782F38", "Ethereum"),
+            # DGLD: Gold Token SA (~\$7M MC, ~3K holders). Birdeye-verified
+            # on Ethereum mainnet.
+            ("DGLD", "0xa9299c296d7830a99414d1e5546f5171fa01e9c8", "Ethereum"),
+            # TXAU: tGOLD (~\$1.47M MC). Birdeye-verified. Note: priced
+            # around \$34 not \$4,400 — appears to be a fractional/100-th-
+            # oz wrapper rather than per-oz like XAUM/PAXG.
+            ("TXAU", "0xe4a6f23fb9e00fca037aa0ea0a6954de0a6c53bf", "Ethereum"),
+            # ── Arbitrum-native gold ──────────────────────────────────────
+            # PGOLD: Pleasing Gold (~\$87M MC, ~343 holders). Birdeye works
+            # on Arbitrum via x-chain=arbitrum; the puller infers chain
+            # from this 3-tuple so no additional config needed. Will surface
+            # on the All-chain view (chain-specific tabs only render the
+            # 4 chains in our sidebar — Sol/Eth/BSC/Base — so PGOLD is
+            # silently visible there until/unless Arbitrum gets a tab).
+            ("PGOLD", "0x3e76bb02286bfeaa89dd35f11253f2cbce634f91", "Arbitrum"),
+            # ── XDC-native gold (DefiLlama-only — Birdeye doesn't support XDC) ─
+            # CGO: ComTech Gold (~\$5.6M MC on XDC). Lives in our cache via
+            # the additive _COMMODITY_DEFILLAMA path (comtech-gold slug);
+            # Birdeye is skipped because no x-chain=xdc exists in their API.
+            ("CGO",  "0x8f9920283470f52128bf11b0c14e798be704fd15", "XDC"),
         ],
     ),
 ]
@@ -4356,7 +4376,12 @@ _COMMODITY_DEFILLAMA: dict = {
     # via the additive DefiLlama path.
     "PAXG": {"type": "protocol", "slug": "paxos-gold"},
     "XAUT": {"type": "protocol", "slug": "tether-gold"},
-    # GOLD / VNXAU: no clean DefiLlama mapping yet — Solana-only via Birdeye.
+    # CGO: ComTech Gold on XDC Network (~$5.6M). XDC isn't supported by
+    # Birdeye, so DefiLlama is the only available MC source for this token.
+    "CGO":  {"type": "protocol", "slug": "comtech-gold"},
+    # GOLD / VNXAU / DGLD / TXAU / PGOLD: no clean DefiLlama protocol
+    # mapping. DGLD/TXAU/PGOLD covered by Birdeye snapshots; GOLD/VNXAU
+    # backfilled from the Solscan-derived mc_seed_*.json files.
 }
 
 
@@ -4671,7 +4696,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v44-b-format"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v45-more-gold"
 
 _need_init = (
     "scheduler" not in st.session_state

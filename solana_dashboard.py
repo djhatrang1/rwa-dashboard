@@ -79,7 +79,7 @@ treasury_pullers      = [p for p in pullers if getattr(p, "GROUP", "") == "treas
 # Only RWA is wired up today. Other verticals from the user's spec are
 # documented in the module docstring; they'll appear here as each gets
 # its data source nailed down.
-_VERTICALS = ["SOL token", "Stablecoins", "RWA", "Foreign L1 tokens"]
+_VERTICALS = ["SOL token", "Stablecoins", "Lending", "RWA", "Foreign L1 tokens"]
 
 with st.sidebar:
     st.markdown(
@@ -96,8 +96,7 @@ with st.sidebar:
     st.divider()
     st.caption(
         "Other verticals coming soon:  \n"
-        "DEX · Payments · Lending ·  \n"
-        "Perps · Prediction"
+        "DEX · Payments · Perps · Prediction"
     )
 
 # ── Cached Birdeye fetchers (used by SOL token vertical) ──────────────────────
@@ -414,6 +413,217 @@ def _render_sol_token() -> None:
             yaxis=dict(showgrid=True, range=y_range),
         )
         sd._chart(fig, use_container_width=True, fmt_mode=fmt_mode)
+
+
+# ── Lending vertical — DefiLlama-backed supply + borrow per protocol ──────────
+# DefiLlama free API exposes per-protocol historical supply (chainTvls.Solana.tvl)
+# and borrow (chainTvls.Solana-borrowed.tvl) on a daily basis going back to each
+# protocol's launch. 36 lending+CDP protocols deployed on Solana today, ~$2.35B
+# combined supply. We render the top-N as a stacked area and lump the rest into
+# "Others" so the chart stays readable.
+_LENDING_TOP_N = 10  # tokens in the stack; rest aggregated into "Others"
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_solana_lending_catalog() -> _pd.DataFrame:
+    """List of all Solana lending+CDP protocols from DefiLlama /protocols,
+    sorted by current Solana supply desc. Cached 1h (catalog moves slowly,
+    new protocols don't appear daily)."""
+    try:
+        r = _requests.get("https://api.llama.fi/protocols", timeout=30)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as exc:
+        log_fn = getattr(sd, "log", None)
+        if log_fn: log_fn.warning("DefiLlama /protocols failed: %s", exc)
+        return _pd.DataFrame()
+    rows = []
+    LENDING_CATS = {"Lending", "CDP", "RWA Lending", "Cross Chain Lending",
+                    "Uncollateralized Lending"}
+    for p in data:
+        if (p.get("category") not in LENDING_CATS
+                or "Solana" not in (p.get("chains") or [])):
+            continue
+        rows.append({
+            "slug":     p.get("slug"),
+            "name":     p.get("name"),
+            "category": p.get("category"),
+            "supply":   float((p.get("chainTvls") or {}).get("Solana", 0) or 0),
+        })
+    return _pd.DataFrame(rows).sort_values("supply", ascending=False).reset_index(drop=True)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_solana_lending_history(slug: str) -> _pd.DataFrame:
+    """Per-protocol historical supply + borrow on Solana from
+    DefiLlama /protocol/{slug}. Returns DataFrame[date, supply, borrow]."""
+    try:
+        r = _requests.get(f"https://api.llama.fi/protocol/{slug}", timeout=30)
+        r.raise_for_status()
+        d = r.json()
+    except Exception:
+        return _pd.DataFrame(columns=["date", "supply", "borrow"])
+    ct = d.get("chainTvls", {})
+    sup_pts = (ct.get("Solana") or {}).get("tvl", []) or []
+    bor_pts = (ct.get("Solana-borrowed") or {}).get("tvl", []) or []
+    sup_map = {int(p["date"]): float(p.get("totalLiquidityUSD") or 0) for p in sup_pts}
+    bor_map = {int(p["date"]): float(p.get("totalLiquidityUSD") or 0) for p in bor_pts}
+    all_ts = sorted(set(sup_map) | set(bor_map))
+    rows = [{"date": _pd.to_datetime(t, unit="s"),
+             "supply": sup_map.get(t, 0.0),
+             "borrow": bor_map.get(t, 0.0)} for t in all_ts]
+    return _pd.DataFrame(rows)
+
+
+def _build_lending_stack(metric: str, protocols: list[tuple[str, str]],
+                        wide: _pd.DataFrame, palette: list[str]) -> None:
+    """metric = 'supply' or 'borrow'. protocols = [(slug, display_name)].
+    wide = DataFrame with columns 'date' + '<metric>_<slug>' per protocol +
+    '<metric>_others' for the catch-all bucket."""
+    fig = _go.Figure()
+    cols = [f"{metric}_{s}" for s, _ in protocols] + [f"{metric}_others"]
+    labels = [n for _, n in protocols] + ["Others"]
+    totals = wide[cols].ffill().fillna(0).sum(axis=1)
+    for i, (col, label) in enumerate(zip(cols, labels)):
+        y = wide[col].ffill().fillna(0.0)
+        fig.add_trace(_go.Scatter(
+            x=wide["date"], y=y, name=label,
+            mode="lines", line=dict(width=0.8, color=palette[i % len(palette)]),
+            stackgroup=metric, hoverinfo="x+y+name",
+            customdata=y.map(sd._fmt_usd),
+            hovertemplate=f"{label}: %{{customdata}}<extra></extra>",
+        ))
+    fig.add_trace(_go.Scatter(
+        x=wide["date"], y=totals, name="Total",
+        mode="lines", line=dict(width=0, color="rgba(0,0,0,0)"),
+        showlegend=False, stackgroup=None,
+        customdata=totals.map(sd._fmt_usd),
+        hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+    ))
+    y_max = float(totals.max() or 0)
+    fig.update_layout(
+        height=420, hovermode="x unified",
+        margin=dict(t=10, b=10, l=10, r=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1),
+        yaxis=dict(showgrid=True, rangemode="tozero",
+                   range=[0, y_max * 1.10] if y_max > 0 else None),
+    )
+    sd._chart(fig, use_container_width=True)
+
+
+def _render_lending() -> None:
+    """Solana lending market — protocol-level supply + borrow over time.
+    Top-N protocols stacked individually, the rest into 'Others'. Headline
+    metric row + 2 stacked-area charts + catalog table.
+
+    Data: DefiLlama free /protocol/{slug} endpoint. Supply =
+    chainTvls.Solana.tvl, Borrow = chainTvls.Solana-borrowed.tvl. Both
+    daily, both back to each protocol's Solana launch.
+    """
+    st.markdown("## Lending")
+    st.caption(
+        "Solana lending markets — per-protocol supply (assets deposited) and "
+        "borrow (loans outstanding). Top "
+        f"{_LENDING_TOP_N} protocols rendered individually; the rest are "
+        "aggregated into 'Others'. Source: DefiLlama free `/protocol/{slug}` "
+        "endpoint, daily history back to each protocol's launch."
+    )
+
+    with st.spinner("Loading Solana lending catalog…"):
+        catalog = _fetch_solana_lending_catalog()
+    if catalog.empty:
+        st.warning("DefiLlama /protocols returned no Solana lending data.")
+        return
+
+    # Top-N by current supply; remainder rolled into 'Others'.
+    top = catalog.head(_LENDING_TOP_N).reset_index(drop=True)
+    rest = catalog.iloc[_LENDING_TOP_N:].reset_index(drop=True)
+
+    # ── Per-protocol historical fetches (paralleliz-able via @cache_data) ──
+    with st.spinner(f"Loading per-protocol history (top {_LENDING_TOP_N} + others)…"):
+        top_frames: dict[str, _pd.DataFrame] = {}
+        for _, p in top.iterrows():
+            df = _fetch_solana_lending_history(p["slug"])
+            if not df.empty:
+                top_frames[p["slug"]] = df
+        # Aggregate the long-tail into one 'others' frame
+        others_dfs = [_fetch_solana_lending_history(p["slug"]) for _, p in rest.iterrows()]
+        others_dfs = [df for df in others_dfs if not df.empty]
+
+    if not top_frames:
+        st.warning("Per-protocol history fetch failed for every top protocol.")
+        return
+
+    # ── Build wide frame: one supply_<slug> + borrow_<slug> per protocol ───
+    wide = None
+    for slug, df in top_frames.items():
+        renamed = df.rename(columns={
+            "supply": f"supply_{slug}", "borrow": f"borrow_{slug}",
+        })
+        wide = renamed if wide is None else wide.merge(renamed, on="date", how="outer")
+
+    # Aggregate the 'others' bucket into supply_others / borrow_others.
+    if others_dfs:
+        others_wide = None
+        for i, df in enumerate(others_dfs):
+            r = df.rename(columns={"supply": f"_s{i}", "borrow": f"_b{i}"})
+            others_wide = r if others_wide is None else others_wide.merge(r, on="date", how="outer")
+        s_cols = [c for c in others_wide.columns if c.startswith("_s")]
+        b_cols = [c for c in others_wide.columns if c.startswith("_b")]
+        others_agg = _pd.DataFrame({
+            "date":           others_wide["date"],
+            "supply_others":  others_wide[s_cols].fillna(0).sum(axis=1),
+            "borrow_others":  others_wide[b_cols].fillna(0).sum(axis=1),
+        })
+        wide = wide.merge(others_agg, on="date", how="outer")
+    else:
+        wide["supply_others"] = 0.0
+        wide["borrow_others"] = 0.0
+    wide = wide.sort_values("date").reset_index(drop=True)
+
+    # ── Headline metrics: total supply, total borrow, avg utilization ──────
+    sup_cols = [c for c in wide.columns if c.startswith("supply_")]
+    bor_cols = [c for c in wide.columns if c.startswith("borrow_")]
+    latest = wide.iloc[-1] if len(wide) else None
+    tot_sup = float(wide[sup_cols].ffill().fillna(0).sum(axis=1).iloc[-1])
+    tot_bor = float(wide[bor_cols].ffill().fillna(0).sum(axis=1).iloc[-1])
+    util = (tot_bor / tot_sup * 100) if tot_sup else 0
+    asof = _pd.to_datetime(latest["date"]).strftime("%Y-%m-%d") if latest is not None else "?"
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Total Supply",       f"${tot_sup/1e9:.2f}B")
+    m2.metric("Total Borrow",       f"${tot_bor/1e9:.2f}B")
+    m3.metric("Utilization",        f"{util:.1f}%")
+    m4.metric("Protocols tracked",  f"{len(catalog)}")
+    st.caption(f"As of {asof} · top {len(top)} of {len(catalog)} shown "
+               f"individually, remaining {len(others_dfs)} as 'Others'.")
+    st.divider()
+
+    # ── Two stacked-area charts (supply + borrow), two columns ─────────────
+    protocols = [(row["slug"], row["name"]) for _, row in top.iterrows()
+                 if row["slug"] in top_frames]
+    palette = ["#FF8C42", "#5BC0EB", "#7DCE82", "#9B5DE5", "#F15BB5",
+               "#FEE440", "#00BBF9", "#00F5D4", "#FB8B24", "#A4036F",
+               "#888888"]  # last entry = Others
+    c_left, c_right = st.columns(2, gap="medium")
+    with c_left:
+        st.markdown("**Total Supply by Protocol**")
+        _build_lending_stack("supply", protocols, wide, palette)
+    with c_right:
+        st.markdown("**Total Borrow by Protocol**")
+        _build_lending_stack("borrow", protocols, wide, palette)
+
+    # ── Catalog table (all 36 with current snapshot) ───────────────────────
+    st.divider()
+    st.subheader("All Solana lending protocols")
+    st.caption("Sortable. Click column headers to re-sort.")
+    cat_disp = catalog.copy()
+    cat_disp["Supply"] = cat_disp["supply"].map(lambda v: f"${v/1e6:.2f}M")
+    cat_disp = cat_disp.rename(columns={
+        "name": "Name", "category": "Category", "slug": "DefiLlama slug",
+    })
+    st.dataframe(cat_disp[["Name", "Category", "Supply", "DefiLlama slug"]],
+                 use_container_width=True, hide_index=True, height=520)
 
 
 # ── Stablecoins vertical — Solana-only stablecoin MC + volume ─────────────────
@@ -769,6 +979,8 @@ if vertical == "SOL token":
     _render_sol_token()
 elif vertical == "Stablecoins":
     _render_stablecoins()
+elif vertical == "Lending":
+    _render_lending()
 elif vertical == "RWA":
     _render_rwa()
 elif vertical == "Foreign L1 tokens":

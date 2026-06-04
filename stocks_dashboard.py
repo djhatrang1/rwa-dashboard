@@ -4251,8 +4251,19 @@ def init_pullers(settings: Settings, db: CacheDB) -> List[DataPuller]:
     To add a new token group (tokenized stocks), append a row to _TOKENIZED_STOCK_GROUPS.
     To add a completely new source, subclass DataPuller and append it below.
     """
+    # Stocks pullers: enable Birdeye Token Overview MC. For tokenized
+    # stocks (Backed.fi xStocks, PreStocks, Ondo tokenized equities)
+    # Birdeye's `marketCap` field = price × on-chain `totalSupply` =
+    # the correct **tokenized** MC (not the underlying company's market
+    # cap — that was a stale assumption from earlier when the field
+    # was sometimes computed off company shares-outstanding). Verified
+    # against AAPLx Solana: \$48.29M reported = \$313.21 × 154,175.
+    # Result: mc_<symbol>_<chain>_usd populates per chain on each pull,
+    # and the per-token MC chart sums across chains on the All-chain
+    # view (was empty before because no MC source was configured).
     stock_pullers = [
-        _make_stock_group_puller(pname, label, tokens)(settings, db)
+        _make_stock_group_puller(pname, label, tokens,
+                                 market_cap_source="birdeye_overview")(settings, db)
         for pname, label, tokens in _TOKENIZED_STOCK_GROUPS
     ]
     commodity_pullers = [
@@ -4736,7 +4747,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v46-hover-total"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v47-stocks-mc"
 
 _need_init = (
     "scheduler" not in st.session_state

@@ -61,7 +61,7 @@ treasury_pullers   = [p for p in pullers if getattr(p, "GROUP", "") == "treasuri
 # Only RWA is wired up today. Other verticals from the user's spec are
 # documented in the module docstring; they'll appear here as each gets
 # its data source nailed down.
-_VERTICALS = ["SOL token", "RWA"]
+_VERTICALS = ["SOL token", "Stablecoins", "RWA"]
 
 with st.sidebar:
     st.markdown(
@@ -78,7 +78,7 @@ with st.sidebar:
     st.divider()
     st.caption(
         "Other verticals coming soon:  \n"
-        "DEX · Stablecoins · Payments · Foreign L1 ·  \n"
+        "DEX · Payments · Foreign L1 ·  \n"
         "Lending · Perps · Prediction"
     )
 
@@ -398,7 +398,66 @@ def _render_sol_token() -> None:
         sd._chart(fig, use_container_width=True, fmt_mode=fmt_mode)
 
 
-# ── RWA vertical — Solana-only RWA view (4 sub-tabs) ──────────────────────────
+# ── Stablecoins vertical — Solana-only stablecoin MC + volume ─────────────────
+def _render_stablecoins() -> None:
+    """Top-level Stablecoins page. Previously lived as a sub-tab of RWA;
+    promoted to its own sidebar entry to match the user's spec where
+    Stablecoins is a peer of RWA / DEX / Payments / etc.
+
+    Per puller (today there's one: the 9 hand-tracked stables — USDC,
+    USDT, PYUSD, USDe, USD1, USDG, CASH, JupUSD, USDS), renders:
+      • Per-token stacked-area MC chart (DefiLlama + seed + Birdeye)
+      • USDC + USDT daily volume stack (Birdeye OHLCV V3, outlier-clipped)
+      • Other-stables daily volume stack (same source, USDC/USDT excluded)
+    USDC vol dwarfs every other stable 10-100× on most days; the split
+    keeps the 'others' stack readable instead of squished against zero."""
+    st.markdown("## Stablecoins")
+    st.caption(
+        "Solana-only stablecoin market cap + trading volume. Market cap "
+        "via DefiLlama (free API, daily history) plus Solscan-derived "
+        "seed JSONs and same-day Birdeye Token Overview snapshots; "
+        "trading volume via Birdeye OHLCV V3 (v_usd, daily)."
+    )
+
+    if not stablecoin_pullers:
+        st.info("No stablecoin pullers registered.")
+        return
+
+    for p in stablecoin_pullers:
+        st.subheader(f"{p.GROUP_LABEL} — Market Cap (Solana)")
+        st.caption(
+            "Solana-only market cap per token, stacked. Sourced from "
+            "DefiLlama (free API, daily history) plus the Solscan-"
+            "derived seed JSONs and same-day Birdeye Token Overview "
+            "snapshots."
+        )
+        p.render_market_cap_chain(chain="Solana", stacked=True)
+
+        st.subheader(
+            f"{p.GROUP_LABEL} — USDC + USDT Daily Trading Volume (Solana)")
+        st.caption(
+            "USDC + USDT stacked · Birdeye OHLCV V3, v_usd, daily · "
+            "outlier days (>25× median) suppressed for readability — "
+            "keeps the legit Jan 18-20 2025 TRUMP-launch burst (~20×)."
+        )
+        p.render_volume_chain(chain="solana",
+                              include_tokens={"USDC", "USDT"},
+                              key_suffix="sd_usdc_usdt",
+                              clip_outliers=True)
+
+        st.subheader(
+            f"{p.GROUP_LABEL} — Other Stables Daily Trading Volume (Solana)")
+        st.caption(
+            "Everything except USDC + USDT, stacked · Birdeye OHLCV V3, "
+            "v_usd, daily · outlier days (>25× per-token median) suppressed."
+        )
+        p.render_volume_chain(chain="solana",
+                              exclude_tokens={"USDC", "USDT"},
+                              key_suffix="sd_others",
+                              clip_outliers=True)
+
+
+# ── RWA vertical — Solana-only RWA view (3 sub-tabs) ──────────────────────────
 def _render_rwa() -> None:
     """Solana RWA view: 4 sub-tabs mirroring the parent dashboard's Solana
     page layout (stocks → commodities → stablecoins → treasuries). Reuses
@@ -412,9 +471,10 @@ def _render_rwa() -> None:
         "Same data sources as the main rwa-dashboard."
     )
 
-    tab_stocks, tab_commodities, tab_stablecoins, tab_treasuries = st.tabs(
-        ["Tokenized stocks", "Tokenized commodities",
-         "Stablecoins", "Treasuries & MMFs"])
+    # Stablecoins promoted to its own top-level sidebar vertical (per the
+    # user's spec), so the RWA sub-tabs no longer include it.
+    tab_stocks, tab_commodities, tab_treasuries = st.tabs(
+        ["Tokenized stocks", "Tokenized commodities", "Treasuries & MMFs"])
 
     # ── Stocks ──────────────────────────────────────────────────────────────
     with tab_stocks:
@@ -484,44 +544,6 @@ def _render_rwa() -> None:
                 )
                 p.render_market_cap_chain(chain="Solana", stacked=True)
 
-    # ── Stablecoins ─────────────────────────────────────────────────────────
-    with tab_stablecoins:
-        if not stablecoin_pullers:
-            st.info("No stablecoin pullers registered.")
-        else:
-            for p in stablecoin_pullers:
-                st.subheader(f"{p.GROUP_LABEL} — Market Cap (Solana)")
-                st.caption(
-                    "Solana-only market cap per token, stacked. Sourced from "
-                    "DefiLlama (free API, daily history) plus the Solscan-"
-                    "derived seed JSONs and same-day Birdeye Token Overview "
-                    "snapshots."
-                )
-                p.render_market_cap_chain(chain="Solana", stacked=True)
-
-                st.subheader(
-                    f"{p.GROUP_LABEL} — USDC + USDT Daily Trading Volume (Solana)")
-                st.caption(
-                    "USDC + USDT stacked · Birdeye OHLCV V3, v_usd, daily · "
-                    "outlier days (>25× median) suppressed for readability — "
-                    "keeps the legit Jan 18-20 2025 TRUMP-launch burst (~20×)."
-                )
-                p.render_volume_chain(chain="solana",
-                                      include_tokens={"USDC", "USDT"},
-                                      key_suffix="sd_usdc_usdt",
-                                      clip_outliers=True)
-
-                st.subheader(
-                    f"{p.GROUP_LABEL} — Other Stables Daily Trading Volume (Solana)")
-                st.caption(
-                    "Everything except USDC + USDT, stacked · Birdeye OHLCV V3, "
-                    "v_usd, daily · outlier days (>25× per-token median) suppressed."
-                )
-                p.render_volume_chain(chain="solana",
-                                      exclude_tokens={"USDC", "USDT"},
-                                      key_suffix="sd_others",
-                                      clip_outliers=True)
-
     # ── Treasuries & MMFs ───────────────────────────────────────────────────
     with tab_treasuries:
         if not treasury_pullers:
@@ -540,5 +562,7 @@ def _render_rwa() -> None:
 # ── Dispatch ─────────────────────────────────────────────────────────────────
 if vertical == "SOL token":
     _render_sol_token()
+elif vertical == "Stablecoins":
+    _render_stablecoins()
 elif vertical == "RWA":
     _render_rwa()

@@ -1491,7 +1491,7 @@ def _apply_time_controls(fig: go.Figure) -> go.Figure:
     return fig
 
 
-def _apply_b_format_to_yaxes(fig: go.Figure) -> go.Figure:
+def _apply_b_format_to_yaxes(fig: go.Figure, fmt_mode: str = "currency") -> go.Figure:
     """Replace Plotly's SI tick labels (G for giga) with the more readable
     B / M / K suffixes that finance dashboards use. Plotly's `tickformat='~s'`
     has no `B` option in its D3 vocabulary, so the only way to get a `B`
@@ -1502,6 +1502,12 @@ def _apply_b_format_to_yaxes(fig: go.Figure) -> go.Figure:
     Otherwise generate ~6 nice-step ticks from the axis's explicit range, or
     fall back to scanning trace y values when no range was set.
 
+    `fmt_mode` controls the prefix on each label:
+      • "currency" (default) — '$1.5B', '$45.0M' etc. for USD values
+      • "count"              — '1.5B', '45.0M' etc. for integer counts
+                                (holder counts, # of transactions, etc.) —
+                                no '$' prefix and no decimal places under 10
+
     Safe to no-op when there's no data and idempotent — re-calling on an
     already-decorated fig overwrites with the same tickvals/ticktext."""
     import math
@@ -1511,14 +1517,17 @@ def _apply_b_format_to_yaxes(fig: go.Figure) -> go.Figure:
             v = float(v)
         except (TypeError, ValueError):
             return ""
+        prefix = "$" if fmt_mode == "currency" else ""
         if v == 0:
-            return "$0"
+            return f"{prefix}0"
         a = abs(v); sign = "-" if v < 0 else ""
-        if a >= 1e12: return f"{sign}${a/1e12:.1f}T"
-        if a >= 1e9:  return f"{sign}${a/1e9:.1f}B"
-        if a >= 1e6:  return f"{sign}${a/1e6:.1f}M"
-        if a >= 1e3:  return f"{sign}${a/1e3:.1f}K"
-        return f"{sign}${a:.2f}" if a < 10 else f"{sign}${a:.0f}"
+        if a >= 1e12: return f"{sign}{prefix}{a/1e12:.1f}T"
+        if a >= 1e9:  return f"{sign}{prefix}{a/1e9:.1f}B"
+        if a >= 1e6:  return f"{sign}{prefix}{a/1e6:.1f}M"
+        if a >= 1e3:  return f"{sign}{prefix}{a/1e3:.1f}K"
+        if fmt_mode == "count":
+            return f"{sign}{prefix}{a:,.0f}"
+        return f"{sign}{prefix}{a:.2f}" if a < 10 else f"{sign}{prefix}{a:.0f}"
 
     def nice_ticks(lo: float, hi: float, target: int = 6) -> list[float]:
         if hi <= lo:
@@ -1585,17 +1594,22 @@ def _apply_b_format_to_yaxes(fig: go.Figure) -> go.Figure:
     return fig
 
 
-def _chart(fig: go.Figure, **kwargs) -> None:
+def _chart(fig: go.Figure, fmt_mode: str = "currency", **kwargs) -> None:
     """Render a time-series Plotly fig with the standard time controls
     (rangeslider + 1M/3M/6M/YTD/1Y/All buttons) and B/M/K-formatted y-axis
     labels (vs Plotly's default SI which uses 'G' for billions).
+
+    `fmt_mode` is passed through to `_apply_b_format_to_yaxes`:
+      • "currency" (default) — '$' prefix on every tick (USD charts)
+      • "count"              — bare integer labels (holder count etc.)
 
     Wraps st.plotly_chart so every chart in the app gets consistent
     customizable date-range controls + readable y-axis tick labels without
     touching each call site individually. Use this instead of st.plotly_chart
     for any chart whose x-axis is a date."""
     return st.plotly_chart(
-        _apply_b_format_to_yaxes(_apply_time_controls(fig)), **kwargs)
+        _apply_b_format_to_yaxes(_apply_time_controls(fig), fmt_mode=fmt_mode),
+        **kwargs)
 
 
 def _fmt_usd(v) -> str:

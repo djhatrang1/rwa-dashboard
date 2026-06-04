@@ -350,7 +350,9 @@ def _render_sol_token() -> None:
             margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
             yaxis=dict(showgrid=True, rangemode="tozero", tickformat=","),
         )
-        sd._chart(fig_h, use_container_width=True)
+        # fmt_mode="count" — holder count is an integer, not a USD value,
+        # so the y-axis ticks should read '6.8M' not '$6.8M'.
+        sd._chart(fig_h, use_container_width=True, fmt_mode="count")
 
     # ── Optional seed-backed charts (MC, supply) ──────────────────────────
     for label, filename, color, fmt in [

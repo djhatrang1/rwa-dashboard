@@ -4275,6 +4275,15 @@ def init_pullers(settings: Settings, db: CacheDB) -> List[DataPuller]:
     # Result: mc_<symbol>_<chain>_usd populates per chain on each pull,
     # and the per-token MC chart sums across chains on the All-chain
     # view (was empty before because no MC source was configured).
+    # Solana-native foreign-L1 tokens — revived from the original
+    # _SOLANA_TOKENS registry. Each gets its own SolanaTokenMetricsPuller
+    # subclass via the factory (one puller per token, GROUP='solana_tokens').
+    # Used by solana_dashboard.py's 'Foreign L1 tokens' vertical; no UI
+    # in the main stocks_dashboard since this side has no foreign-L1 tab.
+    solana_pullers = [
+        _make_solana_puller(name, addr, start)(settings, db)
+        for name, addr, start in _SOLANA_TOKENS
+    ]
     stock_pullers = [
         _make_stock_group_puller(pname, label, tokens,
                                  market_cap_source="birdeye_overview")(settings, db)
@@ -4306,7 +4315,7 @@ def init_pullers(settings: Settings, db: CacheDB) -> List[DataPuller]:
                                  skip_volume=True)(settings, db)
         for pname, label, tokens in _TREASURY_GROUPS
     ]
-    return [*stock_pullers, *commodity_pullers,
+    return [*solana_pullers, *stock_pullers, *commodity_pullers,
             *stablecoin_pullers, *treasury_pullers]
 
 
@@ -4687,7 +4696,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict) -> None:
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v49-lib-mode-colors"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v50-foreign-l1"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────

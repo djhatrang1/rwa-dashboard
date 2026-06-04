@@ -52,16 +52,17 @@ if (st.session_state.get("solana_dash_pullers_version") != sd._PULLERS_VERSION
     st.session_state["solana_dash_pullers_version"] = sd._PULLERS_VERSION
 
 pullers = st.session_state["solana_dash_pullers"]
-stocks_pullers     = [p for p in pullers if getattr(p, "GROUP", "") == "tokenized_stocks"]
-commodity_pullers  = [p for p in pullers if getattr(p, "GROUP", "") == "tokenized_commodities"]
-stablecoin_pullers = [p for p in pullers if getattr(p, "GROUP", "") == "stablecoins"]
-treasury_pullers   = [p for p in pullers if getattr(p, "GROUP", "") == "treasuries"]
+solana_native_pullers = [p for p in pullers if getattr(p, "GROUP", "") == "solana_tokens"]
+stocks_pullers        = [p for p in pullers if getattr(p, "GROUP", "") == "tokenized_stocks"]
+commodity_pullers     = [p for p in pullers if getattr(p, "GROUP", "") == "tokenized_commodities"]
+stablecoin_pullers    = [p for p in pullers if getattr(p, "GROUP", "") == "stablecoins"]
+treasury_pullers      = [p for p in pullers if getattr(p, "GROUP", "") == "treasuries"]
 
 # ── Sidebar — vertical navigation ─────────────────────────────────────────────
 # Only RWA is wired up today. Other verticals from the user's spec are
 # documented in the module docstring; they'll appear here as each gets
 # its data source nailed down.
-_VERTICALS = ["SOL token", "Stablecoins", "RWA"]
+_VERTICALS = ["SOL token", "Stablecoins", "RWA", "Foreign L1 tokens"]
 
 with st.sidebar:
     st.markdown(
@@ -78,8 +79,8 @@ with st.sidebar:
     st.divider()
     st.caption(
         "Other verticals coming soon:  \n"
-        "DEX · Payments · Foreign L1 ·  \n"
-        "Lending · Perps · Prediction"
+        "DEX · Payments · Lending ·  \n"
+        "Perps · Prediction"
     )
 
 # ── Cached Birdeye fetchers (used by SOL token vertical) ──────────────────────
@@ -457,6 +458,74 @@ def _render_stablecoins() -> None:
                               clip_outliers=True)
 
 
+# ── Foreign L1 tokens vertical — bridged/wrapped assets from other chains ────
+def _render_foreign_l1() -> None:
+    """Foreign L1 / L2 tokens deployed on Solana (Wormhole / Coinbase /
+    LayerZero / native bridges). Revives the dormant `_SOLANA_TOKENS`
+    registry from the original sop_base.py — 12 tokens spanning every
+    major chain that has a Solana presence (WETH, HYPE, ZEC, MON, cbBTC,
+    WBTC, AVAX, STRK, WBNB, ZORA, NEAR, TRX).
+
+    Layout: 2-column grid of compact charts, each with the token's
+    headline metrics (price · MC · 24h vol) above a 300px daily OHLCV
+    chart. Per-puller render() is the full version (3-tab D/W/M); this
+    uses render_compact() so 12 tokens fit on one scrollable page."""
+    st.markdown("## Foreign L1 tokens")
+    st.caption(
+        "Native tokens from other chains bridged or wrapped onto Solana. "
+        "Each card shows the Solana-side market cap (price × on-chain "
+        "supply on the Solana mint) — not the underlying asset's global "
+        "MC. Sourced from Birdeye OHLCV V3 (token endpoint primary, "
+        "pair-aggregation fallback for bridged tokens with empty token "
+        "OHLCV like HYPE)."
+    )
+
+    if not solana_native_pullers:
+        st.info(
+            "No foreign-L1 pullers active yet. The registry is wired up "
+            "but the data cache is empty — wait for the next cron pull "
+            "(every 4h) or run `PULL_GROUP=solana_tokens python scripts/"
+            "run_pull.py` locally."
+        )
+        return
+
+    # Sort by latest MC so the largest tokens (cbBTC / WBTC / WETH) land
+    # at the top of the page — quick visual scan of who dominates.
+    def _latest_mc(p):
+        df = p.get_latest()
+        if df is None or df.empty: return 0.0
+        last = df.sort_values("date").iloc[-1]
+        return float(last.get("market_cap_usd") or 0)
+
+    sorted_pullers = sorted(solana_native_pullers, key=_latest_mc, reverse=True)
+
+    for row_start in range(0, len(sorted_pullers), 2):
+        col_a, col_b = st.columns(2, gap="medium")
+        for col, p in zip((col_a, col_b),
+                          sorted_pullers[row_start: row_start + 2]):
+            with col:
+                # Per-token headline + chart. render_compact is chart-only
+                # (300px), so add headline metrics + label above it manually
+                # for readability — full puller.render() would add 3 tabs
+                # × 520px which blows up the page on 12 tokens.
+                df = p.get_latest()
+                if df is None or df.empty:
+                    st.subheader(p.TOKEN_NAME)
+                    st.caption("Waiting for first pull…")
+                    continue
+                latest = df.sort_values("date").iloc[-1]
+                price  = float(latest.get("price_usd") or 0)
+                vol    = float(latest.get("volume_usd") or 0)
+                mc     = float(latest.get("market_cap_usd") or 0)
+                st.subheader(f"{p.TOKEN_NAME} — ${mc/1e6:.1f}M MC")
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Price",      f"${price:,.4f}" if price < 100 else f"${price:,.2f}")
+                m2.metric("Market Cap", f"${mc/1e6:.2f}M")
+                m3.metric("24h Vol",    f"${vol/1e6:.2f}M")
+                p.render_compact()
+        st.divider()
+
+
 # ── RWA vertical — Solana-only RWA view (3 sub-tabs) ──────────────────────────
 def _render_rwa() -> None:
     """Solana RWA view: 4 sub-tabs mirroring the parent dashboard's Solana
@@ -566,3 +635,5 @@ elif vertical == "Stablecoins":
     _render_stablecoins()
 elif vertical == "RWA":
     _render_rwa()
+elif vertical == "Foreign L1 tokens":
+    _render_foreign_l1()

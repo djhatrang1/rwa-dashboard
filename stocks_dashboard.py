@@ -1670,19 +1670,30 @@ def _apply_b_format_to_yaxes(fig: go.Figure, fmt_mode: str = "currency") -> go.F
     return fig
 
 
-def _chart(fig: go.Figure, fmt_mode: str = "currency", **kwargs) -> None:
+def _chart(fig: go.Figure, fmt_mode: str = "currency",
+           raw_df: pd.DataFrame | None = None,
+           raw_key: str | None = None,
+           raw_fmt: dict | None = None,
+           raw_filename: str | None = None,
+           **kwargs) -> None:
     """Render a time-series Plotly fig with the standard time controls
     (rangeslider + 1M/3M/6M/YTD/1Y/All buttons) and B/M/K-formatted y-axis
     labels (vs Plotly's default SI which uses 'G' for billions).
 
-    `fmt_mode` is passed through to `_apply_b_format_to_yaxes`:
+    `fmt_mode` controls y-axis prefix:
       • "currency" (default) — '$' prefix on every tick (USD charts)
       • "count"              — bare integer labels (holder count etc.)
 
-    Wraps st.plotly_chart so every chart in the app gets consistent
-    customizable date-range controls + readable y-axis tick labels without
-    touching each call site individually. Use this instead of st.plotly_chart
-    for any chart whose x-axis is a date."""
+    When `raw_df` + `raw_key` are passed, prepends a 📋 button above the
+    chart that pops open a dialog with the source DataFrame + a Download
+    CSV button. `raw_key` must be globally unique across the page (used
+    as Streamlit's widget key). `raw_fmt` is an optional Pandas Styler
+    format dict; defaults to USD with thousands separator for every
+    non-date column. `raw_filename` controls the downloaded CSV's name
+    (defaults to raw_key)."""
+    if raw_df is not None and raw_key is not None:
+        if st.button("📋", key=f"raw_btn_{raw_key}", help="View raw data"):
+            _raw_data_modal(raw_df, raw_fmt, raw_filename or raw_key)
     return st.plotly_chart(
         _apply_b_format_to_yaxes(_apply_time_controls(fig), fmt_mode=fmt_mode),
         **kwargs)
@@ -4764,8 +4775,25 @@ _STOCKS_PROJECT_COLORS: dict[str, str] = {
 
 
 # ── Raw-data modal (module-level so solana_dashboard.py can import it) ───────
-def _raw_data_modal(df: pd.DataFrame, fmt: dict) -> None:
-    st.dataframe(df.style.format(fmt), use_container_width=True)
+@st.dialog("📋 Raw Data", width="large")
+def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
+                    filename: str = "data") -> None:
+    """Pop-open dialog showing a chart's underlying data with a Download
+    CSV button. `fmt` is a Pandas Styler format dict ({col: '${:,.0f}'});
+    when None, auto-formats any non-date column as USD with thousands
+    separators (sensible default for the finance-oriented charts here).
+    """
+    if fmt is None:
+        skip = {"date", "month", "week"}
+        fmt = {c: "${:,.0f}" for c in df.columns if c not in skip}
+    st.download_button(
+        "⬇️ Download CSV",
+        df.to_csv(index=False).encode("utf-8"),
+        file_name=f"{filename}.csv", mime="text/csv",
+        key=f"dl_{filename}",
+    )
+    st.dataframe(df.style.format(fmt, na_rep="—"),
+                 use_container_width=True, height=520)
 
 
 # Version key: bump whenever the puller list / class hierarchy changes so that
@@ -5058,7 +5086,6 @@ if __name__ == "__main__":
 
 
 
-    @st.dialog("📋 Raw Data", width="large")
     @st.dialog("📈 Full Chart", width="large")
     def _fullscreen_chart() -> None:
         token_name = st.session_state.get("_fullscreen_token", "")

@@ -301,7 +301,10 @@ def _render_sol_token() -> None:
         yaxis=dict(tickprefix="$", tickformat=".2f", showgrid=True,
                    rangemode="tozero"),
     )
-    sd._chart(fig_p, use_container_width=True)
+    sd._chart(fig_p, use_container_width=True,
+              raw_df=ohlcv[["date", "close", "v_usd"]],
+              raw_key="sol_price", raw_filename="sol_daily_ohlcv",
+              raw_fmt={"close": "${:,.2f}", "v_usd": "${:,.0f}"})
 
     st.subheader("Daily Trading Volume (USD)")
     st.caption(
@@ -339,7 +342,14 @@ def _render_sol_token() -> None:
         yaxis=dict(tickprefix="$", tickformat="~s", showgrid=True,
                    rangemode="tozero"),
     )
-    sd._chart(fig_v, use_container_width=True)
+    # Raw data shows BOTH the clipped (visible) and original v_usd so the
+    # downloader can see which days got suppressed by the outlier filter.
+    _vol_raw = ohlcv[["date", "v_usd"]].copy()
+    _vol_raw["v_usd_clipped"] = v_clipped
+    sd._chart(fig_v, use_container_width=True,
+              raw_df=_vol_raw, raw_key="sol_vol",
+              raw_filename="sol_daily_volume",
+              raw_fmt={"v_usd": "${:,.0f}", "v_usd_clipped": "${:,.0f}"})
 
     # ── Holder Count chart — Birdeye /token/v1/holder/chart ───────────────
     st.subheader("Holder Count")
@@ -369,7 +379,10 @@ def _render_sol_token() -> None:
         )
         # fmt_mode="count" — holder count is an integer, not a USD value,
         # so the y-axis ticks should read '6.8M' not '$6.8M'.
-        sd._chart(fig_h, use_container_width=True, fmt_mode="count")
+        sd._chart(fig_h, use_container_width=True, fmt_mode="count",
+                  raw_df=holders_df, raw_key="sol_holders",
+                  raw_filename="sol_holder_history",
+                  raw_fmt={"holder": "{:,}"})
 
     # ── Optional seed-backed charts (MC, supply) ──────────────────────────
     # `fmt_mode` controls y-axis prefix: 'currency' adds '$', 'count' doesn't.
@@ -412,7 +425,14 @@ def _render_sol_token() -> None:
             margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
             yaxis=dict(showgrid=True, range=y_range),
         )
-        sd._chart(fig, use_container_width=True, fmt_mode=fmt_mode)
+        # Raw data uses the per-chart label (Market Cap / Supply) to
+        # disambiguate the two loop iterations' button keys + CSV filenames.
+        _safe_label = label.lower().replace(" ", "_")
+        _raw = seed.rename(columns={"value": _safe_label})
+        sd._chart(fig, use_container_width=True, fmt_mode=fmt_mode,
+                  raw_df=_raw, raw_key=f"sol_{_safe_label}",
+                  raw_filename=f"sol_{_safe_label}",
+                  raw_fmt={_safe_label: "${:,.0f}" if fmt_mode == "currency" else "{:,.2f}"})
 
 
 # ── Lending vertical — DefiLlama-backed supply + borrow per protocol ──────────
@@ -621,20 +641,29 @@ def _render_protocol_asset_breakdown(slug: str, display_name: str) -> None:
                "#E84142", "#F3BA2F", "#0052FF", "#F7931A", "#9945FF",
                "#FFD500", "#00C08B", "#627EEA", "#FF6B6B", "#4ECDC4",
                "#888888"]   # last = Others
+    _slug_safe = slug.replace("-", "_")
     c_left, c_right = st.columns(2, gap="medium")
     with c_left:
         st.markdown(f"**{display_name} — Supply by Asset**")
-        _build_lending_stack("supply", protocols, wide, palette)
+        _build_lending_stack("supply", protocols, wide, palette,
+                             raw_key_prefix=f"lending_{_slug_safe}_by_asset")
     with c_right:
         st.markdown(f"**{display_name} — Borrow by Asset**")
-        _build_lending_stack("borrow", protocols, wide, palette)
+        _build_lending_stack("borrow", protocols, wide, palette,
+                             raw_key_prefix=f"lending_{_slug_safe}_by_asset")
 
 
 def _build_lending_stack(metric: str, protocols: list[tuple[str, str]],
-                        wide: _pd.DataFrame, palette: list[str]) -> None:
+                        wide: _pd.DataFrame, palette: list[str],
+                        raw_key_prefix: str | None = None) -> None:
     """metric = 'supply' or 'borrow'. protocols = [(slug, display_name)].
     wide = DataFrame with columns 'date' + '<metric>_<slug>' per protocol +
-    '<metric>_others' for the catch-all bucket."""
+    '<metric>_others' for the catch-all bucket.
+
+    `raw_key_prefix` (kwarg, optional) wires the 📋 raw-data button — pass
+    a unique string per call so the Streamlit widget keys don't collide
+    across the 6 stacks on the lending page (protocol-level supply/borrow
+    + Kamino-by-asset supply/borrow + Jupiter-by-asset supply/borrow)."""
     fig = _go.Figure()
     cols = [f"{metric}_{s}" for s, _ in protocols] + [f"{metric}_others"]
     labels = [n for _, n in protocols] + ["Others"]
@@ -670,7 +699,19 @@ def _build_lending_stack(metric: str, protocols: list[tuple[str, str]],
         yaxis=dict(showgrid=True, rangemode="tozero",
                    range=[0, y_max * 1.10] if y_max > 0 else None),
     )
-    sd._chart(fig, use_container_width=True)
+    # Raw data: per-protocol (or per-asset) metric values for this stack +
+    # the computed Total. Caller supplies a unique prefix so the button
+    # key + downloaded CSV name don't collide with sibling stacks.
+    raw_kwargs = {}
+    if raw_key_prefix:
+        _raw = wide[["date"] + cols].copy()
+        _raw["total"] = totals.values
+        raw_kwargs = {
+            "raw_df": _raw,
+            "raw_key": f"{raw_key_prefix}_{metric}",
+            "raw_filename": f"{raw_key_prefix}_{metric}",
+        }
+    sd._chart(fig, use_container_width=True, **raw_kwargs)
 
 
 def _render_lending() -> None:
@@ -769,10 +810,12 @@ def _render_lending() -> None:
     c_left, c_right = st.columns(2, gap="medium")
     with c_left:
         st.markdown("**Total Supply by Protocol**")
-        _build_lending_stack("supply", protocols, wide, palette)
+        _build_lending_stack("supply", protocols, wide, palette,
+                             raw_key_prefix="lending_by_protocol")
     with c_right:
         st.markdown("**Total Borrow by Protocol**")
-        _build_lending_stack("borrow", protocols, wide, palette)
+        _build_lending_stack("borrow", protocols, wide, palette,
+                             raw_key_prefix="lending_by_protocol")
 
     # ── Kamino per-asset breakdown ──────────────────────────────────────────
     st.divider()
@@ -983,7 +1026,13 @@ def _build_foreign_l1_group_charts(group_label: str, pullers: list) -> None:
             yaxis=dict(showgrid=True, rangemode="tozero",
                        range=[0, y_max_mc * 1.10] if y_max_mc > 0 else None),
         )
-        sd._chart(fig_mc, use_container_width=True)
+        # Raw data: per-token MC values + computed Total.
+        _mc_raw = wide[["date"] + mc_cols].copy()
+        _mc_raw["total"] = totals_mc.values
+        _safe_group = group_label.lower().replace(" ", "_")
+        sd._chart(fig_mc, use_container_width=True,
+                  raw_df=_mc_raw, raw_key=f"fl1_mc_{_safe_group}",
+                  raw_filename=f"foreign_l1_{_safe_group}_market_cap")
 
     # ── Right: stacked-bar daily volume ─────────────────────────────────
     with col_right:
@@ -1017,7 +1066,11 @@ def _build_foreign_l1_group_charts(group_label: str, pullers: list) -> None:
             yaxis=dict(showgrid=True, rangemode="tozero",
                        range=[0, y_max_v * 1.10] if y_max_v > 0 else None),
         )
-        sd._chart(fig_v, use_container_width=True)
+        _vol_raw = wide[["date"] + vol_cols].copy()
+        _vol_raw["total"] = wide[vol_cols].fillna(0).sum(axis=1).values
+        sd._chart(fig_v, use_container_width=True,
+                  raw_df=_vol_raw, raw_key=f"fl1_vol_{_safe_group}",
+                  raw_filename=f"foreign_l1_{_safe_group}_volume")
 
 
 def _render_foreign_l1() -> None:

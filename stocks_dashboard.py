@@ -1330,18 +1330,42 @@ def _render_all_chain_stablecoins() -> None:
         renamed["date"] = pd.to_datetime(renamed["date"])
         wide = renamed if wide is None else wide.merge(renamed, on="date", how="outer")
     wide = wide.sort_values("date").reset_index(drop=True)
-
-    # ── Headline metric: latest total across tracked chains ────────────────
     mc_cols = [c for c in wide.columns if c.startswith("mc_") and c.endswith("_usd")]
-    latest_row = wide.iloc[-1]
-    total_latest = float(latest_row[mc_cols].sum())
-    prev_row = wide.iloc[-2] if len(wide) > 1 else latest_row
-    delta = total_latest - float(prev_row[mc_cols].sum())
-    pct = (delta / float(prev_row[mc_cols].sum()) * 100) if prev_row[mc_cols].sum() else 0
+
+    # Drop trailing partial day(s): DefiLlama's per-chain stablecoin endpoint
+    # serves incomplete data for the current UTC day — chains report values
+    # 30-50% lower than yesterday until their daily aggregation completes
+    # overnight. Without this trim the headline metric shows e.g. \$120B on
+    # the partial day vs \$305B on the prior complete day. Walk backwards
+    # dropping any trailing row whose total < 90% of the prior row.
+    while len(wide) >= 2:
+        last_total = float(wide.iloc[-1][mc_cols].fillna(0).sum())
+        prev_total = float(wide.iloc[-2][mc_cols].fillna(0).sum())
+        if prev_total > 0 and last_total < 0.9 * prev_total:
+            wide = wide.iloc[:-1].reset_index(drop=True)
+        else:
+            break
+
+    # ── Headline metric: latest complete day across tracked chains ─────────
+    # Use ffilled values so chains that didn't update on the latest complete
+    # day still contribute their last-known MC (matches what the chart shows
+    # — keeps the metric and the stack visually consistent).
+    wide_filled = wide.copy()
+    for c in mc_cols:
+        wide_filled[c] = wide_filled[c].ffill().fillna(0.0)
+    latest_row    = wide_filled.iloc[-1]
+    total_latest  = float(latest_row[mc_cols].sum())
+    prev_row      = wide_filled.iloc[-2] if len(wide_filled) > 1 else latest_row
+    prev_total    = float(prev_row[mc_cols].sum())
+    delta         = total_latest - prev_total
+    pct           = (delta / prev_total * 100) if prev_total else 0
+    sign_dollar   = f"+${delta/1e9:.2f}B" if delta >= 0 else f"-${abs(delta)/1e9:.2f}B"
+    asof          = latest_row.get("date")
+    asof_str      = pd.to_datetime(asof).strftime("%Y-%m-%d") if pd.notna(asof) else "?"
     st.metric(
-        f"Total stablecoin MC on top {len(chain_frames)} chains",
+        f"Total stablecoin MC on top {len(chain_frames)} chains  (as of {asof_str})",
         f"${total_latest/1e9:.2f}B",
-        delta=f"{'+' if delta >= 0 else ''}${delta/1e9:.2f}B  ({pct:+.2f}%)",
+        delta=f"{sign_dollar}  ({pct:+.2f}%)",
     )
 
     # ── Stacked area: per-chain breakdown over time ────────────────────────
@@ -4522,7 +4546,7 @@ st.markdown(
 # ── Bootstrap scheduler once per process (survives Streamlit reruns) ──────────
 # Version key: bump whenever the puller list or class hierarchy changes so that
 # stale session-state instances (from before a code reload) are discarded.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v39-allchain-stables"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v40-stables-partial-day-fix"
 
 _need_init = (
     "scheduler" not in st.session_state

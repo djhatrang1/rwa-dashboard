@@ -1266,25 +1266,23 @@ _ALLIUM_QUERY_PRED_COMPARE   = "fyYRvSnCSHnSXaEsmEm1"
 
 
 @st.cache_data(ttl=14400, show_spinner="Running Allium query (≈30s)…")
-def _fetch_allium_query_results(query_id: str,
-                                run_limit: int = 10000,
-                                poll_seconds: int = 5,
-                                max_wait_seconds: int = 120) -> _pd.DataFrame:
-    """Run a saved Allium Explorer query async, poll until complete,
-    fetch the results. Returns a DataFrame with all columns verbatim
-    (caller renames / casts). Empty frame on auth failure, polling
-    timeout, or run error.
+def _fetch_allium_query_results_cached(query_id: str,
+                                       run_limit: int = 10000,
+                                       poll_seconds: int = 5,
+                                       max_wait_seconds: int = 180) -> _pd.DataFrame:
+    """Cached inner — RAISES on any failure (missing key, async timeout,
+    run error). Raising instead of returning empty matters because
+    @st.cache_data caches return values but NOT exceptions — so a
+    failed run won't get pinned for 4h. The outer wrapper below catches
+    and converts to an empty frame for the renderer.
 
-    Allium's REST API has NO 'latest cached results' endpoint at the
+    Allium's REST API has no 'latest cached results' endpoint at the
     /v1/ path (Dune has /results which returns the most recent
-    materialised execution for free) — every fetch here re-runs the
-    query and consumes ~1 Allium credit. The 4h @st.cache_data wrapper
-    keeps spend near-zero by re-using the result across all Streamlit
-    reruns within a 4h window.
+    materialised execution for free) — every successful fetch here
+    re-runs the query and consumes ~1 Allium credit. The 4h cache
+    keeps spend near-zero on warm-cache page loads.
 
-    First user to hit the page after a cache miss waits ~30s for the
-    async run; everyone else for the next 4h gets it instant from the
-    cache. Reads ALLIUM_API_KEY from st.secrets first, env fallback."""
+    Reads ALLIUM_API_KEY from st.secrets first, env fallback."""
     try:
         key = st.secrets.get("ALLIUM_API_KEY", "")
     except Exception:
@@ -1292,28 +1290,24 @@ def _fetch_allium_query_results(query_id: str,
     if not key:
         key = _os.environ.get("ALLIUM_API_KEY", "")
     if not key:
-        return _pd.DataFrame()
+        raise RuntimeError("ALLIUM_API_KEY missing")
 
     H = {"X-API-KEY": key}
     import time as _time
 
     # ── Step 1: kick off async run ─────────────────────────────────────
-    try:
-        r = _requests.post(
-            f"https://api.allium.so/api/v1/explorer/queries/{query_id}/run-async",
-            json={"parameters": {}, "run_config": {"limit": run_limit}},
-            headers=H, timeout=30,
-        )
-        r.raise_for_status()
-        run_id = r.json().get("run_id")
-        if not run_id:
-            return _pd.DataFrame()
-    except Exception:
-        return _pd.DataFrame()
+    r = _requests.post(
+        f"https://api.allium.so/api/v1/explorer/queries/{query_id}/run-async",
+        json={"parameters": {}, "run_config": {"limit": run_limit}},
+        headers=H, timeout=30,
+    )
+    r.raise_for_status()
+    run_id = r.json().get("run_id")
+    if not run_id:
+        raise RuntimeError("Allium /run-async returned no run_id")
 
     # ── Step 2: poll the run-state endpoint until success/fail/timeout ─
     elapsed = 0
-    completed = False
     while elapsed < max_wait_seconds:
         _time.sleep(poll_seconds)
         elapsed += poll_seconds
@@ -1327,23 +1321,35 @@ def _fetch_allium_query_results(query_id: str,
         except Exception:
             continue
         if status == "success":
-            completed = True
             break
         if status in ("failed", "cancelled", "canceled", "error"):
-            return _pd.DataFrame()
-    if not completed:
-        return _pd.DataFrame()
+            raise RuntimeError(f"Allium run ended with status={status}")
+    else:
+        raise TimeoutError(
+            f"Allium run did not complete in {max_wait_seconds}s")
 
     # ── Step 3: fetch results ──────────────────────────────────────────
+    r = _requests.get(
+        f"https://api.allium.so/api/v1/explorer/query-runs/{run_id}/results",
+        headers=H, timeout=30,
+    )
+    r.raise_for_status()
+    rows = (r.json() or {}).get("data") or []
+    if not rows:
+        raise RuntimeError("Allium results endpoint returned 0 rows")
+    return _pd.DataFrame(rows)
+
+
+def _fetch_allium_query_results(query_id: str,
+                                run_limit: int = 10000) -> _pd.DataFrame:
+    """Outer wrapper — catches any exception from the cached inner and
+    returns an empty DataFrame so the renderer can show its placeholder.
+    Since failures raise (and aren't cached), the next page-load
+    automatically retries instead of being stuck with a bad cached
+    empty for the full 4h TTL."""
     try:
-        r = _requests.get(
-            f"https://api.allium.so/api/v1/explorer/query-runs/{run_id}/results",
-            headers=H, timeout=30,
-        )
-        r.raise_for_status()
-        body = r.json()
-        rows = body.get("data") or []
-        return _pd.DataFrame(rows)
+        return _fetch_allium_query_results_cached(query_id,
+                                                  run_limit=run_limit)
     except Exception:
         return _pd.DataFrame()
 

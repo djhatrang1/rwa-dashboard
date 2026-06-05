@@ -335,12 +335,22 @@ class DataPuller(abc.ABC):
         return df
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=14_400, show_spinner=False)
 def _cached_latest_payload(puller_name: str):
     """Module-level cache wrapper for the latest-pull DataFrame. Keyed by
-    puller name; TTL 5 min — well under the 6-hour cron cadence, so users
-    see fresh data within a few minutes of each pull but every chart on a
-    page hits the same materialised DataFrame instead of pulling its own.
+    puller name; TTL 4 hours — matches the GitHub Actions cron cadence
+    (pull_interval_seconds=14_400) so the cache stays warm for the full
+    inter-pull window and Postgres egress drops by ~50× vs the old 5-min
+    TTL. Force Pull and PULLERS_VERSION bumps invalidate the cache
+    explicitly (see _cached_latest_payload.clear() call sites) so users
+    still see fresh data immediately when intended.
+
+    Each cached payload is a few hundred KB to a couple MB of JSON, and
+    each Solana / Ethereum / BNB / Base / All-chain dashboard render
+    touches ~25-30 pullers; at the old 5-min TTL a single page reload
+    every 5-10 minutes was burning gigabytes per day against the Supabase
+    free-tier egress quota.
+
     Returns (df, pulled_at_iso) — splitting attrs out because st.cache_data
     doesn't preserve DataFrame.attrs across cache hits."""
     df = cache_db.latest(puller_name)
@@ -5094,6 +5104,10 @@ if __name__ == "__main__":
                     _p.pull()
                 except Exception as _exc:
                     st.toast(f"Pull failed: {_p.name}", icon="⚠️")
+        # Clear the 4h read-cache so the next render sees the rows the
+        # pulls just wrote — without this, st.rerun() below would still
+        # serve the pre-pull cached payloads until the TTL expires.
+        _cached_latest_payload.clear()
         st.toast("Force pull complete", icon="✅")
         st.rerun()
 

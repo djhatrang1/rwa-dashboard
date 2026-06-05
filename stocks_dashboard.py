@@ -4859,15 +4859,17 @@ _STOCKS_PROJECT_COLORS: dict[str, str] = {
 def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
                     filename: str = "data") -> None:
     """Pop-open dialog showing a chart's underlying data with a Download
-    CSV button. `fmt` is a Pandas Styler format dict ({col: '${:,.0f}'});
+    CSV button. `fmt` is a Python format-string dict ({col: '${:,.0f}'});
     when None, auto-formats every NUMERIC column as USD with thousands
     separators (sensible default for the finance-oriented charts here).
 
-    Non-numeric columns are skipped regardless of name — applying a
-    numeric format string like '${:,.0f}' to a datetime/object column
-    makes Streamlit's marshall_styler raise StreamlitAPIException. The
-    older `skip={"date","month","week"}` allowlist missed the Prediction
-    Markets charts which use 'day' as their date column.
+    Non-numeric columns are skipped regardless of name. Numeric columns
+    are pre-formatted to display strings on a copy of the frame, which
+    sidesteps Pandas Styler entirely — Streamlit's marshall_styler has
+    intermittent issues with various Styler/dtype combos (e.g. the
+    Prediction Markets charts threw `StreamlitAPIException` from inside
+    marshall_styler even with a valid format dict). The CSV download
+    still uses the raw numeric frame so analysts get unformatted data.
     """
     if fmt is None:
         fmt = {c: "${:,.0f}" for c in df.columns
@@ -4878,8 +4880,20 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
         file_name=f"{filename}.csv", mime="text/csv",
         key=f"dl_{filename}",
     )
-    st.dataframe(df.style.format(fmt, na_rep="—"),
-                 use_container_width=True, height=520)
+    # Pre-format numeric cols as strings on a display copy so st.dataframe
+    # gets a plain (no-Styler) frame. Skip cols whose dtype no longer
+    # matches the requested format (e.g. caller-supplied fmt for a col
+    # that's been dropped from raw_df).
+    display = df.copy()
+    for col, spec in fmt.items():
+        if col not in display.columns:
+            continue
+        if not pd.api.types.is_numeric_dtype(display[col]):
+            continue
+        display[col] = display[col].apply(
+            lambda v, s=spec: s.format(v) if pd.notna(v) else "—"
+        )
+    st.dataframe(display, use_container_width=True, height=520)
 
 
 # Version key: bump whenever the puller list / class hierarchy changes so that

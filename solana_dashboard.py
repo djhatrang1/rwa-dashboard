@@ -1297,7 +1297,15 @@ def _fetch_dune_query_results(query_id: int) -> _pd.DataFrame:
     for _cand in ("day", "date", "Date", "hour", "time", "Time", "timestamp"):
         if _cand in df.columns:
             df = df.rename(columns={_cand: "day"})
-            df["day"] = _pd.to_datetime(df["day"])
+            # Force tz-naive UTC. Dune queries on the Jupiter dashboard mix
+            # `timestamp(3) with time zone` (5 of 6) and bare `timestamp(3)`
+            # (TVL query 6298659). Comparing a tz-aware Timestamp with a
+            # tz-naive one — e.g. in max(asof_candidates) for the headline
+            # KPIs — raises `Cannot compare tz-naive and tz-aware`. Coercing
+            # via utc=True then dropping tz gives a single naive-UTC dtype
+            # that compares cleanly across queries.
+            df["day"] = (_pd.to_datetime(df["day"], utc=True)
+                            .dt.tz_localize(None))
             df = df.sort_values("day").reset_index(drop=True)
             break
     return df

@@ -1239,7 +1239,16 @@ def _render_rwa() -> None:
 # at source — Dune API returns "Query not found" so we can't render them
 # unless the dashboard owner makes them public, or we fork them on Dune
 # (which creates a new public ID under our account).
-_DUNE_QUERY_JUPITER_NOTIONAL = 6287629
+# Jupiter prediction-market data — 6 queries from the
+# /datadashboards/jupiter-prediction-markets dashboard:
+_DUNE_QUERY_JUPITER_NOTIONAL = 6287629   # day, Notional Volume, Cumulative Notional Volume
+_DUNE_QUERY_JUPITER_VOLUME   = 6287873   # day, Volume, Cumulative Volume
+_DUNE_QUERY_JUPITER_FEES     = 6294302   # day, Fees, Cumulative Fees
+_DUNE_QUERY_JUPITER_TX       = 6287720   # date, Transctions(sic), Cumulative Transactions
+_DUNE_QUERY_JUPITER_TVL      = 6298659   # hour (hourly!), TVLDelta, TVL_CumulativeDelta
+_DUNE_QUERY_JUPITER_USERS    = 6294160   # Date, New, Old, Cumulative Unique Users
+
+# Phantom prediction-market data — only TVL is publicly queryable.
 _DUNE_QUERY_PHANTOM_TVL      = 6386183
 
 
@@ -1279,12 +1288,18 @@ def _fetch_dune_query_results(query_id: int) -> _pd.DataFrame:
     if not rows:
         return _pd.DataFrame()
     df = _pd.DataFrame(rows)
-    # Normalise the timestamp column to 'day' (datetime) — every Dune query
-    # in this dashboard uses 'day' as the temporal axis. If a future query
-    # uses 'date'/'time'/etc, callers can pick whatever column they want.
-    if "day" in df.columns:
-        df["day"] = _pd.to_datetime(df["day"])
-        df = df.sort_values("day").reset_index(drop=True)
+    # Normalise the timestamp column to 'day' (datetime). Dune queries on
+    # this dashboard use a mix of 'day' / 'date' / 'Date' / 'hour' / 'time'
+    # depending on the author's convention — coalesce them all to 'day' so
+    # the renderer can always reference one column name. First match wins;
+    # if none of the candidates exist the frame passes through unchanged
+    # and the caller's "missing 'day' column" guard catches it.
+    for _cand in ("day", "date", "Date", "hour", "time", "Time", "timestamp"):
+        if _cand in df.columns:
+            df = df.rename(columns={_cand: "day"})
+            df["day"] = _pd.to_datetime(df["day"])
+            df = df.sort_values("day").reset_index(drop=True)
+            break
     return df
 
 
@@ -1310,89 +1325,221 @@ def _render_prediction_markets() -> None:
     _render_phantom_prediction_section()
 
 
-def _render_jupiter_prediction_section() -> None:
-    """Jupiter prediction-market notional volume (Dune query 6287629).
-    Headline KPIs + daily-bar / cumulative-area chart pair."""
-    st.subheader("Jupiter Prediction Markets")
-    st.caption(
-        f"Source: Dune query [{_DUNE_QUERY_JUPITER_NOTIONAL}]"
-        f"(https://dune.com/queries/{_DUNE_QUERY_JUPITER_NOTIONAL})."
-    )
+_JUP_COLOR = "#9945FF"                        # Jupiter brand purple
+_JUP_FILL  = "rgba(153, 69, 255, 0.25)"
 
-    df = _fetch_dune_query_results(_DUNE_QUERY_JUPITER_NOTIONAL)
-    if df.empty or "day" not in df.columns:
-        st.info(
-            "No Dune data available. Either the `DUNE_API_KEY` is missing "
-            "(set it in `.env` locally or Streamlit Cloud secrets) or the "
-            "Dune query has no cached results yet — re-run it on Dune."
-        )
-        return
 
-    # Cast Dune's verbatim column names (with spaces) to working floats.
-    df = df.assign(
-        notional_volume   = df["Notional Volume"].astype(float),
-        cumulative_volume = df["Cumulative Notional Volume"].astype(float),
-    )
+def _render_dune_metric_pair(
+    df: _pd.DataFrame,
+    daily_col: str,
+    cum_col: str,
+    daily_title: str,
+    cum_title: str,
+    raw_key_prefix: str,
+    color: str = _JUP_COLOR,
+    fill: str = _JUP_FILL,
+    fmt_mode: str = "currency",
+) -> None:
+    """Render a daily-bar + cumulative-area chart pair side-by-side in a
+    2-col layout. Both charts share the standard time-controls + 📋
+    raw-data button via sd._chart's chart_title kwarg.
 
-    # Headline metrics: latest cumulative + 7d avg daily + 30d avg daily.
-    latest_cum = float(df["cumulative_volume"].iloc[-1])
-    last_7d    = df["notional_volume"].tail(7).mean()
-    last_30d   = df["notional_volume"].tail(30).mean()
-    asof       = df["day"].iloc[-1].strftime("%Y-%m-%d")
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Cumulative Notional",  sd._fmt_usd(latest_cum))
-    m2.metric("7d Avg Daily",         sd._fmt_usd(last_7d))
-    m3.metric("30d Avg Daily",        sd._fmt_usd(last_30d))
-    st.caption(f"As of {asof} · {len(df)} daily observations.")
+    Used to keep the 6 Jupiter metrics (Notional Volume, Volume, Fees,
+    Transactions, TVL, Users) DRY — each metric is one call to this
+    helper. fmt_mode='count' drops the $ prefix for non-USD metrics
+    (Transactions, Users)."""
+    # Hover formatter: $ for currency, comma-separated for counts.
+    if fmt_mode == "count":
+        _hover_fmt = lambda v: f"{int(v):,}"
+    else:
+        _hover_fmt = sd._fmt_usd
 
-    _JUP_COLOR = "#9945FF"      # Jupiter purple
-    _JUP_FILL  = "rgba(153, 69, 255, 0.25)"
     col_left, col_right = st.columns(2, gap="medium")
-
-    # ── Left: daily notional volume (bar) ──────────────────────────────
     with col_left:
         fig_d = _go.Figure()
         fig_d.add_trace(_go.Bar(
-            x=df["day"], y=df["notional_volume"], name="Daily Notional",
-            marker=dict(color=_JUP_COLOR),
-            customdata=df["notional_volume"].map(sd._fmt_usd),
+            x=df["day"], y=df[daily_col], name=daily_title,
+            marker=dict(color=color),
+            customdata=df[daily_col].map(_hover_fmt),
             hovertemplate="%{x|%Y-%m-%d}: %{customdata}<extra></extra>",
         ))
-        y_max_d = float(df["notional_volume"].max() or 0)
+        y_max_d = float(df[daily_col].max() or 0)
         fig_d.update_layout(
-            height=420, hovermode="x unified",
+            height=400, hovermode="x unified",
             margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
             yaxis=dict(showgrid=True, rangemode="tozero",
                        range=[0, y_max_d * 1.10] if y_max_d > 0 else None),
         )
-        sd._chart(fig_d, use_container_width=True,
-                  chart_title="Jupiter — Daily Notional Volume",
-                  raw_df=df[["day", "notional_volume"]].copy(),
-                  raw_key="pm_jupiter_daily",
-                  raw_filename="jupiter_prediction_market_daily_notional")
+        sd._chart(fig_d, use_container_width=True, fmt_mode=fmt_mode,
+                  chart_title=daily_title,
+                  raw_df=df[["day", daily_col]].copy(),
+                  raw_key=f"{raw_key_prefix}_daily",
+                  raw_filename=f"{raw_key_prefix}_daily")
 
-    # ── Right: cumulative notional volume (area) ───────────────────────
     with col_right:
         fig_c = _go.Figure()
         fig_c.add_trace(_go.Scatter(
-            x=df["day"], y=df["cumulative_volume"], name="Cumulative",
-            mode="lines", line=dict(color=_JUP_COLOR, width=1.5),
-            fill="tozeroy", fillcolor=_JUP_FILL,
-            customdata=df["cumulative_volume"].map(sd._fmt_usd),
+            x=df["day"], y=df[cum_col], name=cum_title,
+            mode="lines", line=dict(color=color, width=1.5),
+            fill="tozeroy", fillcolor=fill,
+            customdata=df[cum_col].map(_hover_fmt),
             hovertemplate="%{x|%Y-%m-%d}: %{customdata}<extra></extra>",
         ))
-        y_max_c = float(df["cumulative_volume"].max() or 0)
+        y_max_c = float(df[cum_col].max() or 0)
         fig_c.update_layout(
-            height=420, hovermode="x unified",
+            height=400, hovermode="x unified",
             margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
             yaxis=dict(showgrid=True, rangemode="tozero",
                        range=[0, y_max_c * 1.10] if y_max_c > 0 else None),
         )
-        sd._chart(fig_c, use_container_width=True,
-                  chart_title="Jupiter — Cumulative Notional Volume",
-                  raw_df=df[["day", "cumulative_volume"]].copy(),
-                  raw_key="pm_jupiter_cumulative",
-                  raw_filename="jupiter_prediction_market_cumulative_notional")
+        sd._chart(fig_c, use_container_width=True, fmt_mode=fmt_mode,
+                  chart_title=cum_title,
+                  raw_df=df[["day", cum_col]].copy(),
+                  raw_key=f"{raw_key_prefix}_cum",
+                  raw_filename=f"{raw_key_prefix}_cum")
+
+
+def _fetch_jupiter_metric(query_id: int, daily_src: str, cum_src: str,
+                          resample_to_daily: bool = False) -> _pd.DataFrame:
+    """Wrapper around _fetch_dune_query_results that normalises a Jupiter
+    metric query's columns to ['day', 'daily', 'cumulative']. Set
+    resample_to_daily=True for the TVL query (which returns hourly rows)
+    to collapse to end-of-day. Empty frame on fetch failure."""
+    df = _fetch_dune_query_results(query_id)
+    if df.empty or "day" not in df.columns or daily_src not in df.columns:
+        return _pd.DataFrame(columns=["day", "daily", "cumulative"])
+    out = df[["day", daily_src, cum_src]].rename(
+        columns={daily_src: "daily", cum_src: "cumulative"})
+    out["daily"] = out["daily"].astype(float)
+    out["cumulative"] = out["cumulative"].astype(float)
+    if resample_to_daily:
+        # End-of-day TVL = last cumulative reading per UTC day. The TVL
+        # query is hourly (4305 rows ≈ 180 days × 24); collapsing avoids
+        # drawing 4k+ bars while preserving the daily-close trajectory.
+        # Also sum daily deltas within each day to get a real daily-Δ bar.
+        out["_d"] = out["day"].dt.floor("D")
+        agg = out.groupby("_d", as_index=False).agg(
+            daily=("daily", "sum"),
+            cumulative=("cumulative", "last"),
+        ).rename(columns={"_d": "day"})
+        out = agg.sort_values("day").reset_index(drop=True)
+    return out
+
+
+def _render_jupiter_prediction_section() -> None:
+    """Jupiter prediction-market activity — 6 metric chart pairs sourced
+    from the public /datadashboards/jupiter-prediction-markets dashboard.
+
+    Order: Notional Volume → Volume → Fees → Transactions → TVL → Users
+    (money first, activity next, liquidity last). Each metric renders as
+    a daily-bar + cumulative-area pair via _render_dune_metric_pair so
+    the 6 sections stay structurally identical and easy to scan."""
+    st.subheader("Jupiter Prediction Markets")
+    st.caption(
+        "Source: [datadashboards/jupiter-prediction-markets]"
+        "(https://dune.com/datadashboards/jupiter-prediction-markets) — "
+        "6 Dune queries (Notional Volume · Volume · Fees · Transactions · "
+        "TVL · Unique Users)."
+    )
+
+    # Fetch all 6 metrics up-front. Each call hits the 4h cache so this is
+    # cheap on warm-cache reruns. Empty frames fall through to per-section
+    # placeholders below so a single broken query doesn't black-hole the
+    # whole page.
+    df_notional = _fetch_jupiter_metric(_DUNE_QUERY_JUPITER_NOTIONAL,
+                                        "Notional Volume",
+                                        "Cumulative Notional Volume")
+    df_volume   = _fetch_jupiter_metric(_DUNE_QUERY_JUPITER_VOLUME,
+                                        "Volume", "Cumulative Volume")
+    df_fees     = _fetch_jupiter_metric(_DUNE_QUERY_JUPITER_FEES,
+                                        "Fees", "Cumulative Fees")
+    df_tx       = _fetch_jupiter_metric(_DUNE_QUERY_JUPITER_TX,
+                                        "Transctions",   # sic — Dune typo
+                                        "Cumulative Transactions")
+    df_tvl      = _fetch_jupiter_metric(_DUNE_QUERY_JUPITER_TVL,
+                                        "TVLDelta", "TVL_CumulativeDelta",
+                                        resample_to_daily=True)
+    df_users    = _fetch_jupiter_metric(_DUNE_QUERY_JUPITER_USERS,
+                                        "New", "Cumulative Unique Users")
+
+    # No data at all? Show one placeholder and bail.
+    if all(d.empty for d in [df_notional, df_volume, df_fees, df_tx,
+                             df_tvl, df_users]):
+        st.info(
+            "No Dune data available. Either the `DUNE_API_KEY` is missing "
+            "(set it in `.env` locally or Streamlit Cloud secrets) or the "
+            "queries have no cached results yet."
+        )
+        return
+
+    # ── Headline KPIs: 6 latest cumulative counters in 2 rows of 3 ──────
+    def _latest(_df, col):
+        return float(_df[col].iloc[-1]) if not _df.empty else None
+
+    def _fmt_metric(v, mode="currency"):
+        if v is None:    return "—"
+        if mode == "count": return f"{int(v):,}"
+        return sd._fmt_usd(v)
+
+    asof_candidates = [d["day"].iloc[-1] for d in
+                       [df_notional, df_volume, df_fees, df_tx, df_tvl, df_users]
+                       if not d.empty]
+    asof = max(asof_candidates).strftime("%Y-%m-%d") if asof_candidates else "?"
+
+    r1c1, r1c2, r1c3 = st.columns(3)
+    r1c1.metric("Cumulative Notional",
+                _fmt_metric(_latest(df_notional, "cumulative")))
+    r1c2.metric("Cumulative Volume",
+                _fmt_metric(_latest(df_volume, "cumulative")))
+    r1c3.metric("Cumulative Fees",
+                _fmt_metric(_latest(df_fees, "cumulative")))
+    r2c1, r2c2, r2c3 = st.columns(3)
+    r2c1.metric("Cumulative Transactions",
+                _fmt_metric(_latest(df_tx, "cumulative"), mode="count"))
+    r2c2.metric("Current TVL",
+                _fmt_metric(_latest(df_tvl, "cumulative")))
+    r2c3.metric("Cumulative Unique Users",
+                _fmt_metric(_latest(df_users, "cumulative"), mode="count"))
+    st.caption(f"As of {asof}.")
+    st.write("")    # vertical breathing room before the chart grid
+
+    # ── 6 metric chart pairs (12 charts total in 6 rows of 2) ───────────
+    _metric_specs = [
+        # (df, daily_title, cum_title, raw_key_prefix, fmt_mode)
+        (df_notional,
+         "Jupiter — Daily Notional Volume",
+         "Jupiter — Cumulative Notional Volume",
+         "pm_jup_notional",  "currency"),
+        (df_volume,
+         "Jupiter — Daily Volume",
+         "Jupiter — Cumulative Volume",
+         "pm_jup_volume",    "currency"),
+        (df_fees,
+         "Jupiter — Daily Fees",
+         "Jupiter — Cumulative Fees",
+         "pm_jup_fees",      "currency"),
+        (df_tx,
+         "Jupiter — Daily Transactions",
+         "Jupiter — Cumulative Transactions",
+         "pm_jup_tx",        "count"),
+        (df_tvl,
+         "Jupiter — Daily TVL Delta",
+         "Jupiter — Cumulative TVL",
+         "pm_jup_tvl",       "currency"),
+        (df_users,
+         "Jupiter — Daily New Users",
+         "Jupiter — Cumulative Unique Users",
+         "pm_jup_users",     "count"),
+    ]
+    for spec_df, dt, ct, key, mode in _metric_specs:
+        if spec_df.empty:
+            st.info(f"No data for `{key}` yet.")
+            continue
+        _render_dune_metric_pair(
+            spec_df, daily_col="daily", cum_col="cumulative",
+            daily_title=dt, cum_title=ct,
+            raw_key_prefix=key, fmt_mode=mode,
+        )
 
 
 def _render_phantom_prediction_section() -> None:

@@ -1501,16 +1501,16 @@ def _render_prediction_markets() -> None:
 
     _render_jupiter_dflow_comparison_section()
     st.divider()
-    # Per-platform "additional metrics" sections collapsed by default —
-    # the comparison section above is the headline view; these are
-    # platform-specific extras (Jupiter TVL + Users, DFlow Active Users
-    # + Token Balance) so most users won't expand them every visit.
+    # Per-platform sections collapsed by default — the comparison
+    # section above is the headline view; these are platform-specific
+    # extras (Jupiter TVL + Users, DFlow Active Users + Token Balance,
+    # Phantom TVL) so most users won't expand them every visit.
     with st.expander("Jupiter — Additional Metrics", expanded=False):
         _render_jupiter_prediction_section()
     with st.expander("DFlow — Additional Metrics", expanded=False):
         _render_dflow_prediction_section()
-    st.divider()
-    _render_phantom_prediction_section()
+    with st.expander("Phantom Prediction Markets", expanded=False):
+        _render_phantom_prediction_section()
 
 
 def _render_jupiter_dflow_comparison_section() -> None:
@@ -2114,8 +2114,10 @@ def _render_phantom_prediction_section() -> None:
     """Phantom prediction-market TVL (Dune query 6386183 — TVL cumulative
     delta). The companion queries on the source dashboard (Volume/Fees/Tx
     via 6386520, Users via 6453064) are private at source and return
-    'Query not found' via API — surfaced as a footer note."""
-    st.subheader("Phantom Prediction Markets")
+    'Query not found' via API — surfaced as a footer note.
+
+    Section title is supplied by the st.expander wrapper in
+    _render_prediction_markets — no internal subheader needed."""
     st.caption(
         f"Source: Dune query [{_DUNE_QUERY_PHANTOM_TVL}]"
         f"(https://dune.com/queries/{_DUNE_QUERY_PHANTOM_TVL}) "

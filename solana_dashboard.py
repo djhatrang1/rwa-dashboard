@@ -1248,6 +1248,11 @@ _DUNE_QUERY_JUPITER_TX       = 6287720   # date, Transctions(sic), Cumulative Tr
 _DUNE_QUERY_JUPITER_TVL      = 6298659   # hour (hourly!), TVLDelta, TVL_CumulativeDelta
 _DUNE_QUERY_JUPITER_USERS    = 6294160   # Date, New, Old, Cumulative Unique Users
 
+# DFlow prediction-market data — 2 public queries from
+# /stepanalytics_team/prediction-markets-on-solana:
+_DUNE_QUERY_DFLOW_ACTIVITY   = 6510861   # unified daily: Notional/Volume/Fees/Tx/Users
+_DUNE_QUERY_DFLOW_TOKBAL     = 6512170   # long-format day, symbol, token_balance
+
 # Phantom prediction-market data — only TVL is publicly queryable.
 _DUNE_QUERY_PHANTOM_TVL      = 6386183
 
@@ -1318,7 +1323,10 @@ def _render_prediction_markets() -> None:
     raw-data button + B/M/K y-axis format.
 
     Current platforms:
-      • Jupiter — Notional volume (daily + cumulative)
+      • Jupiter — 6 metrics (Notional Volume, Volume, Fees, Transactions,
+        TVL, Unique Users)
+      • DFlow   — 5 metrics (Notional Volume, Volume, Fees, Transactions,
+        Daily Active Users) + token-balance stack
       • Phantom — TVL (daily delta + cumulative delta)
     """
     st.markdown("## Prediction Markets")
@@ -1329,6 +1337,8 @@ def _render_prediction_markets() -> None:
     st.divider()
 
     _render_jupiter_prediction_section()
+    st.divider()
+    _render_dflow_prediction_section()
     st.divider()
     _render_phantom_prediction_section()
 
@@ -1556,6 +1566,215 @@ def _render_jupiter_prediction_section() -> None:
             daily_title=dt, cum_title=ct,
             raw_key_prefix=key, fmt_mode=mode,
         )
+
+
+def _render_dflow_prediction_section() -> None:
+    """DFlow prediction-market activity sourced from the public
+    /stepanalytics_team/prediction-markets-on-solana dashboard. Two
+    queries:
+      • 6510861 — unified daily activity (5 metrics in one query):
+        N_Users / N_TRX / Cum_N_TXs / Volume / Cum_Volume /
+        Notional_Volume / Cum_Notional_Volume / Fee / Cum_Fee
+      • 6512170 — long-format token balance (day, symbol, token_balance)
+
+    Renders: KPI counter row, then 4 daily-+-cumulative chart pairs
+    (Notional, Volume, Fees, Tx) reusing _render_dune_metric_pair, then
+    a standalone daily-active-users bar (no cumulative col in source),
+    then a 2-token stacked area for token balances (CASH + USDC)."""
+    st.subheader("DFlow Prediction Markets")
+    st.caption(
+        "Source: [stepanalytics_team/prediction-markets-on-solana]"
+        "(https://dune.com/stepanalytics_team/prediction-markets-on-solana) "
+        "— 2 Dune queries (unified daily activity + token balance)."
+    )
+
+    # ── Fetch + split the unified activity query into per-metric frames ──
+    raw = _fetch_dune_query_results(_DUNE_QUERY_DFLOW_ACTIVITY)
+    if raw.empty or "day" not in raw.columns:
+        st.info("No Dune data available for DFlow activity (query 6510861).")
+        return
+
+    def _pair(daily_src: str, cum_src: str | None) -> _pd.DataFrame:
+        """Slice the unified raw frame down to [day, daily, cumulative].
+        Pass cum_src=None for metrics that have no cumulative column."""
+        if daily_src not in raw.columns:
+            return _pd.DataFrame(columns=["day", "daily", "cumulative"])
+        cols  = ["day", daily_src] + ([cum_src] if cum_src else [])
+        rmap  = {daily_src: "daily"}
+        if cum_src:
+            rmap[cum_src] = "cumulative"
+        out = raw[cols].rename(columns=rmap)
+        out["daily"] = out["daily"].astype(float)
+        if cum_src:
+            out["cumulative"] = out["cumulative"].astype(float)
+        return out
+
+    df_notional = _pair("Notional_Volume", "Cum_Notional_Volume")
+    df_volume   = _pair("Volume",          "Cum_Volume")
+    df_fees     = _pair("Fee",             "Cum_Fee")
+    df_tx       = _pair("N_TRX",           "Cum_N_TXs")
+    df_users    = _pair("N_Users", None)     # daily-only (no cumulative col)
+
+    # Token balance — long format, latest snapshot for KPI + full series
+    # for stacked-area below.
+    tokbal = _fetch_dune_query_results(_DUNE_QUERY_DFLOW_TOKBAL)
+    have_tokbal = (not tokbal.empty and "day" in tokbal.columns
+                   and "symbol" in tokbal.columns
+                   and "token_balance" in tokbal.columns)
+    if have_tokbal:
+        tokbal = tokbal.copy()
+        tokbal["token_balance"] = tokbal["token_balance"].astype(float)
+
+    # ── KPI row: 6 latest counters in 2 rows of 3 ───────────────────────
+    def _latest(_df, col):
+        return float(_df[col].iloc[-1]) if not _df.empty else None
+
+    def _fmt_metric(v, mode="currency"):
+        if v is None:    return "—"
+        if mode == "count": return f"{int(v):,}"
+        return sd._fmt_usd(v)
+
+    latest_tokbal_total = None
+    if have_tokbal:
+        # Sum the latest reading PER symbol (each symbol has its own
+        # last-day). Not the last day globally — that would miss any
+        # symbol whose latest sample lags by a day or two.
+        latest_per_sym = (tokbal.sort_values("day")
+                                .groupby("symbol")
+                                .tail(1)["token_balance"].sum())
+        latest_tokbal_total = float(latest_per_sym)
+
+    asof_candidates = [d["day"].iloc[-1] for d in
+                       [df_notional, df_volume, df_fees, df_tx, df_users]
+                       if not d.empty]
+    if have_tokbal:
+        asof_candidates.append(tokbal["day"].max())
+    asof = max(asof_candidates).strftime("%Y-%m-%d") if asof_candidates else "?"
+
+    r1c1, r1c2, r1c3 = st.columns(3)
+    r1c1.metric("Cumulative Notional",
+                _fmt_metric(_latest(df_notional, "cumulative")))
+    r1c2.metric("Cumulative Volume",
+                _fmt_metric(_latest(df_volume, "cumulative")))
+    r1c3.metric("Cumulative Fees",
+                _fmt_metric(_latest(df_fees, "cumulative")))
+    r2c1, r2c2, r2c3 = st.columns(3)
+    r2c1.metric("Cumulative Transactions",
+                _fmt_metric(_latest(df_tx, "cumulative"), mode="count"))
+    # Users: no cumulative col in source → show 7d avg daily active
+    r2c2.metric("7d Avg Daily Active Users",
+                _fmt_metric(df_users["daily"].tail(7).mean() if not df_users.empty else None,
+                            mode="count"))
+    r2c3.metric("Total Token Balance",
+                _fmt_metric(latest_tokbal_total))
+    st.caption(f"As of {asof}.")
+    st.write("")
+
+    # ── 4 metric chart pairs ────────────────────────────────────────────
+    _metric_specs = [
+        (df_notional,
+         "DFlow — Daily Notional Volume",
+         "DFlow — Cumulative Notional Volume",
+         "pm_dfl_notional",  "currency"),
+        (df_volume,
+         "DFlow — Daily Volume",
+         "DFlow — Cumulative Volume",
+         "pm_dfl_volume",    "currency"),
+        (df_fees,
+         "DFlow — Daily Fees",
+         "DFlow — Cumulative Fees",
+         "pm_dfl_fees",      "currency"),
+        (df_tx,
+         "DFlow — Daily Transactions",
+         "DFlow — Cumulative Transactions",
+         "pm_dfl_tx",        "count"),
+    ]
+    for spec_df, dt, ct, key, mode in _metric_specs:
+        if spec_df.empty:
+            st.info(f"No data for `{key}` yet.")
+            continue
+        _render_dune_metric_pair(
+            spec_df, daily_col="daily", cum_col="cumulative",
+            daily_title=dt, cum_title=ct,
+            raw_key_prefix=key, fmt_mode=mode,
+        )
+
+    # ── Daily Active Users (standalone bar, no cumulative col in source) ─
+    if not df_users.empty:
+        fig_u = _go.Figure()
+        fig_u.add_trace(_go.Bar(
+            x=df_users["day"], y=df_users["daily"], name="Daily Active Users",
+            marker=dict(color=_JUP_COLOR),
+            customdata=df_users["daily"].map(lambda v: f"{int(v):,}"),
+            hovertemplate="%{x|%Y-%m-%d}: %{customdata}<extra></extra>",
+        ))
+        y_max_u = float(df_users["daily"].max() or 0)
+        fig_u.update_layout(
+            height=400, hovermode="x unified",
+            margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
+            yaxis=dict(showgrid=True, rangemode="tozero",
+                       range=[0, y_max_u * 1.10] if y_max_u > 0 else None),
+        )
+        sd._chart(fig_u, use_container_width=True, fmt_mode="count",
+                  chart_title="DFlow — Daily Active Users",
+                  raw_df=df_users[["day", "daily"]].copy(),
+                  raw_key="pm_dfl_users_daily",
+                  raw_fmt={"daily": "{:,.0f}"},
+                  raw_filename="pm_dfl_users_daily")
+
+    # ── Token balance stacked area (CASH + USDC) ────────────────────────
+    if have_tokbal:
+        # Pivot long → wide so plotly gets one column per symbol.
+        wide = (tokbal.pivot_table(index="day", columns="symbol",
+                                   values="token_balance", aggfunc="last")
+                       .sort_index()
+                       .reset_index())
+        # Forward-fill across short reporting gaps so the stack doesn't
+        # collapse to zero on missing days (CASH + USDC publish on
+        # slightly different cadences in the source query).
+        for sym in wide.columns[1:]:
+            wide[sym] = wide[sym].ffill()
+        fig_b = _go.Figure()
+        # CASH = teal, USDC = USDC blue. Any future symbol falls back to
+        # the Jupiter purple so the chart keeps rendering.
+        _palette = {"CASH": "#4ECDC4", "USDC": "#2775CA"}
+        symbols = [c for c in wide.columns if c != "day"]
+        totals = wide[symbols].fillna(0).sum(axis=1)
+        for sym in symbols:
+            y = wide[sym].fillna(0)
+            fig_b.add_trace(_go.Scatter(
+                x=wide["day"], y=y, name=sym,
+                mode="lines", line=dict(width=0.8,
+                                        color=_palette.get(sym, _JUP_COLOR)),
+                stackgroup="bal",
+                customdata=y.map(sd._fmt_usd),
+                hovertemplate=f"{sym}: %{{customdata}}<extra></extra>",
+            ))
+        # Invisible Total line so the hover tooltip shows the stack total
+        # at the bottom of the unified row, mirroring the lending/L1 stacks.
+        fig_b.add_trace(_go.Scatter(
+            x=wide["day"], y=totals, name="Total",
+            mode="lines", line=dict(width=0, color="rgba(0,0,0,0)"),
+            showlegend=False, stackgroup=None,
+            customdata=totals.map(sd._fmt_usd),
+            hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+        ))
+        y_max_b = float(totals.max() or 0)
+        fig_b.update_layout(
+            height=400, hovermode="x unified",
+            margin=dict(t=10, b=10, l=10, r=10),
+            legend=dict(orientation="h", yanchor="bottom",
+                        y=1.02, xanchor="right", x=1),
+            yaxis=dict(showgrid=True, rangemode="tozero",
+                       range=[0, y_max_b * 1.10] if y_max_b > 0 else None),
+        )
+        _raw_bal = wide.copy()
+        _raw_bal["total"] = totals.values
+        sd._chart(fig_b, use_container_width=True,
+                  chart_title="DFlow — Token Balance by Symbol",
+                  raw_df=_raw_bal,
+                  raw_key="pm_dfl_token_balance",
+                  raw_filename="pm_dfl_token_balance")
 
 
 def _render_phantom_prediction_section() -> None:

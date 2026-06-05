@@ -1341,17 +1341,38 @@ def _fetch_allium_query_results_cached(query_id: str,
 
 
 def _fetch_allium_query_results(query_id: str,
-                                run_limit: int = 10000) -> _pd.DataFrame:
+                                run_limit: int = 10000
+                                ) -> tuple[_pd.DataFrame, str | None]:
     """Outer wrapper — catches any exception from the cached inner and
-    returns an empty DataFrame so the renderer can show its placeholder.
-    Since failures raise (and aren't cached), the next page-load
-    automatically retries instead of being stuck with a bad cached
-    empty for the full 4h TTL."""
+    returns (empty_df, error_message). Since failures raise (and aren't
+    cached), the next page-load automatically retries instead of being
+    stuck with a bad cached empty for the full 4h TTL.
+
+    Error message is surfaced in the renderer's placeholder so users can
+    debug missing keys vs auth failures vs async timeouts without
+    digging through Cloud logs."""
     try:
-        return _fetch_allium_query_results_cached(query_id,
-                                                  run_limit=run_limit)
+        df = _fetch_allium_query_results_cached(query_id,
+                                                run_limit=run_limit)
+        return df, None
+    except Exception as e:
+        # Trim long stack traces; the type + first line is what matters.
+        msg = f"{type(e).__name__}: {str(e)[:250]}"
+        return _pd.DataFrame(), msg
+
+
+def _allium_key_source() -> str | None:
+    """Returns 'st.secrets' or 'env' if an ALLIUM_API_KEY is present,
+    None if nowhere. Used by the renderer to disambiguate key-missing
+    failures from auth-rejected failures in the diagnostic message."""
+    try:
+        if st.secrets.get("ALLIUM_API_KEY", ""):
+            return "st.secrets"
     except Exception:
-        return _pd.DataFrame()
+        pass
+    if _os.environ.get("ALLIUM_API_KEY", ""):
+        return "env"
+    return None
 
 
 @st.cache_data(ttl=14400, show_spinner=False)
@@ -1472,13 +1493,27 @@ def _render_jupiter_dflow_comparison_section() -> None:
         "Jupiter purple ◆ DFlow orange. 2026 YTD."
     )
 
-    df = _fetch_allium_query_results(_ALLIUM_QUERY_PRED_COMPARE)
+    df, err = _fetch_allium_query_results(_ALLIUM_QUERY_PRED_COMPARE)
     if df.empty or "trade_date" not in df.columns:
-        st.info(
-            "No Allium data available. Either the `ALLIUM_API_KEY` is "
-            "missing (set it in `.env` locally or Streamlit Cloud secrets) "
-            "or the async query run timed out (>2 minutes)."
-        )
+        key_src = _allium_key_source()
+        if not key_src:
+            st.error(
+                "No `ALLIUM_API_KEY` detected — neither in "
+                "`st.secrets` nor in the environment. On Streamlit "
+                "Cloud, add it via *Manage app → Settings → Secrets*. "
+                "Locally, add it to `.env`."
+            )
+        else:
+            msg = f"Key detected via **{key_src}** but the fetch failed."
+            if err:
+                msg += f"\n\nLast error:\n```\n{err}\n```"
+            msg += (
+                "\n\nCommon causes:\n"
+                "- **401/403** — key is wrong / truncated / has trailing spaces\n"
+                "- **TimeoutError** — Allium async run took > 180s\n"
+                "- **429** — Allium rate-limit (rare; only after many bursty hits)"
+            )
+            st.error(msg)
         return
 
     df = df.copy()

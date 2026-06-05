@@ -1345,6 +1345,12 @@ def _render_prediction_markets() -> None:
 
 _JUP_COLOR = "#9945FF"                        # Jupiter brand purple
 _JUP_FILL  = "rgba(153, 69, 255, 0.25)"
+_DFL_COLOR = "#F97316"                        # DFlow — orange (complement
+_DFL_FILL  = "rgba(249, 115, 22, 0.25)"       # to Jupiter purple; distinct
+                                              # from Phantom lavender + the
+                                              # CASH teal / USDC blue used
+                                              # inside the DFlow token-
+                                              # balance stack)
 
 
 def _render_dune_metric_pair(
@@ -1697,6 +1703,7 @@ def _render_dflow_prediction_section() -> None:
             spec_df, daily_col="daily", cum_col="cumulative",
             daily_title=dt, cum_title=ct,
             raw_key_prefix=key, fmt_mode=mode,
+            color=_DFL_COLOR, fill=_DFL_FILL,
         )
 
     # ── Daily Active Users (standalone bar, no cumulative col in source) ─
@@ -1704,7 +1711,7 @@ def _render_dflow_prediction_section() -> None:
         fig_u = _go.Figure()
         fig_u.add_trace(_go.Bar(
             x=df_users["day"], y=df_users["daily"], name="Daily Active Users",
-            marker=dict(color=_JUP_COLOR),
+            marker=dict(color=_DFL_COLOR),
             customdata=df_users["daily"].map(lambda v: f"{int(v):,}"),
             hovertemplate="%{x|%Y-%m-%d}: %{customdata}<extra></extra>",
         ))
@@ -1745,7 +1752,7 @@ def _render_dflow_prediction_section() -> None:
             fig_b.add_trace(_go.Scatter(
                 x=wide["day"], y=y, name=sym,
                 mode="lines", line=dict(width=0.8,
-                                        color=_palette.get(sym, _JUP_COLOR)),
+                                        color=_palette.get(sym, _DFL_COLOR)),
                 stackgroup="bal",
                 customdata=y.map(sd._fmt_usd),
                 hovertemplate=f"{sym}: %{{customdata}}<extra></extra>",

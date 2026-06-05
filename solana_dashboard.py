@@ -1265,22 +1265,61 @@ _DUNE_QUERY_PHANTOM_TVL      = 6386183
 _ALLIUM_QUERY_PRED_COMPARE   = "fyYRvSnCSHnSXaEsmEm1"
 
 
-@st.cache_data(ttl=14400, show_spinner="Running Allium query (≈30s)…")
+def _allium_request(method: str, url: str, headers: dict,
+                    json_body: dict | None = None,
+                    timeout: int = 30,
+                    max_attempts: int = 6) -> "_requests.Response":
+    """HTTP wrapper that retries on 429 (Allium rate-limit) with backoff,
+    honoring the `Retry-After` header when present.
+
+    Allium's free / starter tier rate-limits pretty aggressively — we
+    saw ~10 req/min ceilings during testing. The previous fetcher used
+    a flat r.get/.post and exploded on the first 429. This helper
+    retries up to `max_attempts` times with backoff capped at 30s per
+    sleep (the longest single retry-after we'd expect), then re-raises
+    so the outer try/except in _fetch_allium_query_results surfaces a
+    real error message to the user."""
+    import time as _time
+    backoff = 2
+    for attempt in range(max_attempts):
+        if json_body is not None:
+            r = _requests.post(url, json=json_body, headers=headers,
+                               timeout=timeout)
+        else:
+            r = _requests.get(url, headers=headers, timeout=timeout)
+        if r.status_code != 429:
+            return r
+        # 429 — honor Retry-After (seconds) if present, else exponential.
+        wait = r.headers.get("Retry-After")
+        try:
+            wait_s = int(wait) if wait else backoff
+        except ValueError:
+            wait_s = backoff
+        wait_s = min(max(wait_s, 1), 30)   # clamp [1, 30]
+        _time.sleep(wait_s)
+        backoff = min(backoff * 2, 30)
+    # Out of attempts — return the last 429 response so .raise_for_status
+    # surfaces a 429-shaped error.
+    return r
+
+
+@st.cache_data(ttl=14400, show_spinner="Running Allium query (≈45s)…")
 def _fetch_allium_query_results_cached(query_id: str,
                                        run_limit: int = 10000,
-                                       poll_seconds: int = 5,
+                                       poll_seconds: int = 10,
+                                       initial_wait_seconds: int = 15,
                                        max_wait_seconds: int = 180) -> _pd.DataFrame:
     """Cached inner — RAISES on any failure (missing key, async timeout,
     run error). Raising instead of returning empty matters because
     @st.cache_data caches return values but NOT exceptions — so a
-    failed run won't get pinned for 4h. The outer wrapper below catches
-    and converts to an empty frame for the renderer.
+    failed run won't get pinned for 4h.
 
-    Allium's REST API has no 'latest cached results' endpoint at the
-    /v1/ path (Dune has /results which returns the most recent
-    materialised execution for free) — every successful fetch here
-    re-runs the query and consumes ~1 Allium credit. The 4h cache
-    keeps spend near-zero on warm-cache page loads.
+    All three HTTP calls (run-async POST, run-state GET poll, results
+    GET) go through _allium_request which retries 429s with backoff.
+    Polling defaults: 15s initial wait before first poll (most runs
+    finish in 20-30s so this avoids burning a request on a known-pending
+    state), then 10s between subsequent polls (Allium free-tier
+    rate-limit is ~10 req/min; this stays well under it).
 
     Reads ALLIUM_API_KEY from st.secrets first, env fallback."""
     try:
@@ -1296,42 +1335,48 @@ def _fetch_allium_query_results_cached(query_id: str,
     import time as _time
 
     # ── Step 1: kick off async run ─────────────────────────────────────
-    r = _requests.post(
+    r = _allium_request(
+        "POST",
         f"https://api.allium.so/api/v1/explorer/queries/{query_id}/run-async",
-        json={"parameters": {}, "run_config": {"limit": run_limit}},
-        headers=H, timeout=30,
+        headers=H,
+        json_body={"parameters": {}, "run_config": {"limit": run_limit}},
     )
     r.raise_for_status()
     run_id = r.json().get("run_id")
     if not run_id:
         raise RuntimeError("Allium /run-async returned no run_id")
 
-    # ── Step 2: poll the run-state endpoint until success/fail/timeout ─
-    elapsed = 0
+    # ── Step 2: poll until success/fail/timeout ────────────────────────
+    # Initial wait — Allium runs almost never finish in <15s, so polling
+    # earlier just burns rate-limit quota on a known-pending state.
+    _time.sleep(initial_wait_seconds)
+    elapsed = initial_wait_seconds
     while elapsed < max_wait_seconds:
-        _time.sleep(poll_seconds)
-        elapsed += poll_seconds
         try:
-            r = _requests.get(
+            r = _allium_request(
+                "GET",
                 f"https://api.allium.so/api/v1/explorer/query-runs/{run_id}",
-                headers=H, timeout=15,
+                headers=H,
             )
             r.raise_for_status()
             status = (r.json().get("status") or "").lower()
         except Exception:
-            continue
+            status = "unknown"
         if status == "success":
             break
         if status in ("failed", "cancelled", "canceled", "error"):
             raise RuntimeError(f"Allium run ended with status={status}")
+        _time.sleep(poll_seconds)
+        elapsed += poll_seconds
     else:
         raise TimeoutError(
             f"Allium run did not complete in {max_wait_seconds}s")
 
     # ── Step 3: fetch results ──────────────────────────────────────────
-    r = _requests.get(
+    r = _allium_request(
+        "GET",
         f"https://api.allium.so/api/v1/explorer/query-runs/{run_id}/results",
-        headers=H, timeout=30,
+        headers=H,
     )
     r.raise_for_status()
     rows = (r.json() or {}).get("data") or []

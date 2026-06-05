@@ -1501,9 +1501,14 @@ def _render_prediction_markets() -> None:
 
     _render_jupiter_dflow_comparison_section()
     st.divider()
-    _render_jupiter_prediction_section()
-    st.divider()
-    _render_dflow_prediction_section()
+    # Per-platform "additional metrics" sections collapsed by default —
+    # the comparison section above is the headline view; these are
+    # platform-specific extras (Jupiter TVL + Users, DFlow Active Users
+    # + Token Balance) so most users won't expand them every visit.
+    with st.expander("Jupiter — Additional Metrics", expanded=False):
+        _render_jupiter_prediction_section()
+    with st.expander("DFlow — Additional Metrics", expanded=False):
+        _render_dflow_prediction_section()
     st.divider()
     _render_phantom_prediction_section()
 
@@ -1901,8 +1906,10 @@ def _fetch_jupiter_metric(query_id: int, daily_src: str, cum_src: str,
 def _render_jupiter_prediction_section() -> None:
     """Jupiter-only metrics (TVL + Unique Users). The 4 metrics Jupiter
     shares with DFlow (Notional Volume, Volume, Fees, Transactions) are
-    rendered in the comparison section above to avoid duplication."""
-    st.subheader("Jupiter — Additional Metrics")
+    rendered in the comparison section above to avoid duplication.
+
+    Section title is supplied by the st.expander wrapper in
+    _render_prediction_markets — no internal subheader needed."""
     st.caption(
         "Jupiter-only metrics not published in compatible units by DFlow. "
         "Source: [datadashboards/jupiter-prediction-markets]"
@@ -1967,8 +1974,10 @@ def _render_dflow_prediction_section() -> None:
       • 6510861 — unified daily activity (we only consume N_Users here;
         the other 4 cols go to the comparison section above)
       • 6512170 — long-format token balance (day, symbol, token_balance)
+
+    Section title is supplied by the st.expander wrapper in
+    _render_prediction_markets — no internal subheader needed.
     """
-    st.subheader("DFlow — Additional Metrics")
     st.caption(
         "DFlow-only metrics not published by Jupiter. Source: "
         "[stepanalytics_team/prediction-markets-on-solana]"

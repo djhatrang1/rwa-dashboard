@@ -79,7 +79,8 @@ treasury_pullers      = [p for p in pullers if getattr(p, "GROUP", "") == "treas
 # Only RWA is wired up today. Other verticals from the user's spec are
 # documented in the module docstring; they'll appear here as each gets
 # its data source nailed down.
-_VERTICALS = ["SOL token", "Stablecoins", "Lending", "RWA", "Foreign L1 tokens"]
+_VERTICALS = ["SOL token", "Stablecoins", "Lending", "RWA",
+              "Foreign L1 tokens", "Prediction Markets"]
 
 with st.sidebar:
     st.markdown(
@@ -96,7 +97,7 @@ with st.sidebar:
     st.divider()
     st.caption(
         "Other verticals coming soon:  \n"
-        "DEX · Payments · Perps · Prediction"
+        "DEX · Payments · Perps"
     )
 
 # ── Cached Birdeye fetchers (used by SOL token vertical) ──────────────────────
@@ -1226,6 +1227,146 @@ def _render_rwa() -> None:
                 p.render_market_cap_chain(chain="Solana", stacked=True)
 
 
+# ── Prediction Markets vertical (Dune Analytics) ──────────────────────────────
+# Daily + cumulative notional volume for Jupiter's on-chain prediction-market
+# product. Data comes from Dune query 6287629 (Jupiter Prediction Market
+# Notional Volume). Cached 4h to match the cron cadence and keep monthly
+# Dune credit burn near-zero (one query per cache miss, ~200 daily rows).
+_DUNE_QUERY_PREDICTION = 6287629
+
+
+@st.cache_data(ttl=14400, show_spinner=False)
+def _fetch_dune_query_results(query_id: int) -> _pd.DataFrame:
+    """Pull the latest-cached results for a Dune query id via the public REST
+    endpoint. Returns DataFrame[day, notional_volume, cumulative_volume]
+    sorted ascending by day. Reads DUNE_API_KEY from st.secrets first then
+    falls back to the env var so the same call works on Streamlit Cloud and
+    locally. Empty frame on auth/network failure (renderer shows an info
+    placeholder).
+
+    Uses /results (the latest materialised execution), NOT /execute — we
+    consume the existing cached snapshot rather than triggering a fresh run,
+    which costs credits and takes ~4 minutes for this query."""
+    try:
+        key = st.secrets.get("DUNE_API_KEY", "")
+    except Exception:
+        key = ""
+    if not key:
+        key = _os.environ.get("DUNE_API_KEY", "")
+    if not key:
+        return _pd.DataFrame(columns=["day", "notional_volume",
+                                      "cumulative_volume"])
+    try:
+        r = _requests.get(
+            f"https://api.dune.com/api/v1/query/{query_id}/results",
+            headers={"X-Dune-API-Key": key},
+            params={"limit": 5000},   # generous cap; query has ~200 rows
+            timeout=30,
+        )
+        r.raise_for_status()
+        rows = (r.json().get("result") or {}).get("rows") or []
+    except Exception:
+        return _pd.DataFrame(columns=["day", "notional_volume",
+                                      "cumulative_volume"])
+    if not rows:
+        return _pd.DataFrame(columns=["day", "notional_volume",
+                                      "cumulative_volume"])
+    df = _pd.DataFrame([{
+        "day":               _pd.to_datetime(r["day"]),
+        "notional_volume":   float(r.get("Notional Volume") or 0),
+        "cumulative_volume": float(r.get("Cumulative Notional Volume") or 0),
+    } for r in rows])
+    return df.sort_values("day").reset_index(drop=True)
+
+
+def _render_prediction_markets() -> None:
+    """Jupiter prediction-market activity sourced from Dune query 6287629.
+    Two charts side-by-side: daily notional volume (bar) + cumulative
+    notional volume (area). Both share the standard time-controls + 📋
+    raw-data button + B/M/K y-axis format."""
+    st.markdown("## Prediction Markets")
+    st.caption(
+        "On-chain Solana prediction-market activity. Data via Dune "
+        f"Analytics (query [{_DUNE_QUERY_PREDICTION}]"
+        f"(https://dune.com/queries/{_DUNE_QUERY_PREDICTION})), cached 4h "
+        "to match the cron cadence."
+    )
+
+    df = _fetch_dune_query_results(_DUNE_QUERY_PREDICTION)
+    if df.empty:
+        st.info(
+            "No Dune data available. Either the `DUNE_API_KEY` is missing "
+            "(set it in `.env` locally or Streamlit Cloud secrets) or the "
+            "Dune query has no cached results yet — re-run it on Dune."
+        )
+        return
+
+    # Headline metrics: latest cumulative + 7d avg daily + 30d avg daily.
+    latest_cum = float(df["cumulative_volume"].iloc[-1])
+    last_7d    = df["notional_volume"].tail(7).mean()
+    last_30d   = df["notional_volume"].tail(30).mean()
+    asof       = df["day"].iloc[-1].strftime("%Y-%m-%d")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Cumulative Notional",  sd._fmt_usd(latest_cum))
+    m2.metric("7d Avg Daily",         sd._fmt_usd(last_7d))
+    m3.metric("30d Avg Daily",        sd._fmt_usd(last_30d))
+    st.caption(f"As of {asof} · {len(df)} daily observations.")
+    st.divider()
+
+    st.subheader("Jupiter Prediction Markets")
+
+    col_left, col_right = st.columns(2, gap="medium")
+
+    # ── Left: daily notional volume (bar) ──────────────────────────────
+    with col_left:
+        fig_d = _go.Figure()
+        fig_d.add_trace(_go.Bar(
+            x=df["day"], y=df["notional_volume"], name="Daily Notional",
+            marker=dict(color="#9945FF"),     # Jupiter purple
+            customdata=df["notional_volume"].map(sd._fmt_usd),
+            hovertemplate="%{x|%Y-%m-%d}: %{customdata}<extra></extra>",
+        ))
+        y_max_d = float(df["notional_volume"].max() or 0)
+        fig_d.update_layout(
+            height=420, hovermode="x unified",
+            margin=dict(t=10, b=10, l=10, r=10),
+            showlegend=False,
+            yaxis=dict(showgrid=True, rangemode="tozero",
+                       range=[0, y_max_d * 1.10] if y_max_d > 0 else None),
+        )
+        _raw_d = df[["day", "notional_volume"]].copy()
+        sd._chart(fig_d, use_container_width=True,
+                  chart_title="Jupiter Prediction Markets — Daily Notional Volume",
+                  raw_df=_raw_d,
+                  raw_key="pm_jupiter_daily",
+                  raw_filename="jupiter_prediction_market_daily_notional")
+
+    # ── Right: cumulative notional volume (area) ───────────────────────
+    with col_right:
+        fig_c = _go.Figure()
+        fig_c.add_trace(_go.Scatter(
+            x=df["day"], y=df["cumulative_volume"], name="Cumulative",
+            mode="lines", line=dict(color="#9945FF", width=1.5),
+            fill="tozeroy", fillcolor="rgba(153, 69, 255, 0.25)",
+            customdata=df["cumulative_volume"].map(sd._fmt_usd),
+            hovertemplate="%{x|%Y-%m-%d}: %{customdata}<extra></extra>",
+        ))
+        y_max_c = float(df["cumulative_volume"].max() or 0)
+        fig_c.update_layout(
+            height=420, hovermode="x unified",
+            margin=dict(t=10, b=10, l=10, r=10),
+            showlegend=False,
+            yaxis=dict(showgrid=True, rangemode="tozero",
+                       range=[0, y_max_c * 1.10] if y_max_c > 0 else None),
+        )
+        _raw_c = df[["day", "cumulative_volume"]].copy()
+        sd._chart(fig_c, use_container_width=True,
+                  chart_title="Jupiter Prediction Markets — Cumulative Notional Volume",
+                  raw_df=_raw_c,
+                  raw_key="pm_jupiter_cumulative",
+                  raw_filename="jupiter_prediction_market_cumulative_notional")
+
+
 # ── Dispatch ─────────────────────────────────────────────────────────────────
 if vertical == "SOL token":
     _render_sol_token()
@@ -1237,3 +1378,5 @@ elif vertical == "RWA":
     _render_rwa()
 elif vertical == "Foreign L1 tokens":
     _render_foreign_l1()
+elif vertical == "Prediction Markets":
+    _render_prediction_markets()

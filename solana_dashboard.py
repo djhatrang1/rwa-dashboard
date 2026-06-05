@@ -1317,17 +1317,17 @@ def _fetch_dune_query_results(query_id: int) -> _pd.DataFrame:
 
 
 def _render_prediction_markets() -> None:
-    """On-chain Solana prediction-market activity. Per-platform sections
-    fed by Dune queries; each section renders a daily + cumulative chart
-    pair side-by-side using sd._chart's standard time-controls + 📋
-    raw-data button + B/M/K y-axis format.
+    """On-chain Solana prediction-market activity. Layout:
 
-    Current platforms:
-      • Jupiter — 6 metrics (Notional Volume, Volume, Fees, Transactions,
-        TVL, Unique Users)
-      • DFlow   — 5 metrics (Notional Volume, Volume, Fees, Transactions,
-        Daily Active Users) + token-balance stack
-      • Phantom — TVL (daily delta + cumulative delta)
+      1. Jupiter vs DFlow comparison — 4 metrics where the two
+         platforms publish in compatible units (Notional Volume,
+         Volume, Fees, Transactions). Each metric becomes one daily
+         + cumulative chart pair with both platforms overlaid on
+         the same axes, so users can eyeball-compare trajectories.
+      2. Jupiter (additional) — TVL + Unique Users (Jupiter-only).
+      3. DFlow (additional) — Daily Active Users + Token Balance
+         by symbol (DFlow-only).
+      4. Phantom — TVL daily delta + cumulative.
     """
     st.markdown("## Prediction Markets")
     st.caption(
@@ -1336,11 +1336,134 @@ def _render_prediction_markets() -> None:
     )
     st.divider()
 
+    _render_jupiter_dflow_comparison_section()
+    st.divider()
     _render_jupiter_prediction_section()
     st.divider()
     _render_dflow_prediction_section()
     st.divider()
     _render_phantom_prediction_section()
+
+
+def _render_jupiter_dflow_comparison_section() -> None:
+    """Jupiter vs DFlow head-to-head on the 4 metrics where both
+    platforms publish in compatible units: Notional Volume, Volume, Fees
+    (USD), and Transactions (count). Each metric renders a daily +
+    cumulative chart pair via _render_dune_metric_compare_pair, with
+    Jupiter purple + DFlow orange overlaid on one axis.
+
+    KPI row: 2 rows of 4 metric counters — top row Jupiter, bottom
+    row DFlow — so the latest cumulative side-by-side reads at a
+    glance."""
+    st.subheader("Jupiter vs DFlow — Comparable Metrics")
+    st.caption(
+        "Direct head-to-head on the metrics both platforms publish in "
+        "compatible units. Jupiter purple ◆ DFlow orange."
+    )
+
+    # ── Fetch all 4 Jupiter metrics + the unified DFlow query ───────────
+    jup_notional = _fetch_jupiter_metric(_DUNE_QUERY_JUPITER_NOTIONAL,
+                                         "Notional Volume",
+                                         "Cumulative Notional Volume")
+    jup_volume   = _fetch_jupiter_metric(_DUNE_QUERY_JUPITER_VOLUME,
+                                         "Volume", "Cumulative Volume")
+    jup_fees     = _fetch_jupiter_metric(_DUNE_QUERY_JUPITER_FEES,
+                                         "Fees", "Cumulative Fees")
+    jup_tx       = _fetch_jupiter_metric(_DUNE_QUERY_JUPITER_TX,
+                                         "Transctions",   # sic — Dune typo
+                                         "Cumulative Transactions")
+
+    dfl_raw = _fetch_dune_query_results(_DUNE_QUERY_DFLOW_ACTIVITY)
+    def _dfl_pair(daily_src: str, cum_src: str) -> _pd.DataFrame:
+        if dfl_raw.empty or "day" not in dfl_raw.columns \
+                or daily_src not in dfl_raw.columns:
+            return _pd.DataFrame(columns=["day", "daily", "cumulative"])
+        out = dfl_raw[["day", daily_src, cum_src]].rename(
+            columns={daily_src: "daily", cum_src: "cumulative"})
+        out["daily"] = out["daily"].astype(float)
+        out["cumulative"] = out["cumulative"].astype(float)
+        return out
+    dfl_notional = _dfl_pair("Notional_Volume", "Cum_Notional_Volume")
+    dfl_volume   = _dfl_pair("Volume",          "Cum_Volume")
+    dfl_fees     = _dfl_pair("Fee",             "Cum_Fee")
+    dfl_tx       = _dfl_pair("N_TRX",           "Cum_N_TXs")
+
+    # No data at all? Show one placeholder and bail.
+    all_dfs = [jup_notional, jup_volume, jup_fees, jup_tx,
+               dfl_notional, dfl_volume, dfl_fees, dfl_tx]
+    if all(d.empty for d in all_dfs):
+        st.info("No Dune data available for either platform.")
+        return
+
+    # ── KPI grid: 2 rows × 4 cols, Jupiter on top, DFlow below ──────────
+    def _latest(_df, col):
+        return float(_df[col].iloc[-1]) if not _df.empty else None
+
+    def _fmt_metric(v, mode="currency"):
+        if v is None:    return "—"
+        if mode == "count": return f"{int(v):,}"
+        return sd._fmt_usd(v)
+
+    asof_candidates = [d["day"].iloc[-1]
+                       for d in all_dfs if not d.empty]
+    asof = max(asof_candidates).strftime("%Y-%m-%d") if asof_candidates else "?"
+
+    st.caption("**Jupiter** — latest cumulative")
+    j1, j2, j3, j4 = st.columns(4)
+    j1.metric("Notional Volume",
+              _fmt_metric(_latest(jup_notional, "cumulative")))
+    j2.metric("Volume",
+              _fmt_metric(_latest(jup_volume, "cumulative")))
+    j3.metric("Fees",
+              _fmt_metric(_latest(jup_fees, "cumulative")))
+    j4.metric("Transactions",
+              _fmt_metric(_latest(jup_tx, "cumulative"), mode="count"))
+    st.caption("**DFlow** — latest cumulative")
+    d1, d2, d3, d4 = st.columns(4)
+    d1.metric("Notional Volume",
+              _fmt_metric(_latest(dfl_notional, "cumulative")))
+    d2.metric("Volume",
+              _fmt_metric(_latest(dfl_volume, "cumulative")))
+    d3.metric("Fees",
+              _fmt_metric(_latest(dfl_fees, "cumulative")))
+    d4.metric("Transactions",
+              _fmt_metric(_latest(dfl_tx, "cumulative"), mode="count"))
+    st.caption(f"As of {asof}.")
+    st.write("")
+
+    # ── 4 head-to-head chart pairs (8 charts total in 4 rows of 2) ──────
+    _compare_specs = [
+        # (jup_df, dfl_df, daily_title, cum_title, raw_key_prefix, fmt_mode)
+        (jup_notional, dfl_notional,
+         "Daily Notional Volume — Jupiter vs DFlow",
+         "Cumulative Notional Volume — Jupiter vs DFlow",
+         "pm_cmp_notional",  "currency"),
+        (jup_volume, dfl_volume,
+         "Daily Volume — Jupiter vs DFlow",
+         "Cumulative Volume — Jupiter vs DFlow",
+         "pm_cmp_volume",    "currency"),
+        (jup_fees, dfl_fees,
+         "Daily Fees — Jupiter vs DFlow",
+         "Cumulative Fees — Jupiter vs DFlow",
+         "pm_cmp_fees",      "currency"),
+        (jup_tx, dfl_tx,
+         "Daily Transactions — Jupiter vs DFlow",
+         "Cumulative Transactions — Jupiter vs DFlow",
+         "pm_cmp_tx",        "count"),
+    ]
+    for jup_df, dfl_df, dt, ct, key, mode in _compare_specs:
+        if jup_df.empty and dfl_df.empty:
+            st.info(f"No data for `{key}` yet.")
+            continue
+        _render_dune_metric_compare_pair(
+            series=[
+                (jup_df, "Jupiter", _JUP_COLOR, _JUP_FILL),
+                (dfl_df, "DFlow",   _DFL_COLOR, _DFL_FILL),
+            ],
+            daily_col="daily", cum_col="cumulative",
+            daily_title=dt, cum_title=ct,
+            raw_key_prefix=key, fmt_mode=mode,
+        )
 
 
 _JUP_COLOR = "#9945FF"                        # Jupiter brand purple
@@ -1431,6 +1554,131 @@ def _render_dune_metric_pair(
                   raw_filename=f"{raw_key_prefix}_cum")
 
 
+def _render_dune_metric_compare_pair(
+    series: list[tuple[_pd.DataFrame, str, str, str]],
+    daily_col: str,
+    cum_col: str,
+    daily_title: str,
+    cum_title: str,
+    raw_key_prefix: str,
+    fmt_mode: str = "currency",
+) -> None:
+    """Render a side-by-side daily + cumulative chart pair where each
+    chart overlays one trace per platform from `series`. Use this when
+    two or more platforms publish the SAME metric in compatible units
+    (e.g. Jupiter vs DFlow Notional Volume / Volume / Fees / Tx) so the
+    viewer can eyeball-compare trajectories on one axis.
+
+    `series` items are tuples (df, label, color, fill_rgba). Each df
+    must have a `day` column plus the requested daily_col + cum_col.
+
+    Daily chart  → lines+markers per platform (bars don't compose for
+                   N overlapping series).
+    Cumulative   → solid line per platform, no fill — when one platform
+                   is much larger than another, a filled-area overlay
+                   visually hides the smaller series. Lines work for any
+                   magnitude gap."""
+    if fmt_mode == "count":
+        _hover_fmt   = lambda v: f"{int(v):,}"
+        _raw_fmt_str = "{:,.0f}"
+    else:
+        _hover_fmt   = sd._fmt_usd
+        _raw_fmt_str = "${:,.0f}"
+
+    # Build merged raw frames: outer-join on day → one col per platform
+    # so the 📋 modal lets analysts see all platforms side-by-side.
+    raw_daily = None
+    raw_cum   = None
+    for df, label, _c, _f in series:
+        if df.empty:
+            continue
+        sub_d = df[["day", daily_col]].rename(columns={daily_col: label})
+        sub_c = df[["day", cum_col]].rename(columns={cum_col: label})
+        raw_daily = sub_d if raw_daily is None else raw_daily.merge(
+            sub_d, on="day", how="outer")
+        raw_cum   = sub_c if raw_cum   is None else raw_cum.merge(
+            sub_c, on="day", how="outer")
+    if raw_daily is not None:
+        raw_daily = raw_daily.sort_values("day").reset_index(drop=True)
+    if raw_cum is not None:
+        raw_cum = raw_cum.sort_values("day").reset_index(drop=True)
+
+    col_left, col_right = st.columns(2, gap="medium")
+
+    # ── Left: daily lines+markers per platform ──────────────────────────
+    with col_left:
+        fig_d = _go.Figure()
+        for df, label, color, _ in series:
+            if df.empty:
+                continue
+            fig_d.add_trace(_go.Scatter(
+                x=df["day"], y=df[daily_col], name=label,
+                mode="lines+markers",
+                line=dict(color=color, width=1.5),
+                marker=dict(color=color, size=4),
+                customdata=df[daily_col].map(_hover_fmt),
+                hovertemplate=f"{label}: %{{customdata}}<extra></extra>",
+            ))
+        y_max_d = max(
+            (float(df[daily_col].max() or 0)
+             for df, _, _, _ in series if not df.empty),
+            default=0,
+        )
+        fig_d.update_layout(
+            height=420, hovermode="x unified",
+            margin=dict(t=10, b=10, l=10, r=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                        xanchor="right", x=1),
+            yaxis=dict(showgrid=True, rangemode="tozero",
+                       range=[0, y_max_d * 1.10] if y_max_d > 0 else None),
+        )
+        _raw_fmt_d = {label: _raw_fmt_str
+                      for df, label, _, _ in series if not df.empty}
+        sd._chart(fig_d, use_container_width=True, fmt_mode=fmt_mode,
+                  chart_title=daily_title,
+                  raw_df=(raw_daily if raw_daily is not None
+                          else _pd.DataFrame()),
+                  raw_key=f"{raw_key_prefix}_daily",
+                  raw_fmt=_raw_fmt_d,
+                  raw_filename=f"{raw_key_prefix}_daily")
+
+    # ── Right: cumulative lines per platform ────────────────────────────
+    with col_right:
+        fig_c = _go.Figure()
+        for df, label, color, _ in series:
+            if df.empty:
+                continue
+            fig_c.add_trace(_go.Scatter(
+                x=df["day"], y=df[cum_col], name=label,
+                mode="lines",
+                line=dict(color=color, width=2),
+                customdata=df[cum_col].map(_hover_fmt),
+                hovertemplate=f"{label}: %{{customdata}}<extra></extra>",
+            ))
+        y_max_c = max(
+            (float(df[cum_col].max() or 0)
+             for df, _, _, _ in series if not df.empty),
+            default=0,
+        )
+        fig_c.update_layout(
+            height=420, hovermode="x unified",
+            margin=dict(t=10, b=10, l=10, r=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                        xanchor="right", x=1),
+            yaxis=dict(showgrid=True, rangemode="tozero",
+                       range=[0, y_max_c * 1.10] if y_max_c > 0 else None),
+        )
+        _raw_fmt_c = {label: _raw_fmt_str
+                      for df, label, _, _ in series if not df.empty}
+        sd._chart(fig_c, use_container_width=True, fmt_mode=fmt_mode,
+                  chart_title=cum_title,
+                  raw_df=(raw_cum if raw_cum is not None
+                          else _pd.DataFrame()),
+                  raw_key=f"{raw_key_prefix}_cum",
+                  raw_fmt=_raw_fmt_c,
+                  raw_filename=f"{raw_key_prefix}_cum")
+
+
 def _fetch_jupiter_metric(query_id: int, daily_src: str, cum_src: str,
                           resample_to_daily: bool = False) -> _pd.DataFrame:
     """Wrapper around _fetch_dune_query_results that normalises a Jupiter
@@ -1459,52 +1707,26 @@ def _fetch_jupiter_metric(query_id: int, daily_src: str, cum_src: str,
 
 
 def _render_jupiter_prediction_section() -> None:
-    """Jupiter prediction-market activity — 6 metric chart pairs sourced
-    from the public /datadashboards/jupiter-prediction-markets dashboard.
-
-    Order: Notional Volume → Volume → Fees → Transactions → TVL → Users
-    (money first, activity next, liquidity last). Each metric renders as
-    a daily-bar + cumulative-area pair via _render_dune_metric_pair so
-    the 6 sections stay structurally identical and easy to scan."""
-    st.subheader("Jupiter Prediction Markets")
+    """Jupiter-only metrics (TVL + Unique Users). The 4 metrics Jupiter
+    shares with DFlow (Notional Volume, Volume, Fees, Transactions) are
+    rendered in the comparison section above to avoid duplication."""
+    st.subheader("Jupiter — Additional Metrics")
     st.caption(
+        "Jupiter-only metrics not published in compatible units by DFlow. "
         "Source: [datadashboards/jupiter-prediction-markets]"
-        "(https://dune.com/datadashboards/jupiter-prediction-markets) — "
-        "6 Dune queries (Notional Volume · Volume · Fees · Transactions · "
-        "TVL · Unique Users)."
+        "(https://dune.com/datadashboards/jupiter-prediction-markets)."
     )
 
-    # Fetch all 6 metrics up-front. Each call hits the 4h cache so this is
-    # cheap on warm-cache reruns. Empty frames fall through to per-section
-    # placeholders below so a single broken query doesn't black-hole the
-    # whole page.
-    df_notional = _fetch_jupiter_metric(_DUNE_QUERY_JUPITER_NOTIONAL,
-                                        "Notional Volume",
-                                        "Cumulative Notional Volume")
-    df_volume   = _fetch_jupiter_metric(_DUNE_QUERY_JUPITER_VOLUME,
-                                        "Volume", "Cumulative Volume")
-    df_fees     = _fetch_jupiter_metric(_DUNE_QUERY_JUPITER_FEES,
-                                        "Fees", "Cumulative Fees")
-    df_tx       = _fetch_jupiter_metric(_DUNE_QUERY_JUPITER_TX,
-                                        "Transctions",   # sic — Dune typo
-                                        "Cumulative Transactions")
-    df_tvl      = _fetch_jupiter_metric(_DUNE_QUERY_JUPITER_TVL,
-                                        "TVLDelta", "TVL_CumulativeDelta",
-                                        resample_to_daily=True)
-    df_users    = _fetch_jupiter_metric(_DUNE_QUERY_JUPITER_USERS,
-                                        "New", "Cumulative Unique Users")
+    df_tvl   = _fetch_jupiter_metric(_DUNE_QUERY_JUPITER_TVL,
+                                     "TVLDelta", "TVL_CumulativeDelta",
+                                     resample_to_daily=True)
+    df_users = _fetch_jupiter_metric(_DUNE_QUERY_JUPITER_USERS,
+                                     "New", "Cumulative Unique Users")
 
-    # No data at all? Show one placeholder and bail.
-    if all(d.empty for d in [df_notional, df_volume, df_fees, df_tx,
-                             df_tvl, df_users]):
-        st.info(
-            "No Dune data available. Either the `DUNE_API_KEY` is missing "
-            "(set it in `.env` locally or Streamlit Cloud secrets) or the "
-            "queries have no cached results yet."
-        )
+    if df_tvl.empty and df_users.empty:
+        st.info("No Dune data available for Jupiter's TVL or Users queries.")
         return
 
-    # ── Headline KPIs: 6 latest cumulative counters in 2 rows of 3 ──────
     def _latest(_df, col):
         return float(_df[col].iloc[-1]) if not _df.empty else None
 
@@ -1513,47 +1735,18 @@ def _render_jupiter_prediction_section() -> None:
         if mode == "count": return f"{int(v):,}"
         return sd._fmt_usd(v)
 
-    asof_candidates = [d["day"].iloc[-1] for d in
-                       [df_notional, df_volume, df_fees, df_tx, df_tvl, df_users]
-                       if not d.empty]
+    asof_candidates = [d["day"].iloc[-1] for d in [df_tvl, df_users] if not d.empty]
     asof = max(asof_candidates).strftime("%Y-%m-%d") if asof_candidates else "?"
 
-    r1c1, r1c2, r1c3 = st.columns(3)
-    r1c1.metric("Cumulative Notional",
-                _fmt_metric(_latest(df_notional, "cumulative")))
-    r1c2.metric("Cumulative Volume",
-                _fmt_metric(_latest(df_volume, "cumulative")))
-    r1c3.metric("Cumulative Fees",
-                _fmt_metric(_latest(df_fees, "cumulative")))
-    r2c1, r2c2, r2c3 = st.columns(3)
-    r2c1.metric("Cumulative Transactions",
-                _fmt_metric(_latest(df_tx, "cumulative"), mode="count"))
-    r2c2.metric("Current TVL",
-                _fmt_metric(_latest(df_tvl, "cumulative")))
-    r2c3.metric("Cumulative Unique Users",
-                _fmt_metric(_latest(df_users, "cumulative"), mode="count"))
+    k1, k2 = st.columns(2)
+    k1.metric("Current TVL",
+              _fmt_metric(_latest(df_tvl, "cumulative")))
+    k2.metric("Cumulative Unique Users",
+              _fmt_metric(_latest(df_users, "cumulative"), mode="count"))
     st.caption(f"As of {asof}.")
-    st.write("")    # vertical breathing room before the chart grid
+    st.write("")
 
-    # ── 6 metric chart pairs (12 charts total in 6 rows of 2) ───────────
     _metric_specs = [
-        # (df, daily_title, cum_title, raw_key_prefix, fmt_mode)
-        (df_notional,
-         "Jupiter — Daily Notional Volume",
-         "Jupiter — Cumulative Notional Volume",
-         "pm_jup_notional",  "currency"),
-        (df_volume,
-         "Jupiter — Daily Volume",
-         "Jupiter — Cumulative Volume",
-         "pm_jup_volume",    "currency"),
-        (df_fees,
-         "Jupiter — Daily Fees",
-         "Jupiter — Cumulative Fees",
-         "pm_jup_fees",      "currency"),
-        (df_tx,
-         "Jupiter — Daily Transactions",
-         "Jupiter — Cumulative Transactions",
-         "pm_jup_tx",        "count"),
         (df_tvl,
          "Jupiter — Daily TVL Delta",
          "Jupiter — Cumulative TVL",
@@ -1575,54 +1768,30 @@ def _render_jupiter_prediction_section() -> None:
 
 
 def _render_dflow_prediction_section() -> None:
-    """DFlow prediction-market activity sourced from the public
-    /stepanalytics_team/prediction-markets-on-solana dashboard. Two
-    queries:
-      • 6510861 — unified daily activity (5 metrics in one query):
-        N_Users / N_TRX / Cum_N_TXs / Volume / Cum_Volume /
-        Notional_Volume / Cum_Notional_Volume / Fee / Cum_Fee
+    """DFlow-only metrics: Daily Active Users + Token Balance by symbol.
+    The 4 metrics DFlow shares with Jupiter (Notional Volume, Volume,
+    Fees, Transactions) are rendered in the comparison section above to
+    avoid duplication. Sources:
+      • 6510861 — unified daily activity (we only consume N_Users here;
+        the other 4 cols go to the comparison section above)
       • 6512170 — long-format token balance (day, symbol, token_balance)
-
-    Renders: KPI counter row, then 4 daily-+-cumulative chart pairs
-    (Notional, Volume, Fees, Tx) reusing _render_dune_metric_pair, then
-    a standalone daily-active-users bar (no cumulative col in source),
-    then a 2-token stacked area for token balances (CASH + USDC)."""
-    st.subheader("DFlow Prediction Markets")
+    """
+    st.subheader("DFlow — Additional Metrics")
     st.caption(
-        "Source: [stepanalytics_team/prediction-markets-on-solana]"
-        "(https://dune.com/stepanalytics_team/prediction-markets-on-solana) "
-        "— 2 Dune queries (unified daily activity + token balance)."
+        "DFlow-only metrics not published by Jupiter. Source: "
+        "[stepanalytics_team/prediction-markets-on-solana]"
+        "(https://dune.com/stepanalytics_team/prediction-markets-on-solana)."
     )
 
-    # ── Fetch + split the unified activity query into per-metric frames ──
     raw = _fetch_dune_query_results(_DUNE_QUERY_DFLOW_ACTIVITY)
-    if raw.empty or "day" not in raw.columns:
-        st.info("No Dune data available for DFlow activity (query 6510861).")
-        return
+    have_users = (not raw.empty and "day" in raw.columns
+                  and "N_Users" in raw.columns)
+    df_users = _pd.DataFrame(columns=["day", "daily"])
+    if have_users:
+        df_users = raw[["day", "N_Users"]].rename(
+            columns={"N_Users": "daily"}).copy()
+        df_users["daily"] = df_users["daily"].astype(float)
 
-    def _pair(daily_src: str, cum_src: str | None) -> _pd.DataFrame:
-        """Slice the unified raw frame down to [day, daily, cumulative].
-        Pass cum_src=None for metrics that have no cumulative column."""
-        if daily_src not in raw.columns:
-            return _pd.DataFrame(columns=["day", "daily", "cumulative"])
-        cols  = ["day", daily_src] + ([cum_src] if cum_src else [])
-        rmap  = {daily_src: "daily"}
-        if cum_src:
-            rmap[cum_src] = "cumulative"
-        out = raw[cols].rename(columns=rmap)
-        out["daily"] = out["daily"].astype(float)
-        if cum_src:
-            out["cumulative"] = out["cumulative"].astype(float)
-        return out
-
-    df_notional = _pair("Notional_Volume", "Cum_Notional_Volume")
-    df_volume   = _pair("Volume",          "Cum_Volume")
-    df_fees     = _pair("Fee",             "Cum_Fee")
-    df_tx       = _pair("N_TRX",           "Cum_N_TXs")
-    df_users    = _pair("N_Users", None)     # daily-only (no cumulative col)
-
-    # Token balance — long format, latest snapshot for KPI + full series
-    # for stacked-area below.
     tokbal = _fetch_dune_query_results(_DUNE_QUERY_DFLOW_TOKBAL)
     have_tokbal = (not tokbal.empty and "day" in tokbal.columns
                    and "symbol" in tokbal.columns
@@ -1631,9 +1800,10 @@ def _render_dflow_prediction_section() -> None:
         tokbal = tokbal.copy()
         tokbal["token_balance"] = tokbal["token_balance"].astype(float)
 
-    # ── KPI row: 6 latest counters in 2 rows of 3 ───────────────────────
-    def _latest(_df, col):
-        return float(_df[col].iloc[-1]) if not _df.empty else None
+    if df_users.empty and not have_tokbal:
+        st.info("No Dune data available for DFlow's Active Users or "
+                "Token Balance queries.")
+        return
 
     def _fmt_metric(v, mode="currency"):
         if v is None:    return "—"
@@ -1642,69 +1812,24 @@ def _render_dflow_prediction_section() -> None:
 
     latest_tokbal_total = None
     if have_tokbal:
-        # Sum the latest reading PER symbol (each symbol has its own
-        # last-day). Not the last day globally — that would miss any
-        # symbol whose latest sample lags by a day or two.
         latest_per_sym = (tokbal.sort_values("day")
                                 .groupby("symbol")
                                 .tail(1)["token_balance"].sum())
         latest_tokbal_total = float(latest_per_sym)
 
-    asof_candidates = [d["day"].iloc[-1] for d in
-                       [df_notional, df_volume, df_fees, df_tx, df_users]
-                       if not d.empty]
-    if have_tokbal:
-        asof_candidates.append(tokbal["day"].max())
+    asof_candidates = []
+    if not df_users.empty: asof_candidates.append(df_users["day"].iloc[-1])
+    if have_tokbal:        asof_candidates.append(tokbal["day"].max())
     asof = max(asof_candidates).strftime("%Y-%m-%d") if asof_candidates else "?"
 
-    r1c1, r1c2, r1c3 = st.columns(3)
-    r1c1.metric("Cumulative Notional",
-                _fmt_metric(_latest(df_notional, "cumulative")))
-    r1c2.metric("Cumulative Volume",
-                _fmt_metric(_latest(df_volume, "cumulative")))
-    r1c3.metric("Cumulative Fees",
-                _fmt_metric(_latest(df_fees, "cumulative")))
-    r2c1, r2c2, r2c3 = st.columns(3)
-    r2c1.metric("Cumulative Transactions",
-                _fmt_metric(_latest(df_tx, "cumulative"), mode="count"))
-    # Users: no cumulative col in source → show 7d avg daily active
-    r2c2.metric("7d Avg Daily Active Users",
-                _fmt_metric(df_users["daily"].tail(7).mean() if not df_users.empty else None,
-                            mode="count"))
-    r2c3.metric("Total Token Balance",
-                _fmt_metric(latest_tokbal_total))
+    k1, k2 = st.columns(2)
+    k1.metric("7d Avg Daily Active Users",
+              _fmt_metric(df_users["daily"].tail(7).mean() if not df_users.empty else None,
+                          mode="count"))
+    k2.metric("Total Token Balance",
+              _fmt_metric(latest_tokbal_total))
     st.caption(f"As of {asof}.")
     st.write("")
-
-    # ── 4 metric chart pairs ────────────────────────────────────────────
-    _metric_specs = [
-        (df_notional,
-         "DFlow — Daily Notional Volume",
-         "DFlow — Cumulative Notional Volume",
-         "pm_dfl_notional",  "currency"),
-        (df_volume,
-         "DFlow — Daily Volume",
-         "DFlow — Cumulative Volume",
-         "pm_dfl_volume",    "currency"),
-        (df_fees,
-         "DFlow — Daily Fees",
-         "DFlow — Cumulative Fees",
-         "pm_dfl_fees",      "currency"),
-        (df_tx,
-         "DFlow — Daily Transactions",
-         "DFlow — Cumulative Transactions",
-         "pm_dfl_tx",        "count"),
-    ]
-    for spec_df, dt, ct, key, mode in _metric_specs:
-        if spec_df.empty:
-            st.info(f"No data for `{key}` yet.")
-            continue
-        _render_dune_metric_pair(
-            spec_df, daily_col="daily", cum_col="cumulative",
-            daily_title=dt, cum_title=ct,
-            raw_key_prefix=key, fmt_mode=mode,
-            color=_DFL_COLOR, fill=_DFL_FILL,
-        )
 
     # ── Daily Active Users (standalone bar, no cumulative col in source) ─
     if not df_users.empty:

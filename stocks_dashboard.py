@@ -4860,12 +4860,18 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
                     filename: str = "data") -> None:
     """Pop-open dialog showing a chart's underlying data with a Download
     CSV button. `fmt` is a Pandas Styler format dict ({col: '${:,.0f}'});
-    when None, auto-formats any non-date column as USD with thousands
+    when None, auto-formats every NUMERIC column as USD with thousands
     separators (sensible default for the finance-oriented charts here).
+
+    Non-numeric columns are skipped regardless of name — applying a
+    numeric format string like '${:,.0f}' to a datetime/object column
+    makes Streamlit's marshall_styler raise StreamlitAPIException. The
+    older `skip={"date","month","week"}` allowlist missed the Prediction
+    Markets charts which use 'day' as their date column.
     """
     if fmt is None:
-        skip = {"date", "month", "week"}
-        fmt = {c: "${:,.0f}" for c in df.columns if c not in skip}
+        fmt = {c: "${:,.0f}" for c in df.columns
+               if pd.api.types.is_numeric_dtype(df[c])}
     st.download_button(
         "⬇️ Download CSV",
         df.to_csv(index=False).encode("utf-8"),

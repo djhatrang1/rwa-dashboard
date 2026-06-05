@@ -1357,10 +1357,16 @@ def _render_dune_metric_pair(
     helper. fmt_mode='count' drops the $ prefix for non-USD metrics
     (Transactions, Users)."""
     # Hover formatter: $ for currency, comma-separated for counts.
+    # raw_fmt_str carries the same convention into the 📋 raw-data modal
+    # — defaults to '${:,.0f}' for USD via _raw_data_modal's auto-fmt;
+    # explicitly '{:,.0f}' (no $) for count metrics so Transactions /
+    # Users render as 175,474 not $175,474.
     if fmt_mode == "count":
-        _hover_fmt = lambda v: f"{int(v):,}"
+        _hover_fmt   = lambda v: f"{int(v):,}"
+        _raw_fmt_str = "{:,.0f}"
     else:
-        _hover_fmt = sd._fmt_usd
+        _hover_fmt   = sd._fmt_usd
+        _raw_fmt_str = "${:,.0f}"
 
     col_left, col_right = st.columns(2, gap="medium")
     with col_left:
@@ -1382,6 +1388,7 @@ def _render_dune_metric_pair(
                   chart_title=daily_title,
                   raw_df=df[["day", daily_col]].copy(),
                   raw_key=f"{raw_key_prefix}_daily",
+                  raw_fmt={daily_col: _raw_fmt_str},
                   raw_filename=f"{raw_key_prefix}_daily")
 
     with col_right:
@@ -1404,6 +1411,7 @@ def _render_dune_metric_pair(
                   chart_title=cum_title,
                   raw_df=df[["day", cum_col]].copy(),
                   raw_key=f"{raw_key_prefix}_cum",
+                  raw_fmt={cum_col: _raw_fmt_str},
                   raw_filename=f"{raw_key_prefix}_cum")
 
 

@@ -2669,9 +2669,16 @@ class TokenGroupMetricsPuller(DataPuller):
 
         st.caption(f"Last pull: {df.attrs.get('pulled_at', '?')} UTC · Source: Birdeye")
         with st.container(key=f"chartwrap_{self.name}"):
-            # Raw-data icon — pinned onto the tab row, far right (see CSS)
+            # Raw-data icon — pinned onto the tab row, far right (see CSS).
+            # Restrict the modal payload to the columns actually charted
+            # (date + per-token vol_*_usd) so analysts don't get unrelated
+            # MC + every-other-chain columns dumped on them.
+            _vol_cols = [self._safe_col(t) for t, _, _ in sorted_tokens
+                         if self._safe_col(t) in df.columns]
+            _raw = df[["date"] + _vol_cols].sort_values(
+                "date", ascending=False)
             if st.button("📋", key=f"raw_{self.name}", help="View raw data"):
-                _raw_data_modal(df.sort_values("date", ascending=False), _fmt)
+                _raw_data_modal(_raw, _fmt)
             tab_d, tab_w, tab_m = st.tabs(["Daily", "Weekly", "Monthly"])
             with tab_d:
                 _chart(
@@ -2988,12 +2995,20 @@ class TokenGroupMetricsPuller(DataPuller):
         if key_suffix:
             chain_tag = f"{chain_tag}_{key_suffix}"
         with st.container(key=f"chartwrap_{self.name}_vol_{chain_tag}"):
-            # Raw-data icon — pinned via existing CSS rules.
-            _fmt = {self._safe_col(t, chain): "${:,.0f}"
-                    for t, _, _ in sorted_tokens}
+            # Raw-data icon — pinned via existing CSS rules. Restrict to the
+            # chain-suffixed vol cols that are actually charted so the modal
+            # doesn't dump MC + every other chain's vol columns on the user
+            # (the cache row carries every column the puller writes — for
+            # 'Other Stables (Solana)' that's ~60 unrelated mc_*/vol_*
+            # entries without this filter).
+            _vol_cols = [self._safe_col(t, chain) for t, _, _ in sorted_tokens
+                         if self._safe_col(t, chain) in df.columns]
+            _fmt = {c: "${:,.0f}" for c in _vol_cols}
+            _raw = df[["date"] + _vol_cols].sort_values(
+                "date", ascending=False)
             if st.button("📋", key=f"raw_{self.name}_vol_{chain_tag}",
                          help="View raw data"):
-                _raw_data_modal(df.sort_values("date", ascending=False), _fmt)
+                _raw_data_modal(_raw, _fmt)
             # Aliased view: rename the chain-suffixed col → legacy col name so
             # _build_fig (which reads _safe_col(name) = vol_<name>_usd) works
             # without modification. The legacy col is also written by fetch()

@@ -1180,6 +1180,38 @@ def _render_rwa() -> None:
                             use_container_width=True)
             st.divider()
 
+            # Combined market cap — total tokenized-stock MC on Solana,
+            # stacked by project. Same per-project label set + colors as
+            # the Volume chart above so the two read as a coherent pair
+            # (band stack on the right shows how much MC each project is
+            # carrying; Total in the unified-hover tooltip = aggregate
+            # Solana tokenized-stock MC at that date).
+            mc_combined_df = sd._combined_stocks_mc_chain_df(
+                stocks_pullers, chain="Solana")
+            if mc_combined_df is None or mc_combined_df.empty:
+                st.info(
+                    "No Solana market-cap data for tokenized stocks yet. "
+                    "Series will populate on the next pull (every 4h)."
+                )
+            else:
+                mc_labels  = [p.GROUP_LABEL for p in stocks_pullers]
+                _mc_present = [l for l in mc_labels
+                               if l in mc_combined_df.columns]
+                _mc_raw = mc_combined_df.copy()
+                _mc_raw["Total"] = (_mc_raw[_mc_present].ffill()
+                                                       .fillna(0)
+                                                       .sum(axis=1))
+                sd._chart(
+                    sd._build_combined_stocks_mc_fig(
+                        mc_combined_df, mc_labels, height=400),
+                    use_container_width=True,
+                    chart_title="All Tokenized Stocks — Market Cap by Project (Solana)",
+                    raw_df=_mc_raw.sort_values("date", ascending=False),
+                    raw_key="sd_combined_stocks_mc",
+                    raw_filename="solana_tokenized_stocks_total_mc",
+                )
+            st.divider()
+
             # Per-group volume — 2 per row.
             for row_start in range(0, len(stocks_pullers), 2):
                 col_a, col_b = st.columns(2, gap="medium")

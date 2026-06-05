@@ -4869,6 +4869,92 @@ _STOCKS_PROJECT_COLORS: dict[str, str] = {
 }
 
 
+def _combined_stocks_mc_chain_df(pullers: list,
+                                 chain: str) -> pd.DataFrame | None:
+    """Merge per-project chain-specific MC into one wide DataFrame.
+
+    Result columns: date | <GROUP_LABEL> …
+    Each project column = sum of all its mc_<token>_<chain>_usd columns
+    for that day (i.e. the project's total tokenized-stock MC on
+    `chain`). Mirrors _combined_stocks_df's shape but for MC instead
+    of Volume; the combined-MC chart uses the same per-project labels
+    + colors so the two charts read as a coherent pair."""
+    chain_lower = chain.lower().replace(" ", "_")
+    suffix = f"_{chain_lower}_usd"
+    frames: list[pd.DataFrame] = []
+    for p in pullers:
+        raw = p.get_latest()
+        if raw is None or raw.empty:
+            continue
+        raw = raw.copy()
+        raw["date"] = pd.to_datetime(raw["date"])
+        mc_cols = [c for c in raw.columns
+                   if c.startswith("mc_") and c.endswith(suffix)]
+        if not mc_cols:
+            continue
+        proj = raw[["date"]].copy()
+        # Forward-fill across single-day cron gaps THEN sum so a missed
+        # pull doesn't collapse the whole project's MC to $0 for that
+        # day. fillna(0) catches the leading window before any token in
+        # the project existed (genuinely zero MC, not data gaps).
+        proj[p.GROUP_LABEL] = (
+            raw[mc_cols].ffill().fillna(0).sum(axis=1))
+        frames.append(proj)
+    if not frames:
+        return None
+    result = frames[0]
+    for f in frames[1:]:
+        result = result.merge(f, on="date", how="outer")
+    return result.sort_values("date").reset_index(drop=True)
+
+
+def _build_combined_stocks_mc_fig(df: pd.DataFrame, labels: list[str],
+                                   height: int = 400) -> go.Figure:
+    """Stacked-area figure of tokenized-stock MC by project. MC is a
+    continuous balance-sheet quantity (not a flow like volume), so
+    stacked area reads better than the per-period bars used for the
+    Volume chart. Uses _STOCKS_PROJECT_COLORS so each band's color
+    matches the corresponding project on the Volume chart."""
+    plot_df = df.copy()
+    present = [l for l in labels if l in plot_df.columns]
+
+    fig = go.Figure()
+    for label in present:
+        # ffill prevents single-day cron misses from punching holes
+        # in the stack (same logic as render_market_cap_chain's stacked
+        # path). fillna(0) covers the leading pre-launch window.
+        y = plot_df[label].ffill().fillna(0)
+        color = _STOCKS_PROJECT_COLORS.get(label, "#888888")
+        fig.add_trace(go.Scatter(
+            x=plot_df["date"], y=y, name=label,
+            mode="lines", line=dict(color=color, width=0.8),
+            stackgroup="mc",
+            customdata=y.map(_fmt_usd),
+            hovertemplate=f"{label}: %{{customdata}}<extra></extra>",
+        ))
+    totals = plot_df[present].ffill().fillna(0).sum(axis=1)
+    y_max = float(totals.max() or 0)
+    # Invisible Total trace — adds the stack total to the bottom of the
+    # unified hover tooltip without drawing anything on the chart.
+    fig.add_trace(go.Scatter(
+        x=plot_df["date"], y=totals, name="Total",
+        mode="lines", line=dict(width=0, color="rgba(0,0,0,0)"),
+        showlegend=False, stackgroup=None,
+        customdata=totals.map(_fmt_usd),
+        hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+    ))
+    fig.update_layout(
+        height=height, hovermode="x unified",
+        margin=dict(t=10, b=10, l=10, r=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1),
+        yaxis=dict(tickprefix="$", tickformat="~s", showgrid=True,
+                   rangemode="tozero",
+                   range=[0, y_max * 1.10] if y_max > 0 else None),
+    )
+    return fig
+
+
 # ── Raw-data modal (module-level so solana_dashboard.py can import it) ───────
 @st.dialog("📋 Raw Data", width="large")
 def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,

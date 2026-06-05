@@ -1256,6 +1256,97 @@ _DUNE_QUERY_DFLOW_TOKBAL     = 6512170   # long-format day, symbol, token_balanc
 # Phantom prediction-market data — only TVL is publicly queryable.
 _DUNE_QUERY_PHANTOM_TVL      = 6386183
 
+# Allium query for the Jupiter vs DFlow head-to-head comparison section.
+# Pre-joined server-side (one row per day, both platforms in adjacent
+# columns) and live to today — much fresher than the client-side merge
+# of separate Dune queries we used before. Returns trade_date +
+# {jupiter,dflow}_{volume_usd,trades,traders,markets}.
+# Scope: 2026 YTD only (Dune has Oct-Dec 2025 history but is stale).
+_ALLIUM_QUERY_PRED_COMPARE   = "fyYRvSnCSHnSXaEsmEm1"
+
+
+@st.cache_data(ttl=14400, show_spinner="Running Allium query (≈30s)…")
+def _fetch_allium_query_results(query_id: str,
+                                run_limit: int = 10000,
+                                poll_seconds: int = 5,
+                                max_wait_seconds: int = 120) -> _pd.DataFrame:
+    """Run a saved Allium Explorer query async, poll until complete,
+    fetch the results. Returns a DataFrame with all columns verbatim
+    (caller renames / casts). Empty frame on auth failure, polling
+    timeout, or run error.
+
+    Allium's REST API has NO 'latest cached results' endpoint at the
+    /v1/ path (Dune has /results which returns the most recent
+    materialised execution for free) — every fetch here re-runs the
+    query and consumes ~1 Allium credit. The 4h @st.cache_data wrapper
+    keeps spend near-zero by re-using the result across all Streamlit
+    reruns within a 4h window.
+
+    First user to hit the page after a cache miss waits ~30s for the
+    async run; everyone else for the next 4h gets it instant from the
+    cache. Reads ALLIUM_API_KEY from st.secrets first, env fallback."""
+    try:
+        key = st.secrets.get("ALLIUM_API_KEY", "")
+    except Exception:
+        key = ""
+    if not key:
+        key = _os.environ.get("ALLIUM_API_KEY", "")
+    if not key:
+        return _pd.DataFrame()
+
+    H = {"X-API-KEY": key}
+    import time as _time
+
+    # ── Step 1: kick off async run ─────────────────────────────────────
+    try:
+        r = _requests.post(
+            f"https://api.allium.so/api/v1/explorer/queries/{query_id}/run-async",
+            json={"parameters": {}, "run_config": {"limit": run_limit}},
+            headers=H, timeout=30,
+        )
+        r.raise_for_status()
+        run_id = r.json().get("run_id")
+        if not run_id:
+            return _pd.DataFrame()
+    except Exception:
+        return _pd.DataFrame()
+
+    # ── Step 2: poll the run-state endpoint until success/fail/timeout ─
+    elapsed = 0
+    completed = False
+    while elapsed < max_wait_seconds:
+        _time.sleep(poll_seconds)
+        elapsed += poll_seconds
+        try:
+            r = _requests.get(
+                f"https://api.allium.so/api/v1/explorer/query-runs/{run_id}",
+                headers=H, timeout=15,
+            )
+            r.raise_for_status()
+            status = (r.json().get("status") or "").lower()
+        except Exception:
+            continue
+        if status == "success":
+            completed = True
+            break
+        if status in ("failed", "cancelled", "canceled", "error"):
+            return _pd.DataFrame()
+    if not completed:
+        return _pd.DataFrame()
+
+    # ── Step 3: fetch results ──────────────────────────────────────────
+    try:
+        r = _requests.get(
+            f"https://api.allium.so/api/v1/explorer/query-runs/{run_id}/results",
+            headers=H, timeout=30,
+        )
+        r.raise_for_status()
+        body = r.json()
+        rows = body.get("data") or []
+        return _pd.DataFrame(rows)
+    except Exception:
+        return _pd.DataFrame()
+
 
 @st.cache_data(ttl=14400, show_spinner=False)
 def _fetch_dune_query_results(query_id: int) -> _pd.DataFrame:
@@ -1346,56 +1437,70 @@ def _render_prediction_markets() -> None:
 
 
 def _render_jupiter_dflow_comparison_section() -> None:
-    """Jupiter vs DFlow head-to-head on the 4 metrics where both
-    platforms publish in compatible units: Notional Volume, Volume, Fees
-    (USD), and Transactions (count). Each metric renders a daily +
-    cumulative chart pair via _render_dune_metric_compare_pair, with
-    Jupiter purple + DFlow orange overlaid on one axis.
+    """Jupiter vs DFlow head-to-head sourced from Allium query
+    fyYRvSnCSHnSXaEsmEm1 (Solana Prediction Markets: Jupiter vs DFlow
+    Historical Comparison - Pivoted). One server-side-joined query
+    returns 4 metric pairs in one shot:
 
-    KPI row: 2 rows of 4 metric counters — top row Jupiter, bottom
-    row DFlow — so the latest cumulative side-by-side reads at a
-    glance."""
+      • Volume   — daily USD (num_contracts × settlement_token_price)
+      • Trades   — daily trade count
+      • Traders  — daily unique addresses (NEW vs the prior Dune source)
+      • Markets  — daily unique tickers traded (NEW)
+
+    Cumulative columns are computed client-side via cumsum. For
+    Volume + Trades the cumulative is the literal lifetime total. For
+    Traders + Markets it's the sum of daily-uniques across time
+    (i.e. 'trader-days' / 'market-days' — a measure of engagement
+    breadth over time, NOT lifetime distinct users — labelled
+    accordingly in the cum chart titles).
+
+    Trade-off vs the previous Dune-merged section: Allium scope is
+    2026-YTD only (no Oct-Dec 2025 history) but every reading is live
+    to today instead of weeks-stale, and adds 2 metrics Dune doesn't
+    expose at all."""
     st.subheader("Jupiter vs DFlow — Comparable Metrics")
     st.caption(
-        "Direct head-to-head on the metrics both platforms publish in "
-        "compatible units. Jupiter purple ◆ DFlow orange."
+        "Server-side joined head-to-head sourced from Allium query "
+        f"[{_ALLIUM_QUERY_PRED_COMPARE}]"
+        f"(https://app.allium.so/explorer/queries/{_ALLIUM_QUERY_PRED_COMPARE}). "
+        "Jupiter purple ◆ DFlow orange. 2026 YTD."
     )
 
-    # ── Fetch all 4 Jupiter metrics + the unified DFlow query ───────────
-    jup_notional = _fetch_jupiter_metric(_DUNE_QUERY_JUPITER_NOTIONAL,
-                                         "Notional Volume",
-                                         "Cumulative Notional Volume")
-    jup_volume   = _fetch_jupiter_metric(_DUNE_QUERY_JUPITER_VOLUME,
-                                         "Volume", "Cumulative Volume")
-    jup_fees     = _fetch_jupiter_metric(_DUNE_QUERY_JUPITER_FEES,
-                                         "Fees", "Cumulative Fees")
-    jup_tx       = _fetch_jupiter_metric(_DUNE_QUERY_JUPITER_TX,
-                                         "Transctions",   # sic — Dune typo
-                                         "Cumulative Transactions")
-
-    dfl_raw = _fetch_dune_query_results(_DUNE_QUERY_DFLOW_ACTIVITY)
-    def _dfl_pair(daily_src: str, cum_src: str) -> _pd.DataFrame:
-        if dfl_raw.empty or "day" not in dfl_raw.columns \
-                or daily_src not in dfl_raw.columns:
-            return _pd.DataFrame(columns=["day", "daily", "cumulative"])
-        out = dfl_raw[["day", daily_src, cum_src]].rename(
-            columns={daily_src: "daily", cum_src: "cumulative"})
-        out["daily"] = out["daily"].astype(float)
-        out["cumulative"] = out["cumulative"].astype(float)
-        return out
-    dfl_notional = _dfl_pair("Notional_Volume", "Cum_Notional_Volume")
-    dfl_volume   = _dfl_pair("Volume",          "Cum_Volume")
-    dfl_fees     = _dfl_pair("Fee",             "Cum_Fee")
-    dfl_tx       = _dfl_pair("N_TRX",           "Cum_N_TXs")
-
-    # No data at all? Show one placeholder and bail.
-    all_dfs = [jup_notional, jup_volume, jup_fees, jup_tx,
-               dfl_notional, dfl_volume, dfl_fees, dfl_tx]
-    if all(d.empty for d in all_dfs):
-        st.info("No Dune data available for either platform.")
+    df = _fetch_allium_query_results(_ALLIUM_QUERY_PRED_COMPARE)
+    if df.empty or "trade_date" not in df.columns:
+        st.info(
+            "No Allium data available. Either the `ALLIUM_API_KEY` is "
+            "missing (set it in `.env` locally or Streamlit Cloud secrets) "
+            "or the async query run timed out (>2 minutes)."
+        )
         return
 
-    # ── KPI grid: 2 rows × 4 cols, Jupiter on top, DFlow below ──────────
+    df = df.copy()
+    df["day"] = _pd.to_datetime(df["trade_date"])
+    df = df.sort_values("day").reset_index(drop=True)
+
+    def _frame(daily_col: str) -> _pd.DataFrame:
+        """Slice one platform's daily column out of the pivoted Allium
+        frame and add a client-side cumsum 'cumulative' column."""
+        if daily_col not in df.columns:
+            return _pd.DataFrame(columns=["day", "daily", "cumulative"])
+        out = df[["day", daily_col]].rename(columns={daily_col: "daily"})
+        out["daily"] = out["daily"].astype(float)
+        out["cumulative"] = out["daily"].cumsum()
+        return out
+
+    pairs = {
+        "volume":  (_frame("jupiter_volume_usd"),
+                    _frame("dflow_volume_usd")),
+        "trades":  (_frame("jupiter_trades"),
+                    _frame("dflow_trades")),
+        "traders": (_frame("jupiter_traders"),
+                    _frame("dflow_traders")),
+        "markets": (_frame("jupiter_markets"),
+                    _frame("dflow_markets")),
+    }
+
+    # ── KPI grid: 2 rows × 4 cols (Jupiter top / DFlow bottom) ─────────
     def _latest(_df, col):
         return float(_df[col].iloc[-1]) if not _df.empty else None
 
@@ -1404,52 +1509,53 @@ def _render_jupiter_dflow_comparison_section() -> None:
         if mode == "count": return f"{int(v):,}"
         return sd._fmt_usd(v)
 
-    asof_candidates = [d["day"].iloc[-1]
-                       for d in all_dfs if not d.empty]
-    asof = max(asof_candidates).strftime("%Y-%m-%d") if asof_candidates else "?"
+    asof = df["day"].iloc[-1].strftime("%Y-%m-%d")
 
-    st.caption("**Jupiter** — latest cumulative")
+    # KPI labels: Volume + Trades show CUMULATIVE (literal lifetime
+    # totals); Traders + Markets show LATEST DAILY (since cumsum of
+    # daily-uniques isn't a lifetime-distinct count — calling it
+    # 'cumulative traders' would be misleading).
+    st.caption("**Jupiter** — 2026 YTD")
     j1, j2, j3, j4 = st.columns(4)
-    j1.metric("Notional Volume",
-              _fmt_metric(_latest(jup_notional, "cumulative")))
-    j2.metric("Volume",
-              _fmt_metric(_latest(jup_volume, "cumulative")))
-    j3.metric("Fees",
-              _fmt_metric(_latest(jup_fees, "cumulative")))
-    j4.metric("Transactions",
-              _fmt_metric(_latest(jup_tx, "cumulative"), mode="count"))
-    st.caption("**DFlow** — latest cumulative")
+    j1.metric("Cum. Volume",
+              _fmt_metric(_latest(pairs["volume"][0],  "cumulative")))
+    j2.metric("Cum. Trades",
+              _fmt_metric(_latest(pairs["trades"][0],  "cumulative"), mode="count"))
+    j3.metric("Latest Daily Traders",
+              _fmt_metric(_latest(pairs["traders"][0], "daily"), mode="count"))
+    j4.metric("Latest Daily Markets",
+              _fmt_metric(_latest(pairs["markets"][0], "daily"), mode="count"))
+    st.caption("**DFlow** — 2026 YTD")
     d1, d2, d3, d4 = st.columns(4)
-    d1.metric("Notional Volume",
-              _fmt_metric(_latest(dfl_notional, "cumulative")))
-    d2.metric("Volume",
-              _fmt_metric(_latest(dfl_volume, "cumulative")))
-    d3.metric("Fees",
-              _fmt_metric(_latest(dfl_fees, "cumulative")))
-    d4.metric("Transactions",
-              _fmt_metric(_latest(dfl_tx, "cumulative"), mode="count"))
+    d1.metric("Cum. Volume",
+              _fmt_metric(_latest(pairs["volume"][1],  "cumulative")))
+    d2.metric("Cum. Trades",
+              _fmt_metric(_latest(pairs["trades"][1],  "cumulative"), mode="count"))
+    d3.metric("Latest Daily Traders",
+              _fmt_metric(_latest(pairs["traders"][1], "daily"), mode="count"))
+    d4.metric("Latest Daily Markets",
+              _fmt_metric(_latest(pairs["markets"][1], "daily"), mode="count"))
     st.caption(f"As of {asof}.")
     st.write("")
 
-    # ── 4 head-to-head chart pairs (8 charts total in 4 rows of 2) ──────
+    # ── 4 head-to-head chart pairs (8 charts total in 4 rows of 2) ─────
     _compare_specs = [
-        # (jup_df, dfl_df, daily_title, cum_title, raw_key_prefix, fmt_mode)
-        (jup_notional, dfl_notional,
-         "Daily Notional Volume — Jupiter vs DFlow",
-         "Cumulative Notional Volume — Jupiter vs DFlow",
-         "pm_cmp_notional",  "currency"),
-        (jup_volume, dfl_volume,
+        (pairs["volume"][0],  pairs["volume"][1],
          "Daily Volume — Jupiter vs DFlow",
          "Cumulative Volume — Jupiter vs DFlow",
-         "pm_cmp_volume",    "currency"),
-        (jup_fees, dfl_fees,
-         "Daily Fees — Jupiter vs DFlow",
-         "Cumulative Fees — Jupiter vs DFlow",
-         "pm_cmp_fees",      "currency"),
-        (jup_tx, dfl_tx,
-         "Daily Transactions — Jupiter vs DFlow",
-         "Cumulative Transactions — Jupiter vs DFlow",
-         "pm_cmp_tx",        "count"),
+         "pm_alm_volume",  "currency"),
+        (pairs["trades"][0],  pairs["trades"][1],
+         "Daily Trades — Jupiter vs DFlow",
+         "Cumulative Trades — Jupiter vs DFlow",
+         "pm_alm_trades",  "count"),
+        (pairs["traders"][0], pairs["traders"][1],
+         "Daily Unique Traders — Jupiter vs DFlow",
+         "Cumulative Trader-Days — Jupiter vs DFlow",
+         "pm_alm_traders", "count"),
+        (pairs["markets"][0], pairs["markets"][1],
+         "Daily Unique Markets — Jupiter vs DFlow",
+         "Cumulative Market-Days — Jupiter vs DFlow",
+         "pm_alm_markets", "count"),
     ]
     for jup_df, dfl_df, dt, ct, key, mode in _compare_specs:
         if jup_df.empty and dfl_df.empty:

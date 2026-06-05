@@ -644,18 +644,19 @@ def _render_protocol_asset_breakdown(slug: str, display_name: str) -> None:
     _slug_safe = slug.replace("-", "_")
     c_left, c_right = st.columns(2, gap="medium")
     with c_left:
-        st.markdown(f"**{display_name} — Supply by Asset**")
         _build_lending_stack("supply", protocols, wide, palette,
-                             raw_key_prefix=f"lending_{_slug_safe}_by_asset")
+                             raw_key_prefix=f"lending_{_slug_safe}_by_asset",
+                             chart_title=f"{display_name} — Supply by Asset")
     with c_right:
-        st.markdown(f"**{display_name} — Borrow by Asset**")
         _build_lending_stack("borrow", protocols, wide, palette,
-                             raw_key_prefix=f"lending_{_slug_safe}_by_asset")
+                             raw_key_prefix=f"lending_{_slug_safe}_by_asset",
+                             chart_title=f"{display_name} — Borrow by Asset")
 
 
 def _build_lending_stack(metric: str, protocols: list[tuple[str, str]],
                         wide: _pd.DataFrame, palette: list[str],
-                        raw_key_prefix: str | None = None) -> None:
+                        raw_key_prefix: str | None = None,
+                        chart_title: str | None = None) -> None:
     """metric = 'supply' or 'borrow'. protocols = [(slug, display_name)].
     wide = DataFrame with columns 'date' + '<metric>_<slug>' per protocol +
     '<metric>_others' for the catch-all bucket.
@@ -663,7 +664,12 @@ def _build_lending_stack(metric: str, protocols: list[tuple[str, str]],
     `raw_key_prefix` (kwarg, optional) wires the 📋 raw-data button — pass
     a unique string per call so the Streamlit widget keys don't collide
     across the 6 stacks on the lending page (protocol-level supply/borrow
-    + Kamino-by-asset supply/borrow + Jupiter-by-asset supply/borrow)."""
+    + Kamino-by-asset supply/borrow + Jupiter-by-asset supply/borrow).
+
+    `chart_title` (kwarg, optional) — bold title rendered on the SAME row
+    as the 📋 button (forwarded into sd._chart's chart_title kwarg), so
+    the icon and title share one row instead of the button getting its
+    own empty row above the rangeselector."""
     fig = _go.Figure()
     cols = [f"{metric}_{s}" for s, _ in protocols] + [f"{metric}_others"]
     labels = [n for _, n in protocols] + ["Others"]
@@ -711,6 +717,8 @@ def _build_lending_stack(metric: str, protocols: list[tuple[str, str]],
             "raw_key": f"{raw_key_prefix}_{metric}",
             "raw_filename": f"{raw_key_prefix}_{metric}",
         }
+    if chart_title:
+        raw_kwargs["chart_title"] = chart_title
     sd._chart(fig, use_container_width=True, **raw_kwargs)
 
 
@@ -809,13 +817,13 @@ def _render_lending() -> None:
                "#888888"]  # last entry = Others
     c_left, c_right = st.columns(2, gap="medium")
     with c_left:
-        st.markdown("**Total Supply by Protocol**")
         _build_lending_stack("supply", protocols, wide, palette,
-                             raw_key_prefix="lending_by_protocol")
+                             raw_key_prefix="lending_by_protocol",
+                             chart_title="Total Supply by Protocol")
     with c_right:
-        st.markdown("**Total Borrow by Protocol**")
         _build_lending_stack("borrow", protocols, wide, palette,
-                             raw_key_prefix="lending_by_protocol")
+                             raw_key_prefix="lending_by_protocol",
+                             chart_title="Total Borrow by Protocol")
 
     # ── Kamino per-asset breakdown ──────────────────────────────────────────
     st.divider()
@@ -881,14 +889,19 @@ def _render_stablecoins() -> None:
         return
 
     for p in stablecoin_pullers:
-        st.subheader(f"{p.GROUP_LABEL} — Market Cap (Solana)")
         st.caption(
             "Solana-only market cap per token, stacked. Sourced from "
             "DefiLlama (free API, daily history) plus the Solscan-"
             "derived seed JSONs and same-day Birdeye Token Overview "
             "snapshots."
         )
-        p.render_market_cap_chain(chain="Solana", stacked=True)
+        # Title rendered next to the 📋 raw-data button via _chart's
+        # chart_title kwarg — same single-row layout used on Foreign L1.
+        p.render_market_cap_chain(
+            chain="Solana", stacked=True,
+            raw_key=f"sd_stables_mc_{p.GROUP_LABEL.lower().replace(' ', '_')}",
+            chart_title=f"{p.GROUP_LABEL} — Market Cap (Solana)",
+        )
 
         st.subheader(
             f"{p.GROUP_LABEL} — USDC + USDT Daily Trading Volume (Solana)")
@@ -996,7 +1009,6 @@ def _build_foreign_l1_group_charts(group_label: str, pullers: list) -> None:
 
     # ── Left: stacked-area MC ───────────────────────────────────────────
     with col_left:
-        st.markdown(f"**{group_label} — Aggregated Market Cap**")
         fig_mc = _go.Figure()
         totals_mc = wide[mc_cols].ffill().fillna(0).sum(axis=1)
         for sym in frames:
@@ -1031,12 +1043,12 @@ def _build_foreign_l1_group_charts(group_label: str, pullers: list) -> None:
         _mc_raw["total"] = totals_mc.values
         _safe_group = group_label.lower().replace(" ", "_")
         sd._chart(fig_mc, use_container_width=True,
+                  chart_title=f"{group_label} — Aggregated Market Cap",
                   raw_df=_mc_raw, raw_key=f"fl1_mc_{_safe_group}",
                   raw_filename=f"foreign_l1_{_safe_group}_market_cap")
 
     # ── Right: stacked-bar daily volume ─────────────────────────────────
     with col_right:
-        st.markdown(f"**{group_label} — Aggregated Daily Volume**")
         fig_v = _go.Figure()
         totals_v = wide[vol_cols].fillna(0).sum(axis=1).replace(0, float("nan"))
         for sym in frames:
@@ -1069,6 +1081,7 @@ def _build_foreign_l1_group_charts(group_label: str, pullers: list) -> None:
         _vol_raw = wide[["date"] + vol_cols].copy()
         _vol_raw["total"] = wide[vol_cols].fillna(0).sum(axis=1).values
         sd._chart(fig_v, use_container_width=True,
+                  chart_title=f"{group_label} — Aggregated Daily Volume",
                   raw_df=_vol_raw, raw_key=f"fl1_vol_{_safe_group}",
                   raw_filename=f"foreign_l1_{_safe_group}_volume")
 

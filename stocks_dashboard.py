@@ -1681,6 +1681,7 @@ def _apply_b_format_to_yaxes(fig: go.Figure, fmt_mode: str = "currency") -> go.F
 
 
 def _chart(fig: go.Figure, fmt_mode: str = "currency",
+           chart_title: str | None = None,
            raw_df: pd.DataFrame | None = None,
            raw_key: str | None = None,
            raw_fmt: dict | None = None,
@@ -1694,14 +1695,32 @@ def _chart(fig: go.Figure, fmt_mode: str = "currency",
       • "currency" (default) — '$' prefix on every tick (USD charts)
       • "count"              — bare integer labels (holder count etc.)
 
-    When `raw_df` + `raw_key` are passed, prepends a 📋 button above the
-    chart that pops open a dialog with the source DataFrame + a Download
-    CSV button. `raw_key` must be globally unique across the page (used
-    as Streamlit's widget key). `raw_fmt` is an optional Pandas Styler
-    format dict; defaults to USD with thousands separator for every
-    non-date column. `raw_filename` controls the downloaded CSV's name
+    `chart_title` (optional) — when set, the title is rendered as bold
+    markdown above the chart. If `raw_df`/`raw_key` are ALSO set, the
+    title and 📋 button share a single row (title in the wide left col,
+    button right-flush), so the button sits visually next to the title
+    instead of taking its own row above the chart. When only `raw_df`
+    is set (no title), falls back to the CSS-pulled-into-rangeselector
+    placement for the standalone button.
+
+    When `raw_df` + `raw_key` are passed, the 📋 button pops open a
+    dialog with the source DataFrame + a Download CSV button. `raw_key`
+    must be globally unique across the page. `raw_fmt` is an optional
+    Pandas Styler format dict; defaults to USD with thousands separator
+    for every non-date column. `raw_filename` controls the CSV name
     (defaults to raw_key)."""
-    if raw_df is not None and raw_key is not None:
+    if chart_title and raw_df is not None and raw_key is not None:
+        # Title + button on a single row.
+        _title_col, _btn_col = st.columns([0.95, 0.05])
+        with _title_col:
+            st.markdown(f"**{chart_title}**")
+        with _btn_col:
+            if st.button("📋", key=f"raw_btn_{raw_key}",
+                         help="View raw data"):
+                _raw_data_modal(raw_df, raw_fmt, raw_filename or raw_key)
+    elif chart_title:
+        st.markdown(f"**{chart_title}**")
+    elif raw_df is not None and raw_key is not None:
         # CSS shrinks the 📋 button + pulls its row down ~40px so it
         # visually sits on the same band as the chart's rangeselector
         # (1M/3M/6M/YTD/1Y/All) instead of taking its own full row.
@@ -2692,10 +2711,18 @@ class TokenGroupMetricsPuller(DataPuller):
 
     # ── Market-cap chart per chain (DefiLlama multi-chain data) ────────────────
     def render_market_cap_chain(self, chain: str | None = None,
-                                stacked: bool = True) -> None:
+                                stacked: bool = True,
+                                raw_key: str | None = None,
+                                chart_title: str | None = None) -> None:
         """Render MC per token for a specific chain (e.g. 'Solana', 'Ethereum',
         'Binance', 'Base'). When chain is None, sums across all chains per token
-        ("all-chain" aggregate view)."""
+        ("all-chain" aggregate view).
+
+        `raw_key` (optional) — when set, wires the 📋 raw-data button on the
+        chart so callers can expose the per-token + Total CSV download. Must
+        be globally unique across the page. `chart_title` (optional) pairs
+        with raw_key to put the title and 📋 icon on a single row above the
+        chart (see _chart's chart_title kwarg)."""
         df = self.get_latest()
         if df is None or df.empty:
             st.info("Waiting for first pull…")
@@ -2824,7 +2851,24 @@ class TokenGroupMetricsPuller(DataPuller):
                        tickformat="~s", showgrid=True,
                        range=y_range, rangemode="tozero"),
         )
-        _chart(fig, use_container_width=True)
+        # Raw data: mdf already has 'date' + one column per token. Append
+        # 'total' (row-wise sum) so the CSV mirrors the unified-hover Total.
+        raw_kwargs = {}
+        if raw_key:
+            _token_names = [t for t, _ in token_series]
+            _raw = mdf[["date"] + _token_names].copy()
+            if stacked and totals is not None:
+                _raw["total"] = totals.values
+            else:
+                _raw["total"] = _raw[_token_names].fillna(0).sum(axis=1).values
+            raw_kwargs = {
+                "raw_df": _raw,
+                "raw_key": raw_key,
+                "raw_filename": raw_key,
+            }
+        if chart_title:
+            raw_kwargs["chart_title"] = chart_title
+        _chart(fig, use_container_width=True, **raw_kwargs)
 
     @staticmethod
     def _clip_isolated_spikes(series: pd.Series, factor: float = 2.0) -> pd.Series:

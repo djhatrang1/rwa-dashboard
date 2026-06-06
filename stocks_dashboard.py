@@ -4749,10 +4749,19 @@ if _os.getenv("PULL_ONLY") == "1":
     # Optional: limit to GROUP(s), comma-separated
     # (e.g. PULL_GROUP=tokenized_commodities,stablecoins). Empty = all.
     _groups = [g.strip() for g in _os.getenv("PULL_GROUP", "").split(",") if g.strip()]
-    log.info("PULL_ONLY mode (groups=%s) — pulling into %s",
-             ",".join(_groups) or "all", settings.db_path)
+    # Optional: further restrict to specific puller name(s), e.g.
+    # PULL_NAME=ondo_group_metrics for a single-puller backfill. Useful
+    # when one large puller (Ondo: 791 tokens × 3 chains) hits cron
+    # timeouts and the others are healthy — re-pulls only the broken
+    # one rather than burning ~30 min refreshing everything.
+    _names  = [n.strip() for n in _os.getenv("PULL_NAME",  "").split(",") if n.strip()]
+    log.info("PULL_ONLY mode (groups=%s, names=%s) — pulling into %s",
+             ",".join(_groups) or "all", ",".join(_names) or "all",
+             settings.db_path)
     for _p in init_pullers(settings, cache_db):
         if _groups and getattr(_p, "GROUP", "") not in _groups:
+            continue
+        if _names and getattr(_p, "name", "") not in _names:
             continue
         try:
             _p.pull()

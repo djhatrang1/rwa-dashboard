@@ -1155,7 +1155,11 @@ def _render_rwa() -> None:
             if combined_df is None:
                 st.info("Waiting for first pull…")
             else:
-                labels = [p.GROUP_LABEL for p in stocks_pullers]
+                # dict.fromkeys preserves order + dedupes "Ondo" so the
+                # two Ondo sub-pullers (sol + evm) contribute to a single
+                # legend entry rather than two.
+                labels = list(dict.fromkeys(
+                    p.GROUP_LABEL for p in stocks_pullers))
                 _raw = combined_df.copy()
                 _present = [l for l in labels if l in _raw.columns]
                 _raw["Total"] = _raw[_present].fillna(0).sum(axis=1)
@@ -1194,7 +1198,9 @@ def _render_rwa() -> None:
                     "Series will populate on the next pull (every 4h)."
                 )
             else:
-                mc_labels  = [p.GROUP_LABEL for p in stocks_pullers]
+                # dedupe project labels — see note on the volume chart above.
+                mc_labels  = list(dict.fromkeys(
+                    p.GROUP_LABEL for p in stocks_pullers))
                 _mc_present = [l for l in mc_labels
                                if l in mc_combined_df.columns]
                 _mc_raw = mc_combined_df.copy()
@@ -1212,12 +1218,17 @@ def _render_rwa() -> None:
                 )
             st.divider()
 
-            # Per-group volume — 2 per row.
-            for row_start in range(0, len(stocks_pullers), 2):
+            # Per-group volume — 2 per row. Dedupe by GROUP_LABEL +
+            # pick the Solana-active puller per project (after the Ondo
+            # split there are 2 "Ondo" pullers; only ondo_group_sol has
+            # any Solana tokens to render here).
+            _per_proj_pullers = sd._dedupe_pullers_for_chain(
+                stocks_pullers, "solana")
+            for row_start in range(0, len(_per_proj_pullers), 2):
                 col_a, col_b = st.columns(2, gap="medium")
                 for col, p in zip(
                     (col_a, col_b),
-                    stocks_pullers[row_start: row_start + 2],
+                    _per_proj_pullers[row_start: row_start + 2],
                 ):
                     with col:
                         st.subheader(p.GROUP_LABEL)

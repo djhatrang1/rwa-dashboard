@@ -3449,7 +3449,15 @@ _TOKENIZED_STOCK_GROUPS: list[tuple[str, str, list]] = [
         ],
     ),
     (
-        "ondo_group",
+        # Tagged "_FULL" so the post-registry splitter below picks it up
+        # and replaces it with ondo_group_sol + ondo_group_evm. Done to
+        # halve per-puller runtime — Ondo's 791-token (263 Solana + 264
+        # Ethereum + 264 BinanceSmartChain) single-puller pull was
+        # timing out before MC fetching could finish, leaving Ondo MC
+        # columns absent from the cache for weeks. Each sub-puller now
+        # owns ~half the work and saves independently, so a slow EVM
+        # half can't strand the Solana MC writes.
+        "ondo_group_FULL",
         "Ondo",
         [
             ("AAPLon", "123mYEnRLM2LLYsJW3K6oyYh8uP1fngj732iG638ondo", "Solana"),
@@ -4250,6 +4258,23 @@ _TOKENIZED_STOCK_GROUPS: list[tuple[str, str, list]] = [
 ]
 
 
+# ── Ondo split: replace the single "_FULL" tuple with two halves ──────────────
+# Each half gets its own cache row + own pull() call; combined-chart helpers
+# below aggregate them by GROUP_LABEL so the dashboard still shows one "Ondo"
+# band per chart. See the _FULL tuple's comment above for the why.
+_ondo_full = [t for t in _TOKENIZED_STOCK_GROUPS if t[0] == "ondo_group_FULL"]
+if _ondo_full:
+    _TOKENIZED_STOCK_GROUPS = [t for t in _TOKENIZED_STOCK_GROUPS
+                               if t[0] != "ondo_group_FULL"]
+    _, _ondo_label, _ondo_tokens = _ondo_full[0]
+    _ondo_sol = [t for t in _ondo_tokens
+                 if len(t) > 2 and t[2] == "Solana"]
+    _ondo_evm = [t for t in _ondo_tokens
+                 if len(t) > 2 and t[2] != "Solana"]
+    _TOKENIZED_STOCK_GROUPS.append(("ondo_group_sol", _ondo_label, _ondo_sol))
+    _TOKENIZED_STOCK_GROUPS.append(("ondo_group_evm", _ondo_label, _ondo_evm))
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 6. PULLER REGISTRY
 #    ↳ Add new DataPullers here — that's the only file you need to touch.
@@ -4781,27 +4806,50 @@ def _combined_stocks_df(pullers: list) -> pd.DataFrame | None:
     """Merge per-group daily DataFrames into one wide table.
 
     Result columns: date | <GROUP_LABEL> …
-    Each project column = sum of all its per-token vol_*_usd columns for that day.
-    """
-    frames: list[pd.DataFrame] = []
+    Each project column = sum of all its per-token vol_*_usd columns
+    summed across EVERY puller that carries this GROUP_LABEL — required
+    because some projects (Ondo) are split into sub-pullers
+    (ondo_group_sol + ondo_group_evm) for cron-pull runtime budgets but
+    must still render as ONE project band on the combined chart."""
+    from collections import defaultdict
+    by_label: dict[str, list] = defaultdict(list)
     for p in pullers:
-        raw = p.get_latest()
-        if raw is None or raw.empty:
+        by_label[p.GROUP_LABEL].append(p)
+
+    result = None
+    for label, plist in by_label.items():
+        proj = None
+        for p in plist:
+            raw = p.get_latest()
+            if raw is None or raw.empty:
+                continue
+            raw = raw.copy()
+            raw["date"] = pd.to_datetime(raw["date"])
+            vol_cols = [c for c in raw.columns
+                        if c.startswith("vol_") and c.endswith("_usd")]
+            if not vol_cols:
+                continue
+            sub = raw[["date"]].copy()
+            sub["__v"] = raw[vol_cols].sum(axis=1)
+            if proj is None:
+                proj = sub
+            else:
+                # Outer-join on date so dates present in only one sub-puller
+                # still survive, then add the per-puller __v contributions.
+                proj = proj.merge(sub, on="date", how="outer",
+                                  suffixes=("", "_other"))
+                proj["__v"] = (proj["__v"].fillna(0)
+                               + proj.get("__v_other", 0).fillna(0))
+                if "__v_other" in proj.columns:
+                    proj = proj.drop(columns=["__v_other"])
+        if proj is None:
             continue
-        raw = raw.copy()
-        raw["date"] = pd.to_datetime(raw["date"])
-        vol_cols = [c for c in raw.columns
-                    if c.startswith("vol_") and c.endswith("_usd")]
-        proj = raw[["date"]].copy()
-        proj[p.GROUP_LABEL] = raw[vol_cols].sum(axis=1)
-        frames.append(proj)
+        proj = proj.rename(columns={"__v": label})
+        result = (proj if result is None
+                  else result.merge(proj, on="date", how="outer"))
 
-    if not frames:
+    if result is None:
         return None
-
-    result = frames[0]
-    for f in frames[1:]:
-        result = result.merge(f, on="date", how="outer")
     return result.sort_values("date").reset_index(drop=True)
 
 
@@ -4884,37 +4932,81 @@ def _combined_stocks_mc_chain_df(pullers: list,
 
     Result columns: date | <GROUP_LABEL> …
     Each project column = sum of all its mc_<token>_<chain>_usd columns
-    for that day (i.e. the project's total tokenized-stock MC on
-    `chain`). Mirrors _combined_stocks_df's shape but for MC instead
-    of Volume; the combined-MC chart uses the same per-project labels
-    + colors so the two charts read as a coherent pair."""
+    summed across EVERY puller that carries this GROUP_LABEL (handles
+    Ondo's split into ondo_group_sol + ondo_group_evm — the chain
+    filter naturally puts each puller's mc cols in the right project
+    bucket but they still merge into one Ondo band)."""
+    from collections import defaultdict
     chain_lower = chain.lower().replace(" ", "_")
     suffix = f"_{chain_lower}_usd"
-    frames: list[pd.DataFrame] = []
+    by_label: dict[str, list] = defaultdict(list)
     for p in pullers:
-        raw = p.get_latest()
-        if raw is None or raw.empty:
+        by_label[p.GROUP_LABEL].append(p)
+
+    result = None
+    for label, plist in by_label.items():
+        proj = None
+        for p in plist:
+            raw = p.get_latest()
+            if raw is None or raw.empty:
+                continue
+            raw = raw.copy()
+            raw["date"] = pd.to_datetime(raw["date"])
+            mc_cols = [c for c in raw.columns
+                       if c.startswith("mc_") and c.endswith(suffix)]
+            if not mc_cols:
+                continue
+            # ffill across single-day cron gaps THEN sum so a missed
+            # pull doesn't collapse the project's MC to $0 for that day.
+            # fillna(0) catches the leading window before any token in
+            # the project existed (genuinely zero MC, not data gaps).
+            sub = raw[["date"]].copy()
+            sub["__v"] = raw[mc_cols].ffill().fillna(0).sum(axis=1)
+            if proj is None:
+                proj = sub
+            else:
+                proj = proj.merge(sub, on="date", how="outer",
+                                  suffixes=("", "_other"))
+                proj["__v"] = (proj["__v"].fillna(0)
+                               + proj.get("__v_other", 0).fillna(0))
+                if "__v_other" in proj.columns:
+                    proj = proj.drop(columns=["__v_other"])
+        if proj is None:
             continue
-        raw = raw.copy()
-        raw["date"] = pd.to_datetime(raw["date"])
-        mc_cols = [c for c in raw.columns
-                   if c.startswith("mc_") and c.endswith(suffix)]
-        if not mc_cols:
-            continue
-        proj = raw[["date"]].copy()
-        # Forward-fill across single-day cron gaps THEN sum so a missed
-        # pull doesn't collapse the whole project's MC to $0 for that
-        # day. fillna(0) catches the leading window before any token in
-        # the project existed (genuinely zero MC, not data gaps).
-        proj[p.GROUP_LABEL] = (
-            raw[mc_cols].ffill().fillna(0).sum(axis=1))
-        frames.append(proj)
-    if not frames:
+        proj = proj.rename(columns={"__v": label})
+        result = (proj if result is None
+                  else result.merge(proj, on="date", how="outer"))
+
+    if result is None:
         return None
-    result = frames[0]
-    for f in frames[1:]:
-        result = result.merge(f, on="date", how="outer")
     return result.sort_values("date").reset_index(drop=True)
+
+
+def _dedupe_pullers_for_chain(pullers: list, chain: str) -> list:
+    """When iterating pullers for per-project rendering on a chain tab,
+    deduplicate same-labelled pullers to ONE per project — picks the
+    puller that owns the most tokens on `chain` so the renderer sees
+    the right data. Used to keep the post-Ondo-split registry from
+    showing 'Ondo' twice in per-project loops (the ondo_group_evm
+    puller has zero Solana tokens, so on a Solana tab the dedupe
+    picks ondo_group_sol)."""
+    from collections import defaultdict
+    chain_lower = chain.lower()
+    grouped: dict[str, list] = defaultdict(list)
+    for p in pullers:
+        grouped[p.GROUP_LABEL].append(p)
+
+    def _chain_score(p) -> int:
+        return sum(1 for tok in getattr(p, "TOKENS", [])
+                   if len(tok) > 2 and tok[2].lower() == chain_lower)
+
+    out: list = []
+    for plist in grouped.values():
+        if len(plist) == 1:
+            out.append(plist[0])
+        else:
+            out.append(max(plist, key=_chain_score))
+    return out
 
 
 def _build_combined_stocks_mc_fig(df: pd.DataFrame, labels: list[str],
@@ -5010,7 +5102,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v52-mc-snapshot"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v53-ondo-split"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────
@@ -5451,7 +5543,12 @@ if __name__ == "__main__":
             if combined_df is None:
                 st.info("Waiting for first pull…")
             else:
-                labels = [p.GROUP_LABEL for p in stocks_pullers]
+                # dedupe labels — the post-Ondo-split registry has 2
+                # pullers labelled "Ondo" (sol + evm), both fold into
+                # one Ondo column via _combined_stocks_df's per-label
+                # aggregation, so we only want "Ondo" listed once.
+                labels = list(dict.fromkeys(
+                    p.GROUP_LABEL for p in stocks_pullers))
                 _raw = combined_df.copy()
                 _present = [l for l in labels if l in _raw.columns]
                 _raw["Total"] = _raw[_present].fillna(0).sum(axis=1)
@@ -5480,11 +5577,17 @@ if __name__ == "__main__":
             st.divider()
 
             # ── Per-group breakdowns — 2 per row ──────────────────────────────
-            for row_start in range(0, len(stocks_pullers), 2):
+            # Dedupe by GROUP_LABEL so the post-Ondo-split registry
+            # (ondo_group_sol + ondo_group_evm both labelled "Ondo")
+            # renders one Ondo card, not two; picks the puller with the
+            # most Solana tokens (ondo_group_sol owns all 263).
+            _per_proj_pullers = _dedupe_pullers_for_chain(
+                stocks_pullers, "solana")
+            for row_start in range(0, len(_per_proj_pullers), 2):
                 col_a, col_b = st.columns(2, gap="medium")
                 for col, p in zip(
                     (col_a, col_b),
-                    stocks_pullers[row_start : row_start + 2],
+                    _per_proj_pullers[row_start : row_start + 2],
                 ):
                     with col:
                         st.subheader(p.GROUP_LABEL)

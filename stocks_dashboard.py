@@ -5713,13 +5713,33 @@ if __name__ == "__main__":
     # ── Auto-refresh ──────────────────────────────────────────────────────────────
     st_autorefresh(interval=settings.ui_refresh_seconds * 1_000, key="dashboard_refresh")
 
-    # ── Sidebar: chain navigation ─────────────────────────────────────────────────
+    # ── Sidebar: chain + asset navigation ──────────────────────────────────────────
+    # Two independent nav axes: CHAINS (existing) + ASSETS (new). When an
+    # asset is selected, the dashboard switches from the chain-tab layout
+    # to an asset-vertical view (chain filter still applies). When no
+    # asset is selected, the existing chain-tab layout renders unchanged.
     _CHAINS = ["All chain", "Solana", "Ethereum", "BNB Chain", "Base"]
+    _ASSETS = [
+        "Stablecoin payments",
+        "Tokenized commodities",
+        "Tokenized equities",
+        "Tokenized treasuries",
+        "Private credit",
+        "RWA perps",
+    ]
     with st.sidebar:
         st.markdown('<p class="peak-nav-title">Chains</p>', unsafe_allow_html=True)
         selected_chain = st.radio(
             "Chain", _CHAINS, index=1,
             label_visibility="collapsed", key="chain_nav",
+        )
+        st.markdown(
+            '<p class="peak-nav-title" style="margin-top:28px">Assets</p>',
+            unsafe_allow_html=True,
+        )
+        selected_asset = st.radio(
+            "Asset", _ASSETS, index=None,   # None = no asset selected
+            label_visibility="collapsed", key="asset_nav",
         )
 
     _chain_label = "ALL CHAINS" if selected_chain == "All chain" else selected_chain.upper()
@@ -5751,12 +5771,32 @@ if __name__ == "__main__":
         st.rerun()
 
     # ── Header ────────────────────────────────────────────────────────────────────
+    # Subtitle composes the active selectors: "Solana" alone, or
+    # "Solana · Tokenized equities" when an asset vertical is picked.
+    _subtitle = selected_chain
+    if selected_asset:
+        _subtitle = f"{selected_chain} · {selected_asset}"
     st.markdown(
         f'<p class="peak-title">RWA DASHBOARD</p>'
-        f'<p class="peak-subtitle">{selected_chain}</p>',
+        f'<p class="peak-subtitle">{_subtitle}</p>',
         unsafe_allow_html=True,
     )
     st.divider()
+
+    # ── Asset-vertical dispatch ───────────────────────────────────────────────────
+    # When the sidebar Assets selector picks a specific vertical, render
+    # that vertical's content instead of the chain-tab layout below.
+    # Chain context still applies (passed down via selected_chain) so the
+    # user can pivot the same asset view across chains. Charts per
+    # vertical land here as the user specifies them — for now each shows
+    # a placeholder so the navigation is clickable and obvious.
+    if selected_asset:
+        st.info(
+            f"📊 **{selected_asset}** view is coming soon. "
+            f"Chart specifications pending. Active chain filter: "
+            f"**{selected_chain}**."
+        )
+        st.stop()
 
     # ── Combined tokenized-stocks overview helpers ────────────────────────────────
 

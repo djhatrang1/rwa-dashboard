@@ -5812,6 +5812,27 @@ if __name__ == "__main__":
     # per vertical land in this block as the user specifies them — for
     # now each shows a placeholder so the navigation is clickable.
     if selected_asset:
+        if selected_asset == "Tokenized commodities":
+            # All-chain tokenized gold MC — same renderer as the
+            # All-chain Tokenized Commodities tab on the chain view.
+            # Per-token stacked area across every chain DefiLlama/Birdeye
+            # covers (Solana primary, Ethereum for PAXG/XAUT, etc.).
+            st.subheader("Tokenized Gold — Market Cap (all chains)")
+            st.caption(
+                "Per-token market cap stacked across every chain. Sources: "
+                "DefiLlama (PAXG / XAUT / XAUM / CGO multi-chain) + "
+                "Solscan-seeded history for the Solana-native tokens "
+                "(GOLD / VNXAU / DGLD / TXAU / PGOLD / XAUt0). Hover "
+                "tooltip shows per-token + Total at each date."
+            )
+            if not commodity_pullers:
+                st.info("No tokenized commodity pullers registered.")
+            else:
+                for p in commodity_pullers:
+                    p.render_market_cap_chain(chain=None, stacked=True)
+            st.stop()
+
+        # Other asset verticals: placeholder until specs land.
         st.info(
             f"📊 **{selected_asset}** view is coming soon. "
             "Chart specifications pending."

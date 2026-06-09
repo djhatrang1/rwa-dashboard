@@ -5131,6 +5131,13 @@ def _combined_stocks_df(pullers: list,
 
     if result is None:
         return None
+    # Suppress 1970-01-01 epoch artifacts that creep in when an upstream
+    # source (Birdeye OHLCV V3 leading row, CG market_chart bogus ts,
+    # etc.) emits a unix-second 0 — pd.to_datetime turns those into
+    # 1970-01-01 and the outer-merge here keeps the row alive, dragging
+    # the chart's x-axis back to 1970. No real tokenized-stock data
+    # exists before 2020 so this is a safe floor.
+    result = result[result["date"] >= "2020-01-01"]
     return result.sort_values("date").reset_index(drop=True)
 
 
@@ -5299,6 +5306,10 @@ def _combined_stocks_mc_chain_df(pullers: list,
 
     if result is None:
         return None
+    # Suppress 1970-01-01 epoch artifacts (see note on the volume helper
+    # above). Same root cause: an upstream source somewhere wrote a
+    # bogus date that the outer-merge preserves with all-null cols.
+    result = result[result["date"] >= "2020-01-01"]
     return result.sort_values("date").reset_index(drop=True)
 
 

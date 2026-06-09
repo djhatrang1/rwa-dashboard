@@ -5750,6 +5750,90 @@ def _build_combined_stocks_mc_fig(df: pd.DataFrame, labels: list[str],
     return fig
 
 
+# ── D/W/M tab frame + raw-data button pinned to tab row ──────────────────────
+from contextlib import contextmanager
+
+
+def _resample_dwm(df: pd.DataFrame, period: str,
+                  col_aggs: dict | None = None,
+                  default_agg: str = "sum") -> pd.DataFrame:
+    """Aggregate a daily DataFrame to weekly ('W') or monthly ('M').
+
+    Per-column aggregation rule: explicit `col_aggs[col]` wins; otherwise
+    infers by column name (vol_* / *_volume_* → sum; mc_* / price_* /
+    *_market_cap* / *_supply* / usd → last; everything else → default_agg).
+
+    Used by _chart_dwm_frame so each chart can keep one source DataFrame
+    and the tabs just toggle the granularity."""
+    if df is None or df.empty or "date" not in df.columns:
+        return df
+    if period not in ("W", "M"):
+        return df
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    period_col = "_dwm_bucket"
+    df[period_col] = df["date"].dt.to_period(period).dt.start_time
+    agg: dict[str, str] = {}
+    for c in df.columns:
+        if c in ("date", period_col):
+            continue
+        if col_aggs and c in col_aggs:
+            agg[c] = col_aggs[c]
+            continue
+        lc = c.lower()
+        if c.startswith("vol_") or "volume" in lc:
+            agg[c] = "sum"
+        elif (c.startswith("mc_") or c.startswith("total_market_cap")
+              or "market_cap" in lc or "price" in lc or c == "usd"
+              or "supply" in lc):
+            agg[c] = "last"
+        else:
+            agg[c] = default_agg
+    return (df.groupby(period_col, as_index=False)
+              .agg(agg)
+              .rename(columns={period_col: "date"}))
+
+
+@contextmanager
+def _chart_dwm_frame(title: str, *, raw_df: pd.DataFrame, raw_key: str,
+                     raw_fmt: dict | None = None,
+                     raw_filename: str | None = None,
+                     caption: str | None = None):
+    """Render `title` (subheader) + optional `caption`, then yield a tuple
+    of (tab_daily, tab_weekly, tab_monthly) inside a container that
+    auto-pins the 📋 raw-data button to the tab row's right edge via the
+    existing global CSS (`[class*="st-key-chartwrap_"]` / `_raw_`).
+
+    Caller is responsible for resampling the data per tab — use
+    `_resample_dwm(df, "W"/"M")` for the standard sum/last aggregation.
+
+    Usage:
+        with _chart_dwm_frame("My Chart", raw_df=raw, raw_key="my_key",
+                              caption="…") as (tab_d, tab_w, tab_m):
+            with tab_d:
+                _chart(build_fig(df_daily), use_container_width=True)
+            with tab_w:
+                _chart(build_fig(_resample_dwm(df_daily, "W")),
+                       use_container_width=True)
+            with tab_m:
+                _chart(build_fig(_resample_dwm(df_daily, "M")),
+                       use_container_width=True)
+    """
+    st.subheader(title)
+    if caption:
+        st.caption(caption)
+    # Container key MUST start with `chartwrap_` and the button key MUST
+    # start with `raw_` — the global CSS at the bottom of main() pins
+    # any `st-key-raw_*` button absolutely to top-right of its
+    # `st-key-chartwrap_*` ancestor, landing it on the tab row.
+    with st.container(key=f"chartwrap_{raw_key}"):
+        if st.button("📋", key=f"raw_{raw_key}",
+                     help="View raw data"):
+            _raw_data_modal(raw_df, raw_fmt, raw_filename or raw_key)
+        tabs = st.tabs(["Daily", "Weekly", "Monthly"])
+        yield tabs[0], tabs[1], tabs[2]
+
+
 # ── Subheader + raw-data button on a single row ──────────────────────────────
 def _chart_header(title: str, *, raw_df: pd.DataFrame, raw_key: str,
                   raw_fmt: dict | None = None,
@@ -6197,25 +6281,6 @@ if __name__ == "__main__":
 
                 # ── Volume chart (CoinGecko cross-chain) ──────────────
                 st.divider()
-                st.subheader(
-                    "Tokenized Gold — Global Trading Volume "
-                    "(CEX + DEX, all venues)"
-                )
-                st.caption(
-                    "Per-token **global** trading volume — CoinGecko-"
-                    "aggregated across every venue (CEX **and** DEX "
-                    "combined: Binance / Kraken / WhiteBIT / Uniswap / "
-                    "etc.). 8/10 gold tokens listed; TXAU + CGO not yet "
-                    "on CG → silently skipped. Stacked area, hover "
-                    "tooltip shows per-token + Total. The gold line "
-                    "(right y-axis) is **PAXG spot price (USD/oz)** "
-                    "from CoinGecko — PAXG is 1:1 LBMA-backed so it "
-                    "tracks spot gold within a tight peg basis; useful "
-                    "for reading volume/price correlation. The two "
-                    "charts below decompose this total: left splits "
-                    "the on-chain DEX slice by chain; right splits the "
-                    "global total into CEX vs DEX shares."
-                )
                 for p in commodity_pullers:
                     df = p.get_latest()
                     if df is None or df.empty:
@@ -6235,9 +6300,6 @@ if __name__ == "__main__":
                         continue
                     # Sort by latest value desc so the biggest token is
                     # drawn first (= top of tooltip, bottom of stack).
-                    # Stable color per token across reloads via the
-                    # token's original index in self.TOKENS (same logic
-                    # used by render_market_cap_chain).
                     def _latest(col):
                         s = df[col].dropna()
                         return float(s.iloc[-1]) if len(s) else 0.0
@@ -6246,88 +6308,124 @@ if __name__ == "__main__":
                         t[0].lower().replace("-", "_").replace(" ", "_"): i
                         for i, t in enumerate(p.TOKENS)
                     }
-                    # Clip outlier days per token (CG's PAXG showed
-                    # spurious $10B days early Feb 2026 — 5× PAXG's
-                    # entire market cap, clearly an aggregator glitch).
-                    # Same logic as the Birdeye OHLCV outlier-clip:
-                    # factor × per-token median, with a min-retained
-                    # safety guard so the clip doesn't erase a token
-                    # with naturally-skewed volume distribution.
+                    # Clip outlier days (CG's PAXG showed spurious $10B
+                    # days early Feb 2026 — 5× PAXG's entire MC).
                     for vc in vol_cols:
                         df[vc] = p._clip_outliers(df[vc], factor=25.0,
                                                   min_retained=0.5)
-                    fig = go.Figure()
-                    for vc in vol_cols:
-                        sym_key = vc[len("vol_"):-len("_cg_usd")]
-                        color = p._COLORS[
-                            _color_idx.get(sym_key, 0) % len(p._COLORS)]
-                        y = df[vc].ffill().fillna(0)
-                        label = sym_key.upper()
-                        fig.add_trace(go.Scatter(
-                            x=df["date"], y=y, name=label,
-                            mode="lines",
-                            line=dict(color=color, width=0.8),
-                            stackgroup="vol",
-                            customdata=y.map(_fmt_usd),
-                            hovertemplate=f"{label}: %{{customdata}}<extra></extra>",
-                        ))
-                    totals = df[vol_cols].ffill().fillna(0).sum(axis=1)
-                    fig.add_trace(go.Scatter(
-                        x=df["date"], y=totals, name="Total",
-                        mode="lines",
-                        line=dict(width=0, color="rgba(0,0,0,0)"),
-                        showlegend=False, stackgroup=None,
-                        customdata=totals.map(_fmt_usd),
-                        hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
-                    ))
-                    # ── PAXG spot-gold price overlay (right y-axis) ──
-                    # PAXG is 1:1 backed by an LBMA troy ounce so its
-                    # USD price ≈ spot gold within a tight peg basis.
-                    # Plotting on a secondary y-axis lets the eye read
-                    # volume/price correlation (e.g. does volume spike
-                    # on gold-price breakouts?) without leaving the
-                    # chart. Reindexed against the volume series' date
-                    # axis so the line aligns row-for-row.
+                    # PAXG spot-gold price as a normal column on df so
+                    # it rides the D/W/M resample (rule: 'last' → period
+                    # close price). Reindexed to the volume df's date
+                    # axis so the join is lossless before resample.
                     _paxg_df = _fetch_paxg_price_history()
-                    _paxg_aligned = None
                     if not _paxg_df.empty:
                         _vol_dates = pd.DatetimeIndex(
                             pd.to_datetime(df["date"].values)).normalize()
-                        _paxg_aligned = (
+                        df["paxg_usd"] = (
                             _paxg_df.set_index("date")["usd"]
                                     .reindex(_vol_dates).values)
+
+                    # Closure: build the figure for whatever
+                    # granularity's df we hand it (daily/weekly/monthly).
+                    def _build_global_vol_fig(df_view):
+                        fig = go.Figure()
+                        present_vol = [c for c in vol_cols
+                                       if c in df_view.columns]
+                        for vc in present_vol:
+                            sym_key = vc[len("vol_"):-len("_cg_usd")]
+                            color = p._COLORS[
+                                _color_idx.get(sym_key, 0) % len(p._COLORS)]
+                            y = df_view[vc].ffill().fillna(0)
+                            label = sym_key.upper()
+                            fig.add_trace(go.Scatter(
+                                x=df_view["date"], y=y, name=label,
+                                mode="lines",
+                                line=dict(color=color, width=0.8),
+                                stackgroup="vol",
+                                customdata=y.map(_fmt_usd),
+                                hovertemplate=f"{label}: %{{customdata}}<extra></extra>",
+                            ))
+                        totals_v = (df_view[present_vol].ffill().fillna(0)
+                                                       .sum(axis=1))
                         fig.add_trace(go.Scatter(
-                            x=df["date"], y=_paxg_aligned,
-                            name="Gold $/oz (PAXG)",
-                            mode="lines", yaxis="y2",
-                            line=dict(color="#D4AF37", width=1.6),  # metallic gold
-                            customdata=[(f"${v:,.0f}" if pd.notna(v) else "—")
-                                        for v in _paxg_aligned],
-                            hovertemplate="Gold: %{customdata}/oz<extra></extra>",
+                            x=df_view["date"], y=totals_v, name="Total",
+                            mode="lines",
+                            line=dict(width=0, color="rgba(0,0,0,0)"),
+                            showlegend=False, stackgroup=None,
+                            customdata=totals_v.map(_fmt_usd),
+                            hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
                         ))
-                    y_max = float(totals.max() or 0)
-                    fig.update_layout(
-                        height=420, hovermode="x unified",
-                        margin=dict(t=10, b=10, l=10, r=10),
-                        legend=dict(orientation="h", yanchor="bottom",
-                                    y=1.02, xanchor="right", x=1),
-                        yaxis=dict(tickprefix="$", tickformat="~s",
-                                   showgrid=True, rangemode="tozero",
-                                   range=[0, y_max * 1.10] if y_max > 0 else None),
-                        yaxis2=dict(
-                            overlaying="y", side="right",
-                            showgrid=False, tickprefix="$",
-                            tickformat=",.0f", rangemode="normal",
-                        ),
-                    )
+                        if "paxg_usd" in df_view.columns:
+                            paxg_vals = df_view["paxg_usd"].values
+                            fig.add_trace(go.Scatter(
+                                x=df_view["date"], y=paxg_vals,
+                                name="Gold $/oz (PAXG)",
+                                mode="lines", yaxis="y2",
+                                line=dict(color="#D4AF37", width=1.6),
+                                customdata=[(f"${v:,.0f}"
+                                             if pd.notna(v) else "—")
+                                            for v in paxg_vals],
+                                hovertemplate="Gold: %{customdata}/oz<extra></extra>",
+                            ))
+                        y_max = float(totals_v.max() or 0)
+                        fig.update_layout(
+                            height=420, hovermode="x unified",
+                            margin=dict(t=10, b=10, l=10, r=10),
+                            legend=dict(orientation="h", yanchor="bottom",
+                                        y=1.02, xanchor="right", x=1),
+                            yaxis=dict(tickprefix="$", tickformat="~s",
+                                       showgrid=True, rangemode="tozero",
+                                       range=[0, y_max * 1.10] if y_max > 0 else None),
+                            yaxis2=dict(
+                                overlaying="y", side="right",
+                                showgrid=False, tickprefix="$",
+                                tickformat=",.0f", rangemode="normal",
+                            ),
+                        )
+                        return fig
+
                     _raw_vol = df[["date"] + vol_cols].copy()
-                    _raw_vol["total"] = totals.values
-                    if _paxg_aligned is not None:
-                        _raw_vol["gold_usd_oz_paxg"] = _paxg_aligned
-                    _chart(fig, use_container_width=True,
-                           raw_df=_raw_vol.sort_values("date", ascending=False),
-                           raw_key="asset_gold_volume_cg",
-                           raw_filename="tokenized_gold_volume_cg_all_chains")
+                    _raw_vol["total"] = (df[vol_cols].ffill().fillna(0)
+                                                    .sum(axis=1).values)
+                    if "paxg_usd" in df.columns:
+                        _raw_vol["gold_usd_oz_paxg"] = df["paxg_usd"].values
+
+                    _caption_global = (
+                        "Per-token **global** trading volume — "
+                        "CoinGecko-aggregated across every venue (CEX "
+                        "**and** DEX combined: Binance / Kraken / "
+                        "WhiteBIT / Uniswap / etc.). 8/10 gold tokens "
+                        "listed; TXAU + CGO not yet on CG → silently "
+                        "skipped. Hover tooltip shows per-token + "
+                        "Total. The gold line (right y-axis) is "
+                        "**PAXG spot price (USD/oz)** — 1:1 LBMA-"
+                        "backed, tracks spot gold within a tight peg "
+                        "basis. The two charts below decompose this "
+                        "total: left splits the on-chain DEX slice by "
+                        "chain; right splits the global total into "
+                        "CEX vs DEX shares."
+                    )
+                    with _chart_dwm_frame(
+                        "Tokenized Gold — Global Trading Volume "
+                        "(CEX + DEX, all venues)",
+                        raw_df=_raw_vol.sort_values("date", ascending=False),
+                        raw_key="asset_gold_volume_cg",
+                        raw_filename="tokenized_gold_volume_cg_all_chains",
+                        caption=_caption_global,
+                    ) as (tab_d, tab_w, tab_m):
+                        with tab_d:
+                            _chart(_build_global_vol_fig(df),
+                                   use_container_width=True)
+                        with tab_w:
+                            _chart(_build_global_vol_fig(
+                                _resample_dwm(df, "W",
+                                              col_aggs={"paxg_usd": "last"})),
+                                   use_container_width=True)
+                        with tab_m:
+                            _chart(_build_global_vol_fig(
+                                _resample_dwm(df, "M",
+                                              col_aggs={"paxg_usd": "last"})),
+                                   use_container_width=True)
 
                 # ── Side-by-side: DEX-by-Chain + CEX-vs-DEX ──────────
                 # Both sub-charts decompose the all-venue CG total
@@ -6480,75 +6578,91 @@ if __name__ == "__main__":
                                 "zksync":              "#A78BFA",  # lavender
                                 "aptos":               "#10B981",  # emerald
                             }
-                            fig_ch = go.Figure()
-                            for ch in chain_order:
-                                y = chain_totals[ch].fillna(0)
-                                label = CHAIN_LABEL.get(ch, ch.title())
-                                color = CHAIN_COLOR.get(ch, "#888888")
-                                fig_ch.add_trace(go.Scatter(
-                                    x=df_b["date"], y=y, name=label,
-                                    mode="lines",
-                                    line=dict(color=color, width=0.8),
-                                    stackgroup="vch",
-                                    customdata=y.map(_fmt_usd),
-                                    hovertemplate=f"{label}: %{{customdata}}<extra></extra>",
-                                ))
+                            # grand_totals (used only for the raw export
+                            # below) — sum across chain series.
                             grand_totals = sum(chain_totals.values())
-                            fig_ch.add_trace(go.Scatter(
-                                x=df_b["date"], y=grand_totals, name="Total",
-                                mode="lines",
-                                line=dict(width=0, color="rgba(0,0,0,0)"),
-                                showlegend=False, stackgroup=None,
-                                customdata=grand_totals.map(_fmt_usd),
-                                hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
-                            ))
-                            y_max_ch = float(grand_totals.max() or 0)
-                            fig_ch.update_layout(
-                                height=420, hovermode="x unified",
-                                # Tighter top margin since the legend now
-                                # lives below the chart — without this, the
-                                # narrow column reserves ~150px above the
-                                # plot for the (legend + rangeselector)
-                                # stack, leaving a huge gap below the
-                                # caption.
-                                margin=dict(t=10, b=10, l=10, r=10),
-                                # Legend BELOW chart (yanchor=top, y<0) —
-                                # in a half-width column the 6-entry
-                                # horizontal legend doesn't fit on one
-                                # line if placed above, and stacking it
-                                # over the rangeselector buttons forces
-                                # Plotly to expand top margin. Below the
-                                # chart it has all the width it needs and
-                                # plays well with the bottom rangeslider.
-                                legend=dict(orientation="h", yanchor="top",
-                                            y=-0.22, xanchor="center", x=0.5),
-                                yaxis=dict(tickprefix="$", tickformat="~s",
-                                           showgrid=True, rangemode="tozero",
-                                           range=[0, y_max_ch * 1.10] if y_max_ch > 0 else None),
-                            )
-                            _raw_ch = pd.DataFrame({"date": df_b["date"]})
+                            # Pack the per-chain series into a single df
+                            # so the D/W/M resample can sum each chain
+                            # column across the period.
+                            _ch_df = pd.DataFrame({"date": df_b["date"]})
                             for ch in chain_order:
-                                _raw_ch[CHAIN_LABEL.get(ch, ch.title())] = (
+                                _ch_df[f"vol_{ch}_usd"] = (
                                     chain_totals[ch].values)
-                            _raw_ch["total"] = grand_totals.values
-                            # Title + 📋 button on a single row above the
-                            # chart, then caption, then chart (button-on-
-                            # rangeselector overlay broke in narrow cols).
-                            _chart_header(
+
+                            def _build_dex_by_chain_fig(df_view):
+                                fig_ch_v = go.Figure()
+                                for ch in chain_order:
+                                    col = f"vol_{ch}_usd"
+                                    if col not in df_view.columns:
+                                        continue
+                                    y = df_view[col].fillna(0)
+                                    label = CHAIN_LABEL.get(ch, ch.title())
+                                    color = CHAIN_COLOR.get(ch, "#888888")
+                                    fig_ch_v.add_trace(go.Scatter(
+                                        x=df_view["date"], y=y, name=label,
+                                        mode="lines",
+                                        line=dict(color=color, width=0.8),
+                                        stackgroup="vch",
+                                        customdata=y.map(_fmt_usd),
+                                        hovertemplate=f"{label}: %{{customdata}}<extra></extra>",
+                                    ))
+                                present_cols = [f"vol_{ch}_usd"
+                                                for ch in chain_order
+                                                if f"vol_{ch}_usd" in df_view.columns]
+                                grand_v = df_view[present_cols].fillna(0).sum(axis=1)
+                                fig_ch_v.add_trace(go.Scatter(
+                                    x=df_view["date"], y=grand_v, name="Total",
+                                    mode="lines",
+                                    line=dict(width=0, color="rgba(0,0,0,0)"),
+                                    showlegend=False, stackgroup=None,
+                                    customdata=grand_v.map(_fmt_usd),
+                                    hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+                                ))
+                                y_max_v = float(grand_v.max() or 0)
+                                fig_ch_v.update_layout(
+                                    height=420, hovermode="x unified",
+                                    margin=dict(t=10, b=10, l=10, r=10),
+                                    legend=dict(orientation="h",
+                                                yanchor="top", y=-0.22,
+                                                xanchor="center", x=0.5),
+                                    yaxis=dict(tickprefix="$",
+                                               tickformat="~s",
+                                               showgrid=True,
+                                               rangemode="tozero",
+                                               range=[0, y_max_v * 1.10] if y_max_v > 0 else None),
+                                )
+                                return fig_ch_v
+
+                            _raw_ch_export = _ch_df.copy()
+                            _raw_ch_export.columns = ["date"] + [
+                                CHAIN_LABEL.get(ch, ch.title())
+                                for ch in chain_order]
+                            _raw_ch_export["total"] = grand_totals.values
+                            with _chart_dwm_frame(
                                 "On-chain DEX Volume by Chain",
-                                raw_df=_raw_ch.sort_values("date", ascending=False),
+                                raw_df=_raw_ch_export.sort_values("date", ascending=False),
                                 raw_key="asset_gold_volume_by_chain",
                                 raw_filename="tokenized_gold_volume_by_chain",
-                            )
-                            st.caption(
-                                "Stacked daily DEX volume per chain. "
-                                "Source: Birdeye OHLCV V3 per (token, "
-                                "chain) across the Birdeye-supported "
-                                "chains gold tokens live on. **On-chain "
-                                "DEX only** — CEX volume is rendered "
-                                "separately in the chart to the right."
-                            )
-                            _chart(fig_ch, use_container_width=True)
+                                caption=(
+                                    "Stacked DEX volume per chain. "
+                                    "Source: Birdeye OHLCV V3 per "
+                                    "(token, chain). **On-chain DEX "
+                                    "only** — CEX volume is rendered "
+                                    "separately in the chart to the "
+                                    "right."
+                                ),
+                            ) as (tab_d, tab_w, tab_m):
+                                with tab_d:
+                                    _chart(_build_dex_by_chain_fig(_ch_df),
+                                           use_container_width=True)
+                                with tab_w:
+                                    _chart(_build_dex_by_chain_fig(
+                                        _resample_dwm(_ch_df, "W")),
+                                        use_container_width=True)
+                                with tab_m:
+                                    _chart(_build_dex_by_chain_fig(
+                                        _resample_dwm(_ch_df, "M")),
+                                        use_container_width=True)
 
                     # ─── RIGHT: CEX vs DEX (CG global − Birdeye DEX) ─
                     with col_cv:
@@ -6569,73 +6683,93 @@ if __name__ == "__main__":
                                 "the CEX-vs-DEX split."
                             )
                         else:
-                            fig_cv = go.Figure()
-                            # DEX first → renders as the BOTTOM band of
-                            # the stack (the thin sliver). CEX renders
-                            # on top and visually swamps it, which is
-                            # the actual story we want to tell.
-                            fig_cv.add_trace(go.Scatter(
-                                x=df_b["date"], y=dex_total, name="DEX",
-                                mode="lines",
-                                line=dict(color="#3B82F6", width=0.8),  # blue
-                                stackgroup="cv",
-                                customdata=dex_total.map(_fmt_usd),
-                                hovertemplate="DEX: %{customdata}<extra></extra>",
-                            ))
-                            fig_cv.add_trace(go.Scatter(
-                                x=df_b["date"], y=cex_residual, name="CEX",
-                                mode="lines",
-                                line=dict(color="#FBBF24", width=0.8),  # yellow
-                                stackgroup="cv",
-                                customdata=cex_residual.map(_fmt_usd),
-                                hovertemplate="CEX: %{customdata}<extra></extra>",
-                            ))
-                            grand_cv = dex_total + cex_residual
-                            fig_cv.add_trace(go.Scatter(
-                                x=df_b["date"], y=grand_cv, name="Total",
-                                mode="lines",
-                                line=dict(width=0, color="rgba(0,0,0,0)"),
-                                showlegend=False, stackgroup=None,
-                                customdata=grand_cv.map(_fmt_usd),
-                                hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
-                            ))
-                            y_max_cv = float(grand_cv.max() or 0)
-                            fig_cv.update_layout(
-                                height=420, hovermode="x unified",
-                                margin=dict(t=10, b=10, l=10, r=10),
-                                # Match left-column chart: legend below
-                                # the plot so the half-width column
-                                # doesn't reserve excess top margin for
-                                # legend + rangeselector stacking.
-                                legend=dict(orientation="h", yanchor="top",
-                                            y=-0.22, xanchor="center", x=0.5),
-                                yaxis=dict(tickprefix="$", tickformat="~s",
-                                           showgrid=True, rangemode="tozero",
-                                           range=[0, y_max_cv * 1.10] if y_max_cv > 0 else None),
-                            )
-                            _raw_cv = pd.DataFrame({
+                            # Pack DEX + CEX series into a single df so
+                            # the D/W/M resample sums each across the
+                            # period.
+                            _cv_df = pd.DataFrame({
                                 "date": df_b["date"],
-                                "DEX": dex_total.values,
-                                "CEX": cex_residual.values,
-                                "total": grand_cv.values,
+                                "vol_dex_usd": dex_total.values,
+                                "vol_cex_usd": cex_residual.values,
                             })
-                            # Title + 📋 button row, caption, then chart.
-                            _chart_header(
+
+                            def _build_cex_vs_dex_fig(df_view):
+                                fig_cv_v = go.Figure()
+                                dex_y = df_view["vol_dex_usd"].fillna(0)
+                                cex_y = df_view["vol_cex_usd"].fillna(0)
+                                fig_cv_v.add_trace(go.Scatter(
+                                    x=df_view["date"], y=dex_y, name="DEX",
+                                    mode="lines",
+                                    line=dict(color="#3B82F6", width=0.8),
+                                    stackgroup="cv",
+                                    customdata=dex_y.map(_fmt_usd),
+                                    hovertemplate="DEX: %{customdata}<extra></extra>",
+                                ))
+                                fig_cv_v.add_trace(go.Scatter(
+                                    x=df_view["date"], y=cex_y, name="CEX",
+                                    mode="lines",
+                                    line=dict(color="#FBBF24", width=0.8),
+                                    stackgroup="cv",
+                                    customdata=cex_y.map(_fmt_usd),
+                                    hovertemplate="CEX: %{customdata}<extra></extra>",
+                                ))
+                                grand_v = dex_y + cex_y
+                                fig_cv_v.add_trace(go.Scatter(
+                                    x=df_view["date"], y=grand_v, name="Total",
+                                    mode="lines",
+                                    line=dict(width=0, color="rgba(0,0,0,0)"),
+                                    showlegend=False, stackgroup=None,
+                                    customdata=grand_v.map(_fmt_usd),
+                                    hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+                                ))
+                                y_max_v = float(grand_v.max() or 0)
+                                fig_cv_v.update_layout(
+                                    height=420, hovermode="x unified",
+                                    margin=dict(t=10, b=10, l=10, r=10),
+                                    legend=dict(orientation="h",
+                                                yanchor="top", y=-0.22,
+                                                xanchor="center", x=0.5),
+                                    yaxis=dict(tickprefix="$",
+                                               tickformat="~s",
+                                               showgrid=True,
+                                               rangemode="tozero",
+                                               range=[0, y_max_v * 1.10] if y_max_v > 0 else None),
+                                )
+                                return fig_cv_v
+
+                            _raw_cv_export = _cv_df.rename(columns={
+                                "vol_dex_usd": "DEX",
+                                "vol_cex_usd": "CEX",
+                            }).copy()
+                            _raw_cv_export["total"] = (
+                                _raw_cv_export["DEX"] + _raw_cv_export["CEX"])
+                            with _chart_dwm_frame(
                                 "CEX vs DEX Volume",
-                                raw_df=_raw_cv.sort_values("date", ascending=False),
+                                raw_df=_raw_cv_export.sort_values("date", ascending=False),
                                 raw_key="asset_gold_cex_vs_dex",
                                 raw_filename="tokenized_gold_cex_vs_dex",
-                            )
-                            st.caption(
-                                "Daily volume split into two stacks: "
-                                "**DEX** (blue) = on-chain Birdeye "
-                                "OHLCV V3 summed across chains; **CEX** "
-                                "(yellow) = CoinGecko global total − "
-                                "on-chain DEX (residual, clamped to "
-                                "≥0). Tokenized gold trades ~95% on "
-                                "centralized venues so yellow dominates."
-                            )
-                            _chart(fig_cv, use_container_width=True)
+                                caption=(
+                                    "Daily volume split into two "
+                                    "stacks: **DEX** (blue) = on-chain "
+                                    "Birdeye OHLCV V3 summed across "
+                                    "chains; **CEX** (yellow) = "
+                                    "CoinGecko global total − on-chain "
+                                    "DEX (residual, clamped to ≥0). "
+                                    "Tokenized gold trades ~95% on "
+                                    "centralized venues so yellow "
+                                    "dominates."
+                                ),
+                            ) as (tab_d, tab_w, tab_m):
+                                with tab_d:
+                                    _chart(_build_cex_vs_dex_fig(_cv_df),
+                                           use_container_width=True)
+                                with tab_w:
+                                    _chart(_build_cex_vs_dex_fig(
+                                        _resample_dwm(_cv_df, "W")),
+                                        use_container_width=True)
+                                with tab_m:
+                                    _chart(_build_cex_vs_dex_fig(
+                                        _resample_dwm(_cv_df, "M")),
+                                        use_container_width=True)
 
                 # ── CEX volume by exchange — TEMPORARILY HIDDEN ──────
                 # The CG /tickers 24h-snapshot bar chart is hidden

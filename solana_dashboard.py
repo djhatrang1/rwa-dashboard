@@ -696,56 +696,71 @@ def _build_lending_stack(metric: str, protocols: list[tuple[str, str]],
     as the 📋 button (forwarded into sd._chart's chart_title kwarg), so
     the icon and title share one row instead of the button getting its
     own empty row above the rangeselector."""
-    fig = _go.Figure()
     cols = [f"{metric}_{s}" for s, _ in protocols] + [f"{metric}_others"]
     labels = [n for _, n in protocols] + ["Others"]
-    totals = wide[cols].ffill().fillna(0).sum(axis=1)
-    for i, (col, label) in enumerate(zip(cols, labels)):
-        y = wide[col].ffill().fillna(0.0)
+
+    def _build_lending_fig(df_view):
+        fig = _go.Figure()
+        present_cols = [c for c in cols if c in df_view.columns]
+        present_labels = [labels[cols.index(c)] for c in present_cols]
+        totals_v = df_view[present_cols].ffill().fillna(0).sum(axis=1)
+        for i, (col, label) in enumerate(zip(present_cols, present_labels)):
+            y = df_view[col].ffill().fillna(0.0)
+            fig.add_trace(_go.Scatter(
+                x=df_view["date"], y=y, name=label,
+                mode="lines",
+                line=dict(width=0.8, color=palette[i % len(palette)]),
+                stackgroup=metric,
+                customdata=y.map(sd._fmt_usd),
+                hovertemplate=f"{label}: %{{customdata}}<extra></extra>",
+            ))
         fig.add_trace(_go.Scatter(
-            x=wide["date"], y=y, name=label,
-            mode="lines", line=dict(width=0.8, color=palette[i % len(palette)]),
-            stackgroup=metric, hoverinfo="x+y+name",
-            customdata=y.map(sd._fmt_usd),
-            hovertemplate=f"{label}: %{{customdata}}<extra></extra>",
+            x=df_view["date"], y=totals_v, name="Total",
+            mode="lines", line=dict(width=0, color="rgba(0,0,0,0)"),
+            showlegend=False, stackgroup=None,
+            customdata=totals_v.map(sd._fmt_usd),
+            hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
         ))
-    fig.add_trace(_go.Scatter(
-        x=wide["date"], y=totals, name="Total",
-        mode="lines", line=dict(width=0, color="rgba(0,0,0,0)"),
-        showlegend=False, stackgroup=None,
-        customdata=totals.map(sd._fmt_usd),
-        hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
-    ))
-    y_max = float(totals.max() or 0)
-    # Legend below the chart, NOT above — top placement collides with the
-    # rangeselector buttons (1M/3M/6M/YTD/1Y/All) when the legend wraps
-    # to a second row, which happens reliably in the narrow 2-col layout
-    # with 11 entries (10 protocols + Others). Bottom placement scales to
-    # any number of items without colliding. Bottom margin bumped to fit
-    # the legend rows above the rangeslider strip.
-    fig.update_layout(
-        height=460, hovermode="x unified",
-        margin=dict(t=20, b=90, l=10, r=10),
-        legend=dict(orientation="h", yanchor="top", y=-0.22,
-                    xanchor="center", x=0.5),
-        yaxis=dict(showgrid=True, rangemode="tozero",
-                   range=[0, y_max * 1.10] if y_max > 0 else None),
-    )
-    # Raw data: per-protocol (or per-asset) metric values for this stack +
-    # the computed Total. Caller supplies a unique prefix so the button
-    # key + downloaded CSV name don't collide with sibling stacks.
-    raw_kwargs = {}
-    if raw_key_prefix:
+        y_max = float(totals_v.max() or 0)
+        fig.update_layout(
+            height=460, hovermode="x unified",
+            margin=dict(t=20, b=90, l=10, r=10),
+            legend=dict(orientation="h", yanchor="top", y=-0.22,
+                        xanchor="center", x=0.5),
+            yaxis=dict(showgrid=True, rangemode="tozero",
+                       range=[0, y_max * 1.10] if y_max > 0 else None),
+        )
+        return fig
+
+    # supply_/borrow_ are TVL stocks (deposited / outstanding) so 'last'
+    # is the right resample rule (period-close value, not period sum).
+    _aggs = {c: "last" for c in cols}
+
+    if chart_title and raw_key_prefix:
         _raw = wide[["date"] + cols].copy()
-        _raw["total"] = totals.values
-        raw_kwargs = {
-            "raw_df": _raw,
-            "raw_key": f"{raw_key_prefix}_{metric}",
-            "raw_filename": f"{raw_key_prefix}_{metric}",
-        }
-    if chart_title:
-        raw_kwargs["chart_title"] = chart_title
-    sd._chart(fig, use_container_width=True, **raw_kwargs)
+        _raw["total"] = (wide[cols].ffill().fillna(0).sum(axis=1).values)
+        sd._chart_dwm_simple(
+            chart_title,
+            source_df=wide[["date"] + cols].copy(),
+            build_fig=_build_lending_fig,
+            raw_df=_raw,
+            raw_key=f"{raw_key_prefix}_{metric}",
+            raw_filename=f"{raw_key_prefix}_{metric}",
+            col_aggs=_aggs,
+        )
+    else:
+        # Backward compat for callers without chart_title.
+        raw_kwargs = {}
+        if raw_key_prefix:
+            _raw = wide[["date"] + cols].copy()
+            _raw["total"] = (wide[cols].ffill().fillna(0).sum(axis=1).values)
+            raw_kwargs = {
+                "raw_df": _raw,
+                "raw_key": f"{raw_key_prefix}_{metric}",
+                "raw_filename": f"{raw_key_prefix}_{metric}",
+            }
+        sd._chart(_build_lending_fig(wide), use_container_width=True,
+                  **raw_kwargs)
 
 
 def _render_lending() -> None:
@@ -1260,14 +1275,15 @@ def _render_rwa() -> None:
                 _mc_raw["Total"] = (_mc_raw[_mc_present].ffill()
                                                        .fillna(0)
                                                        .sum(axis=1))
-                sd._chart(
-                    sd._build_combined_stocks_mc_fig(
-                        mc_combined_df, mc_labels, height=400),
-                    use_container_width=True,
-                    chart_title="All Tokenized Stocks — Market Cap by Project (Solana)",
+                sd._chart_dwm_simple(
+                    "All Tokenized Stocks — Market Cap by Project (Solana)",
+                    source_df=mc_combined_df,
+                    build_fig=lambda df_view: sd._build_combined_stocks_mc_fig(
+                        df_view, mc_labels, height=400),
                     raw_df=_mc_raw.sort_values("date", ascending=False),
                     raw_key="sd_combined_stocks_mc",
                     raw_filename="solana_tokenized_stocks_total_mc",
+                    col_aggs={l: "last" for l in mc_labels},
                 )
             st.divider()
 
@@ -1801,50 +1817,69 @@ def _render_dune_metric_pair(
         _raw_fmt_str = "${:,.0f}"
 
     col_left, col_right = st.columns(2, gap="medium")
-    with col_left:
-        fig_d = _go.Figure()
-        fig_d.add_trace(_go.Bar(
-            x=df["day"], y=df[daily_col], name=daily_title,
+
+    # ── Left: daily values (D/W/M) ─────────────────────────────────────
+    def _build_daily_fig(df_view):
+        fig = _go.Figure()
+        fig.add_trace(_go.Bar(
+            x=df_view["day"], y=df_view[daily_col], name=daily_title,
             marker=dict(color=color),
-            customdata=df[daily_col].map(_hover_fmt),
+            customdata=df_view[daily_col].map(_hover_fmt),
             hovertemplate="%{x|%Y-%m-%d}: %{customdata}<extra></extra>",
         ))
-        y_max_d = float(df[daily_col].max() or 0)
-        fig_d.update_layout(
+        y_max_d = float(df_view[daily_col].max() or 0)
+        fig.update_layout(
             height=400, hovermode="x unified",
             margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
             yaxis=dict(showgrid=True, rangemode="tozero",
                        range=[0, y_max_d * 1.10] if y_max_d > 0 else None),
         )
-        sd._chart(fig_d, use_container_width=True, fmt_mode=fmt_mode,
-                  chart_title=daily_title,
-                  raw_df=df[["day", daily_col]].copy(),
-                  raw_key=f"{raw_key_prefix}_daily",
-                  raw_fmt={daily_col: _raw_fmt_str},
-                  raw_filename=f"{raw_key_prefix}_daily")
+        return fig
 
-    with col_right:
-        fig_c = _go.Figure()
-        fig_c.add_trace(_go.Scatter(
-            x=df["day"], y=df[cum_col], name=cum_title,
+    with col_left:
+        sd._chart_dwm_simple(
+            daily_title,
+            source_df=df[["day", daily_col]].copy(),
+            build_fig=_build_daily_fig,
+            raw_df=df[["day", daily_col]].copy(),
+            raw_key=f"{raw_key_prefix}_daily",
+            raw_fmt={daily_col: _raw_fmt_str},
+            raw_filename=f"{raw_key_prefix}_daily",
+            col_aggs={daily_col: "sum"},
+            fmt_mode=fmt_mode,
+        )
+
+    # ── Right: cumulative (D/W/M; 'last' = period-end running total) ───
+    def _build_cum_fig(df_view):
+        fig = _go.Figure()
+        fig.add_trace(_go.Scatter(
+            x=df_view["day"], y=df_view[cum_col], name=cum_title,
             mode="lines", line=dict(color=color, width=1.5),
             fill="tozeroy", fillcolor=fill,
-            customdata=df[cum_col].map(_hover_fmt),
+            customdata=df_view[cum_col].map(_hover_fmt),
             hovertemplate="%{x|%Y-%m-%d}: %{customdata}<extra></extra>",
         ))
-        y_max_c = float(df[cum_col].max() or 0)
-        fig_c.update_layout(
+        y_max_c = float(df_view[cum_col].max() or 0)
+        fig.update_layout(
             height=400, hovermode="x unified",
             margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
             yaxis=dict(showgrid=True, rangemode="tozero",
                        range=[0, y_max_c * 1.10] if y_max_c > 0 else None),
         )
-        sd._chart(fig_c, use_container_width=True, fmt_mode=fmt_mode,
-                  chart_title=cum_title,
-                  raw_df=df[["day", cum_col]].copy(),
-                  raw_key=f"{raw_key_prefix}_cum",
-                  raw_fmt={cum_col: _raw_fmt_str},
-                  raw_filename=f"{raw_key_prefix}_cum")
+        return fig
+
+    with col_right:
+        sd._chart_dwm_simple(
+            cum_title,
+            source_df=df[["day", cum_col]].copy(),
+            build_fig=_build_cum_fig,
+            raw_df=df[["day", cum_col]].copy(),
+            raw_key=f"{raw_key_prefix}_cum",
+            raw_fmt={cum_col: _raw_fmt_str},
+            raw_filename=f"{raw_key_prefix}_cum",
+            col_aggs={cum_col: "last"},
+            fmt_mode=fmt_mode,
+        )
 
 
 def _render_dune_metric_compare_pair(
@@ -1897,27 +1932,30 @@ def _render_dune_metric_compare_pair(
         raw_cum = raw_cum.sort_values("day").reset_index(drop=True)
 
     col_left, col_right = st.columns(2, gap="medium")
+    _present = [(d, lbl, c, f) for d, lbl, c, f in series if not d.empty]
 
-    # ── Left: daily lines+markers per platform ──────────────────────────
-    with col_left:
-        fig_d = _go.Figure()
-        for df, label, color, _ in series:
-            if df.empty:
+    # ── Left: daily lines+markers per platform (D/W/M) ──────────────────
+    def _build_compare_daily_fig(df_view):
+        fig = _go.Figure()
+        for _df_p, label, color, _ in _present:
+            if label not in df_view.columns:
                 continue
-            fig_d.add_trace(_go.Scatter(
-                x=df["day"], y=df[daily_col], name=label,
+            y = df_view[label]
+            fig.add_trace(_go.Scatter(
+                x=df_view["day"], y=y, name=label,
                 mode="lines+markers",
                 line=dict(color=color, width=1.5),
                 marker=dict(color=color, size=4),
-                customdata=df[daily_col].map(_hover_fmt),
+                customdata=y.map(_hover_fmt),
                 hovertemplate=f"{label}: %{{customdata}}<extra></extra>",
             ))
-        y_max_d = max(
-            (float(df[daily_col].max() or 0)
-             for df, _, _, _ in series if not df.empty),
-            default=0,
-        )
-        fig_d.update_layout(
+        y_max_d = (raw_daily.drop(columns="day").max(numeric_only=True).max()
+                   if raw_daily is not None else 0)
+        try:
+            y_max_d = float(y_max_d or 0)
+        except (TypeError, ValueError):
+            y_max_d = 0
+        fig.update_layout(
             height=420, hovermode="x unified",
             margin=dict(t=10, b=10, l=10, r=10),
             legend=dict(orientation="h", yanchor="bottom", y=1.02,
@@ -1925,35 +1963,46 @@ def _render_dune_metric_compare_pair(
             yaxis=dict(showgrid=True, rangemode="tozero",
                        range=[0, y_max_d * 1.10] if y_max_d > 0 else None),
         )
-        _raw_fmt_d = {label: _raw_fmt_str
-                      for df, label, _, _ in series if not df.empty}
-        sd._chart(fig_d, use_container_width=True, fmt_mode=fmt_mode,
-                  chart_title=daily_title,
-                  raw_df=(raw_daily if raw_daily is not None
-                          else _pd.DataFrame()),
-                  raw_key=f"{raw_key_prefix}_daily",
-                  raw_fmt=_raw_fmt_d,
-                  raw_filename=f"{raw_key_prefix}_daily")
+        return fig
 
-    # ── Right: cumulative lines per platform ────────────────────────────
-    with col_right:
-        fig_c = _go.Figure()
-        for df, label, color, _ in series:
-            if df.empty:
+    _raw_fmt_d = {label: _raw_fmt_str for _, label, _, _ in _present}
+    with col_left:
+        if raw_daily is None or raw_daily.empty:
+            st.info(f"No data for {daily_title} yet.")
+        else:
+            sd._chart_dwm_simple(
+                daily_title,
+                source_df=raw_daily,
+                build_fig=_build_compare_daily_fig,
+                raw_df=raw_daily,
+                raw_key=f"{raw_key_prefix}_daily",
+                raw_fmt=_raw_fmt_d,
+                raw_filename=f"{raw_key_prefix}_daily",
+                col_aggs={lbl: "sum" for _, lbl, _, _ in _present},
+                fmt_mode=fmt_mode,
+            )
+
+    # ── Right: cumulative lines per platform (D/W/M; 'last') ────────────
+    def _build_compare_cum_fig(df_view):
+        fig = _go.Figure()
+        for _df_p, label, color, _ in _present:
+            if label not in df_view.columns:
                 continue
-            fig_c.add_trace(_go.Scatter(
-                x=df["day"], y=df[cum_col], name=label,
+            y = df_view[label]
+            fig.add_trace(_go.Scatter(
+                x=df_view["day"], y=y, name=label,
                 mode="lines",
                 line=dict(color=color, width=2),
-                customdata=df[cum_col].map(_hover_fmt),
+                customdata=y.map(_hover_fmt),
                 hovertemplate=f"{label}: %{{customdata}}<extra></extra>",
             ))
-        y_max_c = max(
-            (float(df[cum_col].max() or 0)
-             for df, _, _, _ in series if not df.empty),
-            default=0,
-        )
-        fig_c.update_layout(
+        y_max_c = (raw_cum.drop(columns="day").max(numeric_only=True).max()
+                   if raw_cum is not None else 0)
+        try:
+            y_max_c = float(y_max_c or 0)
+        except (TypeError, ValueError):
+            y_max_c = 0
+        fig.update_layout(
             height=420, hovermode="x unified",
             margin=dict(t=10, b=10, l=10, r=10),
             legend=dict(orientation="h", yanchor="bottom", y=1.02,
@@ -1961,15 +2010,24 @@ def _render_dune_metric_compare_pair(
             yaxis=dict(showgrid=True, rangemode="tozero",
                        range=[0, y_max_c * 1.10] if y_max_c > 0 else None),
         )
-        _raw_fmt_c = {label: _raw_fmt_str
-                      for df, label, _, _ in series if not df.empty}
-        sd._chart(fig_c, use_container_width=True, fmt_mode=fmt_mode,
-                  chart_title=cum_title,
-                  raw_df=(raw_cum if raw_cum is not None
-                          else _pd.DataFrame()),
-                  raw_key=f"{raw_key_prefix}_cum",
-                  raw_fmt=_raw_fmt_c,
-                  raw_filename=f"{raw_key_prefix}_cum")
+        return fig
+
+    _raw_fmt_c = {label: _raw_fmt_str for _, label, _, _ in _present}
+    with col_right:
+        if raw_cum is None or raw_cum.empty:
+            st.info(f"No data for {cum_title} yet.")
+        else:
+            sd._chart_dwm_simple(
+                cum_title,
+                source_df=raw_cum,
+                build_fig=_build_compare_cum_fig,
+                raw_df=raw_cum,
+                raw_key=f"{raw_key_prefix}_cum",
+                raw_fmt=_raw_fmt_c,
+                raw_filename=f"{raw_key_prefix}_cum",
+                col_aggs={lbl: "last" for _, lbl, _, _ in _present},
+                fmt_mode=fmt_mode,
+            )
 
 
 def _fetch_jupiter_metric(query_id: int, daily_src: str, cum_src: str,
@@ -2128,82 +2186,95 @@ def _render_dflow_prediction_section() -> None:
     st.caption(f"As of {asof}.")
     st.write("")
 
-    # ── Daily Active Users (standalone bar, no cumulative col in source) ─
+    # ── Daily Active Users (D/W/M; sum across period) ──────────────────
     if not df_users.empty:
-        fig_u = _go.Figure()
-        fig_u.add_trace(_go.Bar(
-            x=df_users["day"], y=df_users["daily"], name="Daily Active Users",
-            marker=dict(color=_DFL_COLOR),
-            customdata=df_users["daily"].map(lambda v: f"{int(v):,}"),
-            hovertemplate="%{x|%Y-%m-%d}: %{customdata}<extra></extra>",
-        ))
-        y_max_u = float(df_users["daily"].max() or 0)
-        fig_u.update_layout(
-            height=400, hovermode="x unified",
-            margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
-            yaxis=dict(showgrid=True, rangemode="tozero",
-                       range=[0, y_max_u * 1.10] if y_max_u > 0 else None),
-        )
-        sd._chart(fig_u, use_container_width=True, fmt_mode="count",
-                  chart_title="DFlow — Daily Active Users",
-                  raw_df=df_users[["day", "daily"]].copy(),
-                  raw_key="pm_dfl_users_daily",
-                  raw_fmt={"daily": "{:,.0f}"},
-                  raw_filename="pm_dfl_users_daily")
+        def _build_dfl_users_fig(df_view):
+            fig = _go.Figure()
+            fig.add_trace(_go.Bar(
+                x=df_view["day"], y=df_view["daily"],
+                name="Daily Active Users",
+                marker=dict(color=_DFL_COLOR),
+                customdata=df_view["daily"].map(lambda v: f"{int(v):,}"),
+                hovertemplate="%{x|%Y-%m-%d}: %{customdata}<extra></extra>",
+            ))
+            y_max_u = float(df_view["daily"].max() or 0)
+            fig.update_layout(
+                height=400, hovermode="x unified",
+                margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
+                yaxis=dict(showgrid=True, rangemode="tozero",
+                           range=[0, y_max_u * 1.10] if y_max_u > 0 else None),
+            )
+            return fig
 
-    # ── Token balance stacked area (CASH + USDC) ────────────────────────
+        sd._chart_dwm_simple(
+            "DFlow — Daily Active Users",
+            source_df=df_users[["day", "daily"]].copy(),
+            build_fig=_build_dfl_users_fig,
+            raw_df=df_users[["day", "daily"]].copy(),
+            raw_key="pm_dfl_users_daily",
+            raw_fmt={"daily": "{:,.0f}"},
+            raw_filename="pm_dfl_users_daily",
+            col_aggs={"daily": "sum"},
+            fmt_mode="count",
+        )
+
+    # ── Token balance stacked area (CASH + USDC) — D/W/M; 'last' ───────
     if have_tokbal:
         # Pivot long → wide so plotly gets one column per symbol.
         wide = (tokbal.pivot_table(index="day", columns="symbol",
                                    values="token_balance", aggfunc="last")
                        .sort_index()
                        .reset_index())
-        # Forward-fill across short reporting gaps so the stack doesn't
-        # collapse to zero on missing days (CASH + USDC publish on
-        # slightly different cadences in the source query).
         for sym in wide.columns[1:]:
             wide[sym] = wide[sym].ffill()
-        fig_b = _go.Figure()
-        # CASH = teal, USDC = USDC blue. Any future symbol falls back to
-        # the Jupiter purple so the chart keeps rendering.
         _palette = {"CASH": "#4ECDC4", "USDC": "#2775CA"}
         symbols = [c for c in wide.columns if c != "day"]
         totals = wide[symbols].fillna(0).sum(axis=1)
-        for sym in symbols:
-            y = wide[sym].fillna(0)
-            fig_b.add_trace(_go.Scatter(
-                x=wide["day"], y=y, name=sym,
-                mode="lines", line=dict(width=0.8,
-                                        color=_palette.get(sym, _DFL_COLOR)),
-                stackgroup="bal",
-                customdata=y.map(sd._fmt_usd),
-                hovertemplate=f"{sym}: %{{customdata}}<extra></extra>",
+
+        def _build_dfl_bal_fig(df_view):
+            fig = _go.Figure()
+            present_syms = [s for s in symbols if s in df_view.columns]
+            tot_v = df_view[present_syms].fillna(0).sum(axis=1)
+            for sym in present_syms:
+                y = df_view[sym].fillna(0)
+                fig.add_trace(_go.Scatter(
+                    x=df_view["day"], y=y, name=sym,
+                    mode="lines",
+                    line=dict(width=0.8,
+                              color=_palette.get(sym, _DFL_COLOR)),
+                    stackgroup="bal",
+                    customdata=y.map(sd._fmt_usd),
+                    hovertemplate=f"{sym}: %{{customdata}}<extra></extra>",
+                ))
+            fig.add_trace(_go.Scatter(
+                x=df_view["day"], y=tot_v, name="Total",
+                mode="lines", line=dict(width=0, color="rgba(0,0,0,0)"),
+                showlegend=False, stackgroup=None,
+                customdata=tot_v.map(sd._fmt_usd),
+                hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
             ))
-        # Invisible Total line so the hover tooltip shows the stack total
-        # at the bottom of the unified row, mirroring the lending/L1 stacks.
-        fig_b.add_trace(_go.Scatter(
-            x=wide["day"], y=totals, name="Total",
-            mode="lines", line=dict(width=0, color="rgba(0,0,0,0)"),
-            showlegend=False, stackgroup=None,
-            customdata=totals.map(sd._fmt_usd),
-            hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
-        ))
-        y_max_b = float(totals.max() or 0)
-        fig_b.update_layout(
-            height=400, hovermode="x unified",
-            margin=dict(t=10, b=10, l=10, r=10),
-            legend=dict(orientation="h", yanchor="bottom",
-                        y=1.02, xanchor="right", x=1),
-            yaxis=dict(showgrid=True, rangemode="tozero",
-                       range=[0, y_max_b * 1.10] if y_max_b > 0 else None),
-        )
+            y_max_b = float(tot_v.max() or 0)
+            fig.update_layout(
+                height=400, hovermode="x unified",
+                margin=dict(t=10, b=10, l=10, r=10),
+                legend=dict(orientation="h", yanchor="bottom",
+                            y=1.02, xanchor="right", x=1),
+                yaxis=dict(showgrid=True, rangemode="tozero",
+                           range=[0, y_max_b * 1.10] if y_max_b > 0 else None),
+            )
+            return fig
+
         _raw_bal = wide.copy()
         _raw_bal["total"] = totals.values
-        sd._chart(fig_b, use_container_width=True,
-                  chart_title="DFlow — Token Balance by Symbol",
-                  raw_df=_raw_bal,
-                  raw_key="pm_dfl_token_balance",
-                  raw_filename="pm_dfl_token_balance")
+        sd._chart_dwm_simple(
+            "DFlow — Token Balance by Symbol",
+            source_df=wide[["day"] + symbols].copy(),
+            build_fig=_build_dfl_bal_fig,
+            raw_df=_raw_bal,
+            raw_key="pm_dfl_token_balance",
+            raw_filename="pm_dfl_token_balance",
+            col_aggs={s: "last" for s in symbols},
+        )
 
 
 def _render_phantom_prediction_section() -> None:
@@ -2251,56 +2322,69 @@ def _render_phantom_prediction_section() -> None:
 
     col_left, col_right = st.columns(2, gap="medium")
 
-    # ── Left: daily TVL delta (bar; can be negative) ───────────────────
-    with col_left:
-        fig_d = _go.Figure()
-        fig_d.add_trace(_go.Bar(
-            x=df["day"], y=df["tvl_delta"], name="Daily Δ",
-            marker=dict(color=bar_colors),
-            customdata=df["tvl_delta"].map(sd._fmt_usd),
+    # ── Left: daily TVL delta (D/W/M; sum, may go negative) ────────────
+    def _build_phantom_tvl_daily_fig(df_view):
+        fig = _go.Figure()
+        _colors = ["#4ECDC4" if v >= 0 else "#FF6B6B"
+                   for v in df_view["tvl_delta"]]
+        fig.add_trace(_go.Bar(
+            x=df_view["day"], y=df_view["tvl_delta"], name="Daily Δ",
+            marker=dict(color=_colors),
+            customdata=df_view["tvl_delta"].map(sd._fmt_usd),
             hovertemplate="%{x|%Y-%m-%d}: %{customdata}<extra></extra>",
         ))
-        # Symmetric or zero-anchored range — y can be negative so don't
-        # force rangemode='tozero'. Pad 10% past whichever extreme is
-        # bigger in absolute terms so the bars don't hit the chart edge.
-        _y_lo = float(df["tvl_delta"].min())
-        _y_hi = float(df["tvl_delta"].max())
+        _y_lo = float(df_view["tvl_delta"].min())
+        _y_hi = float(df_view["tvl_delta"].max())
         _pad  = max(abs(_y_lo), abs(_y_hi)) * 0.10
-        fig_d.update_layout(
+        fig.update_layout(
             height=420, hovermode="x unified",
             margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
             yaxis=dict(showgrid=True, zeroline=True,
                        zerolinecolor="rgba(255,255,255,0.3)",
                        range=[_y_lo - _pad, _y_hi + _pad]),
         )
-        sd._chart(fig_d, use_container_width=True,
-                  chart_title="Phantom — Daily TVL Delta",
-                  raw_df=df[["day", "tvl_delta"]].copy(),
-                  raw_key="pm_phantom_tvl_daily",
-                  raw_filename="phantom_prediction_market_tvl_daily_delta")
+        return fig
 
-    # ── Right: cumulative TVL (area) ───────────────────────────────────
-    with col_right:
-        fig_c = _go.Figure()
-        fig_c.add_trace(_go.Scatter(
-            x=df["day"], y=df["tvl_cum"], name="Cumulative TVL",
+    with col_left:
+        sd._chart_dwm_simple(
+            "Phantom — Daily TVL Delta",
+            source_df=df[["day", "tvl_delta"]].copy(),
+            build_fig=_build_phantom_tvl_daily_fig,
+            raw_df=df[["day", "tvl_delta"]].copy(),
+            raw_key="pm_phantom_tvl_daily",
+            raw_filename="phantom_prediction_market_tvl_daily_delta",
+            col_aggs={"tvl_delta": "sum"},  # delta = flow → sum periods
+        )
+
+    # ── Right: cumulative TVL (D/W/M; 'last' = period-end TVL) ─────────
+    def _build_phantom_tvl_cum_fig(df_view):
+        fig = _go.Figure()
+        fig.add_trace(_go.Scatter(
+            x=df_view["day"], y=df_view["tvl_cum"], name="Cumulative TVL",
             mode="lines", line=dict(color=_PHANTOM_COLOR, width=1.5),
             fill="tozeroy", fillcolor=_PHANTOM_FILL,
-            customdata=df["tvl_cum"].map(sd._fmt_usd),
+            customdata=df_view["tvl_cum"].map(sd._fmt_usd),
             hovertemplate="%{x|%Y-%m-%d}: %{customdata}<extra></extra>",
         ))
-        y_max_c = float(df["tvl_cum"].max() or 0)
-        fig_c.update_layout(
+        y_max_c = float(df_view["tvl_cum"].max() or 0)
+        fig.update_layout(
             height=420, hovermode="x unified",
             margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
             yaxis=dict(showgrid=True, rangemode="tozero",
                        range=[0, y_max_c * 1.10] if y_max_c > 0 else None),
         )
-        sd._chart(fig_c, use_container_width=True,
-                  chart_title="Phantom — Cumulative TVL",
-                  raw_df=df[["day", "tvl_cum"]].copy(),
-                  raw_key="pm_phantom_tvl_cumulative",
-                  raw_filename="phantom_prediction_market_tvl_cumulative")
+        return fig
+
+    with col_right:
+        sd._chart_dwm_simple(
+            "Phantom — Cumulative TVL",
+            source_df=df[["day", "tvl_cum"]].copy(),
+            build_fig=_build_phantom_tvl_cum_fig,
+            raw_df=df[["day", "tvl_cum"]].copy(),
+            raw_key="pm_phantom_tvl_cumulative",
+            raw_filename="phantom_prediction_market_tvl_cumulative",
+            col_aggs={"tvl_cum": "last"},
+        )
 
     st.caption(
         ":information_source: The source dashboard also tracks Volume / "

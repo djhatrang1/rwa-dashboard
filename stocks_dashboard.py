@@ -5750,18 +5750,27 @@ def _resample_dwm(df: pd.DataFrame, period: str,
     *_market_cap* / *_supply* / usd → last; everything else → default_agg).
 
     Used by _chart_dwm_frame so each chart can keep one source DataFrame
-    and the tabs just toggle the granularity."""
-    if df is None or df.empty or "date" not in df.columns:
+    and the tabs just toggle the granularity.
+
+    Accepts either a 'date' or 'day' time-axis column. If 'day' is
+    present (Dune query convention) it's used in place of 'date' and
+    the output preserves the same column name, so callers don't have
+    to rename."""
+    if df is None or df.empty:
         return df
     if period not in ("W", "M"):
         return df
+    date_col = "date" if "date" in df.columns else (
+        "day" if "day" in df.columns else None)
+    if date_col is None:
+        return df
     df = df.copy()
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
     period_col = "_dwm_bucket"
-    df[period_col] = df["date"].dt.to_period(period).dt.start_time
+    df[period_col] = df[date_col].dt.to_period(period).dt.start_time
     agg: dict[str, str] = {}
     for c in df.columns:
-        if c in ("date", period_col):
+        if c in (date_col, period_col):
             continue
         if col_aggs and c in col_aggs:
             agg[c] = col_aggs[c]
@@ -5771,13 +5780,16 @@ def _resample_dwm(df: pd.DataFrame, period: str,
             agg[c] = "sum"
         elif (c.startswith("mc_") or c.startswith("total_market_cap")
               or "market_cap" in lc or "price" in lc or c == "usd"
-              or "supply" in lc):
+              or "supply" in lc or "cum" in lc or "cumulative" in lc
+              or "tvl" in lc or "balance" in lc or "holder" in lc):
+            # 'cum*'/'tvl'/'balance'/'holder' → period-end (running
+            # totals or stock-like values, not flows).
             agg[c] = "last"
         else:
             agg[c] = default_agg
     return (df.groupby(period_col, as_index=False)
               .agg(agg)
-              .rename(columns={period_col: "date"}))
+              .rename(columns={period_col: date_col}))
 
 
 def _chart_dwm_simple(title: str, source_df: pd.DataFrame,

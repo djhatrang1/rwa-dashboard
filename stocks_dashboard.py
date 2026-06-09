@@ -1890,6 +1890,15 @@ class TokenGroupMetricsPuller(DataPuller):
     # column key in case GROUP_LABEL ever changes ('Ondo' → 'Ondo
     # Global Markets') without invalidating the cache schema.
     DEFILLAMA_PROJECT_LABEL : str = ""
+    # Per-token CoinGecko historical MC (cross-chain aggregate). When
+    # set ({symbol: cg_id}), the puller fetches /coins/{id}/market_chart
+    # once per symbol and writes one mc_<symbol>_cg_usd col per token.
+    # Use for groups where you want historical per-token MC for the
+    # 'all chains' view — Birdeye's per-token Token Overview is
+    # snapshot-only, so chain=None per-token charts show one dot per
+    # token without this. Mutually compatible with MARKET_CAP_SOURCE +
+    # DEFILLAMA_PROJECT_SLUG — runs additively.
+    COINGECKO_PER_TOKEN_IDS : dict = {}
     # Tokens still pulled/cached but hidden from the charts (display only).
     HIDDEN_TOKENS     : frozenset = frozenset()
     # Per-chain hidden overrides: {chain_lower: {sym1, sym2}}. Used to hide
@@ -2421,6 +2430,38 @@ class TokenGroupMetricsPuller(DataPuller):
                         mc_cols_by_date.setdefault(d, {})[col] = mc
             all_dates.update(mc_cols_by_date.keys())
 
+        # ── Additive per-token CoinGecko MC ───────────────────────────────────
+        # One CG /coins/{id}/market_chart call per unique symbol → writes
+        # mc_<symbol>_cg_usd col with full daily history (cross-chain
+        # aggregate by CG). Renderer's chain=None mode prefers this col
+        # when present to get a historical series instead of Birdeye's
+        # snapshot-only chain-suffixed cols.
+        if self.COINGECKO_PER_TOKEN_IDS:
+            _seen_cg: set[str] = set()
+            for tok in self.TOKENS:
+                token_name = tok[0]
+                if token_name in _seen_cg:
+                    continue
+                _seen_cg.add(token_name)
+                cg_id = self.COINGECKO_PER_TOKEN_IDS.get(token_name)
+                if not cg_id:
+                    continue
+                cg_data = self._fetch_coingecko_mc(cg_id)
+                if not cg_data:
+                    continue
+                safe_name = (token_name.lower()
+                                       .replace("-", "_")
+                                       .replace(" ", "_"))
+                col = f"mc_{safe_name}_cg_usd"
+                if col not in mc_cols:
+                    mc_cols.append(col)
+                for d, mc in cg_data.items():
+                    mc_cols_by_date.setdefault(d, {})[col] = mc
+                # Pace ourselves on free CG tier (10 calls/min). Pro tier
+                # (500+/min) only needs a tiny gap.
+                time.sleep(0.1 if settings.coingecko_api_key else 6.5)
+            all_dates.update(mc_cols_by_date.keys())
+
         rows = []
         for date in sorted(all_dates):
             row: dict = {"date": date}
@@ -2790,14 +2831,29 @@ class TokenGroupMetricsPuller(DataPuller):
                 continue
             _seen.add(token_name)
             if chain is None:
-                # Sum across every per-chain column for this token (= global MC).
-                prefix = f"mc_{token_name.lower().replace('-','_').replace(' ','_')}_"
-                cols = [c for c in df.columns
-                        if c.startswith(prefix) and c.endswith("_usd")
-                        and c != self._mc_col(token_name)]
-                if not cols:
-                    continue
-                s = df[cols].sum(axis=1, min_count=1)
+                safe_name = (token_name.lower()
+                                       .replace("-", "_")
+                                       .replace(" ", "_"))
+                cg_col = f"mc_{safe_name}_cg_usd"
+                if cg_col in df.columns and df[cg_col].notna().any():
+                    # CoinGecko per-token historical MC — cross-chain
+                    # aggregate, full history. Preferred when present
+                    # because Birdeye's chain-suffixed cols are snapshot-
+                    # only (one dot per token without this).
+                    s = df[cg_col]
+                else:
+                    # Fallback: sum every per-chain Birdeye MC col for
+                    # this token (snapshot data — gives a single dot
+                    # unless the puller also writes DefiLlama per-token
+                    # history into the chain-suffixed cols).
+                    prefix = f"mc_{safe_name}_"
+                    cols = [c for c in df.columns
+                            if c.startswith(prefix) and c.endswith("_usd")
+                            and c != self._mc_col(token_name)
+                            and c != cg_col]
+                    if not cols:
+                        continue
+                    s = df[cols].sum(axis=1, min_count=1)
             else:
                 col = self._mc_chain_col(token_name, chain)
                 if col not in df.columns:
@@ -2845,6 +2901,68 @@ class TokenGroupMetricsPuller(DataPuller):
         # next week.
         _color_idx = {t[0]: i for i, t in enumerate(self.TOKENS)}
         fig = go.Figure()
+
+        # ── chain=None + CG cols present: project-total + hidden per-token ──
+        # When the puller has COINGECKO_PER_TOKEN_IDS configured AND the
+        # all-chain view is requested, render as ONE bold Total line
+        # (visible) + per-token traces hidden behind legendonly. This is
+        # cleaner than stacking 70-264 tokens in an unreadable mess; user
+        # clicks any legend entry to overlay that token's history.
+        _cg_mode = (
+            chain is None
+            and any(c.startswith("mc_") and c.endswith("_cg_usd")
+                    for c in df.columns)
+        )
+        if _cg_mode:
+            token_names = [t for t, _ in token_series]
+            totals = mdf[token_names].ffill().fillna(0).sum(axis=1)
+            # Total trace first — bold gold line, visible.
+            fig.add_trace(go.Scatter(
+                x=mdf["date"], y=totals, name="Total",
+                mode="lines+markers",
+                line=dict(color="#FFD700", width=2.5),
+                marker=dict(color="#FFD700", size=5),
+                customdata=totals.map(_fmt_usd),
+                hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+            ))
+            # Per-token traces — start hidden; user toggles in the legend.
+            for i, (token_name, _) in enumerate(token_series):
+                color = self._COLORS[
+                    _color_idx.get(token_name, i) % len(self._COLORS)]
+                sub = mdf[["date", token_name]].dropna(subset=[token_name])
+                fig.add_trace(go.Scatter(
+                    x=sub["date"], y=sub[token_name], name=token_name,
+                    mode="lines+markers",
+                    line=dict(color=color, width=1),
+                    marker=dict(color=color, size=3),
+                    visible="legendonly",
+                    customdata=sub[token_name].map(_fmt_usd),
+                    hovertemplate="%{fullData.name}: %{customdata}<extra></extra>",
+                ))
+            y_max = float(totals.max() or 0)
+            y_range = [0, y_max * 1.10] if y_max > 0 else None
+            fig.update_layout(
+                height=380, hovermode="x unified",
+                margin=dict(t=10, b=10, l=10, r=10),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                            xanchor="right", x=1),
+                yaxis=dict(tickprefix="$", tickformat="~s", showgrid=True,
+                           range=y_range, rangemode="tozero"),
+            )
+            raw_kwargs = {}
+            if raw_key:
+                _raw = mdf[["date"] + token_names].copy()
+                _raw["total"] = totals.values
+                raw_kwargs = {
+                    "raw_df": _raw,
+                    "raw_key": raw_key,
+                    "raw_filename": raw_key,
+                }
+            if chart_title:
+                raw_kwargs["chart_title"] = chart_title
+            _chart(fig, use_container_width=True, **raw_kwargs)
+            return
+
         for i, (token_name, _) in enumerate(token_series):
             color = self._COLORS[
                 _color_idx.get(token_name, i) % len(self._COLORS)]
@@ -3246,6 +3364,7 @@ def _make_stock_group_puller(puller_name: str, label: str,
                               group: str = "tokenized_stocks",
                               market_cap_source: str = "",
                               coingecko_ids: dict | None = None,
+                              coingecko_per_token_ids: dict | None = None,
                               defillama_tokens: dict | None = None,
                               defillama_project_slug: str = "",
                               defillama_project_label: str = "",
@@ -3271,6 +3390,7 @@ def _make_stock_group_puller(puller_name: str, label: str,
             "DEFILLAMA_TOKENS"     : defillama_tokens or {},
             "DEFILLAMA_PROJECT_SLUG" : defillama_project_slug or "",
             "DEFILLAMA_PROJECT_LABEL": defillama_project_label or "",
+            "COINGECKO_PER_TOKEN_IDS": coingecko_per_token_ids or {},
             "HIDDEN_TOKENS"        : frozenset(hidden_tokens or ()),
             "HIDDEN_TOKENS_BY_CHAIN": {
                 str(k).lower(): frozenset(v or ())
@@ -4567,12 +4687,38 @@ def init_pullers(settings: Settings, db: CacheDB) -> List[DataPuller]:
         "ondo_group_evm": {
             "market_cap_source": "",   # no MC fetching at all (sol puller
                                        # already wrote eth/bnb cols via DL)
+            "coingecko_per_token_ids": {},   # ditto for CG — sol puller
+                                             # writes identical CG cols;
+                                             # no point double-fetching.
         },
     }
+    # Per-token CoinGecko MC catalog — auto-generated by scripts/build_cg_stock_ids.py
+    # (probes CG /coins/list and matches by on-chain address). Drives the
+    # chain=None "all chains" per-token MC chart with full historical
+    # series instead of Birdeye's one-dot-per-token snapshot. Ondo sub-
+    # pullers share the same Ondo mapping — both pullers fetch the same
+    # CG IDs and write identical mc_<sym>_cg_usd cols; the renderer
+    # picks whichever puller has data via dedupe-by-label.
+    _CG_STOCK_IDS_PATH = os.path.join(
+        os.path.dirname(__file__), "coingecko_stock_ids.json")
+    try:
+        with open(_CG_STOCK_IDS_PATH) as _f:
+            _CG_STOCK_IDS = _json.load(_f)
+    except Exception as _exc:
+        log.warning("Could not load %s: %s", _CG_STOCK_IDS_PATH, _exc)
+        _CG_STOCK_IDS = {}
+
+    def _cg_ids_for(label: str) -> dict:
+        return _CG_STOCK_IDS.get(label, {})
+
     stock_pullers = []
     for pname, label, tokens in _TOKENIZED_STOCK_GROUPS:
         override = _STOCK_MC_OVERRIDES.get(pname, {})
-        kwargs = {"market_cap_source": "birdeye_overview", **override}
+        kwargs = {
+            "market_cap_source": "birdeye_overview",
+            "coingecko_per_token_ids": _cg_ids_for(label),
+            **override,
+        }
         stock_pullers.append(
             _make_stock_group_puller(pname, label, tokens, **kwargs)(
                 settings, db))
@@ -5205,7 +5351,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v54-ondo-dl-aggregate"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v55-cg-per-token"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────
@@ -5566,6 +5712,17 @@ if __name__ == "__main__":
                 return
             active_pullers = [p for p in group_pullers
                               if _puller_has_chain(p, dl_chain)]
+            # Post-Ondo-split: both ondo_group_sol + ondo_group_evm
+            # carry GROUP_LABEL="Ondo" and match every chain filter, so
+            # without dedupe we'd render "Ondo" twice (once per puller).
+            # _dedupe_pullers_for_chain keeps one per label, biased to
+            # whichever puller owns the most tokens on the active chain.
+            # For chain=None (all-chains tab) the scoring breaks (no
+            # chain string), so it falls back to the first puller seen
+            # — which is ondo_group_sol since that's the one carrying
+            # the DL-aggregate + CG-per-token cols.
+            active_pullers = _dedupe_pullers_for_chain(
+                active_pullers, dl_chain or "solana")
             if not active_pullers:
                 st.info(
                     f"No {group_label.lower()} deployed on {scope_label} yet. "

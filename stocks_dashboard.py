@@ -5713,11 +5713,11 @@ if __name__ == "__main__":
     # ── Auto-refresh ──────────────────────────────────────────────────────────────
     st_autorefresh(interval=settings.ui_refresh_seconds * 1_000, key="dashboard_refresh")
 
-    # ── Sidebar: chain + asset navigation ──────────────────────────────────────────
-    # Two independent nav axes: CHAINS (existing) + ASSETS (new). When an
-    # asset is selected, the dashboard switches from the chain-tab layout
-    # to an asset-vertical view (chain filter still applies). When no
-    # asset is selected, the existing chain-tab layout renders unchanged.
+    # ── Sidebar: chain + asset navigation (mutually exclusive) ─────────────────────
+    # Two nav axes: CHAINS (view by chain) + ASSETS (view by asset
+    # vertical). They're MUTUALLY EXCLUSIVE — picking one clears the
+    # other so the chain filter never silently narrows an asset view
+    # (or vice versa). Default on first load: chain=Solana, asset=None.
     _CHAINS = ["All chain", "Solana", "Ethereum", "BNB Chain", "Base"]
     _ASSETS = [
         "Stablecoin payments",
@@ -5727,22 +5727,46 @@ if __name__ == "__main__":
         "Private credit",
         "RWA perps",
     ]
+    # Seed the default chain BEFORE rendering the radios. session_state
+    # takes precedence over the radio's `index` arg, so this only fires
+    # on the very first session load — subsequent runs preserve the
+    # user's last selection (or its cleared state via on_change).
+    if "chain_nav" not in st.session_state:
+        st.session_state["chain_nav"] = "Solana"
+    if "asset_nav" not in st.session_state:
+        st.session_state["asset_nav"] = None
+
+    def _on_chain_change() -> None:
+        """Selecting a chain clears any active asset selection."""
+        if st.session_state.get("chain_nav"):
+            st.session_state["asset_nav"] = None
+
+    def _on_asset_change() -> None:
+        """Selecting an asset clears any active chain selection."""
+        if st.session_state.get("asset_nav"):
+            st.session_state["chain_nav"] = None
+
     with st.sidebar:
         st.markdown('<p class="peak-nav-title">Chains</p>', unsafe_allow_html=True)
         selected_chain = st.radio(
-            "Chain", _CHAINS, index=1,
+            "Chain", _CHAINS, index=None,   # None allowed (mutex with asset)
             label_visibility="collapsed", key="chain_nav",
+            on_change=_on_chain_change,
         )
         st.markdown(
             '<p class="peak-nav-title" style="margin-top:28px">Assets</p>',
             unsafe_allow_html=True,
         )
         selected_asset = st.radio(
-            "Asset", _ASSETS, index=None,   # None = no asset selected
+            "Asset", _ASSETS, index=None,
             label_visibility="collapsed", key="asset_nav",
+            on_change=_on_asset_change,
         )
 
-    _chain_label = "ALL CHAINS" if selected_chain == "All chain" else selected_chain.upper()
+    _chain_label = (
+        "ALL CHAINS" if selected_chain == "All chain"
+        else (selected_chain.upper() if selected_chain else "")
+    )
 
     # ── Top-bar controls — caption + Force Pull, floated next to Deploy ────────────
     _refresh_disp = (f"{settings.ui_refresh_seconds // 60}m"
@@ -5771,11 +5795,8 @@ if __name__ == "__main__":
         st.rerun()
 
     # ── Header ────────────────────────────────────────────────────────────────────
-    # Subtitle composes the active selectors: "Solana" alone, or
-    # "Solana · Tokenized equities" when an asset vertical is picked.
-    _subtitle = selected_chain
-    if selected_asset:
-        _subtitle = f"{selected_chain} · {selected_asset}"
+    # Subtitle = whichever axis is active (mutually exclusive — see sidebar).
+    _subtitle = selected_asset or selected_chain or "Pick a chain or asset"
     st.markdown(
         f'<p class="peak-title">RWA DASHBOARD</p>'
         f'<p class="peak-subtitle">{_subtitle}</p>',
@@ -5785,16 +5806,26 @@ if __name__ == "__main__":
 
     # ── Asset-vertical dispatch ───────────────────────────────────────────────────
     # When the sidebar Assets selector picks a specific vertical, render
-    # that vertical's content instead of the chain-tab layout below.
-    # Chain context still applies (passed down via selected_chain) so the
-    # user can pivot the same asset view across chains. Charts per
-    # vertical land here as the user specifies them — for now each shows
-    # a placeholder so the navigation is clickable and obvious.
+    # that vertical's content instead of the chain-tab layout below. The
+    # chain selector is auto-cleared on asset selection (see on_change
+    # callbacks above) so there's no chain filter to apply here. Charts
+    # per vertical land in this block as the user specifies them — for
+    # now each shows a placeholder so the navigation is clickable.
     if selected_asset:
         st.info(
             f"📊 **{selected_asset}** view is coming soon. "
-            f"Chart specifications pending. Active chain filter: "
-            f"**{selected_chain}**."
+            "Chart specifications pending."
+        )
+        st.stop()
+
+    # ── Neither axis selected ─────────────────────────────────────────────────────
+    # Cleared chain (via picking-then-unpicking) without picking an asset.
+    # Show a hint instead of falling through to the chain-tab block below
+    # which assumes a chain is set.
+    if not selected_chain:
+        st.info(
+            "Pick a chain (left sidebar **Chains**) for the chain-by-chain "
+            "view, or an asset (**Assets**) for the asset-vertical view."
         )
         st.stop()
 

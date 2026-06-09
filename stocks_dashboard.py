@@ -6350,10 +6350,30 @@ if __name__ == "__main__":
                         f"Total CEX volume (24h, all tokens, all listed "
                         f"exchanges): **${grand_cex:,.0f}**"
                     )
-                    _chart(fig_cex, use_container_width=True,
-                           raw_df=_raw_cex,
-                           raw_key="asset_gold_cex_by_exchange",
-                           raw_filename="tokenized_gold_cex_by_exchange")
+                    # Render directly via st.plotly_chart — bypassing
+                    # _chart() because that wrapper applies
+                    # _apply_time_controls which force-sets xaxis.type=
+                    # "date" (adds a rangeslider + rangeselector and
+                    # mangles numeric values into bogus Unix-timestamp
+                    # dates). For a horizontal bar chart neither makes
+                    # sense — the x-axis is a USD scale, not time.
+                    # Explicit B/M/K tickformat applied here since the
+                    # _apply_b_format_to_yaxes helper only walks yaxes.
+                    fig_cex.update_xaxes(
+                        type="linear", tickprefix="$", tickformat="~s",
+                        showgrid=True,
+                    )
+                    # 📋 raw-data button rendered manually since we're
+                    # not going through the _chart() wrapper.
+                    _btn_col_l, _btn_col_r = st.columns([0.95, 0.05])
+                    with _btn_col_r:
+                        if st.button("📋", key="raw_btn_asset_gold_cex",
+                                     help="View raw data"):
+                            _raw_data_modal(
+                                _raw_cex,
+                                {c: "${:,.0f}" for c in token_order + ["total"]},
+                                "tokenized_gold_cex_by_exchange")
+                    st.plotly_chart(fig_cex, use_container_width=True)
             st.stop()
 
         # Other asset verticals: placeholder until specs land.

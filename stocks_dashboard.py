@@ -1875,7 +1875,8 @@ def _chart(fig: go.Figure, fmt_mode: str = "currency",
     for every non-date column. `raw_filename` controls the CSV name
     (defaults to raw_key)."""
     if chart_title and raw_df is not None and raw_key is not None:
-        # Title + button on a single row.
+        # Title + button on a single row, ABOVE the chart. The button
+        # rides the title row so no extra vertical space is reserved.
         _title_col, _btn_col = st.columns([0.95, 0.05])
         with _title_col:
             st.markdown(f"**{chart_title}**")
@@ -1883,33 +1884,39 @@ def _chart(fig: go.Figure, fmt_mode: str = "currency",
             if st.button("📋", key=f"raw_btn_{raw_key}",
                          help="View raw data"):
                 _raw_data_modal(raw_df, raw_fmt, raw_filename or raw_key)
-    elif chart_title:
+        return st.plotly_chart(
+            _apply_b_format_to_yaxes(_apply_time_controls(fig),
+                                     fmt_mode=fmt_mode),
+            **kwargs)
+    if chart_title:
         st.markdown(f"**{chart_title}**")
-    elif raw_df is not None and raw_key is not None:
-        # CSS shrinks the 📋 button + pulls its row down so it visually
-        # sits on the same band as the chart's rangeselector
-        # (1M/3M/6M/YTD/1Y/All) instead of taking its own full row.
-        # Scoped via a unique wrapper class so it only targets buttons
-        # we render from _chart() — leaves other Streamlit buttons alone.
-        #
-        # Column ratio: was [0.96, 0.04]; the 0.04 button column ended
-        # up <32px wide inside half-width parent st.columns (RWA gold
-        # tab, Solana side-by-side panels, etc.) which is narrower than
-        # the button's min-width=32px → Streamlit padded the row out
-        # vertically to ~150px to fit the button on multiple lines,
-        # and the -52px chart-pull no longer covered that height,
-        # leaving a huge empty band between the caption and the chart.
-        # [0.90, 0.10] guarantees the button column is ≥ ~30px even at
-        # quarter-width nesting; at full-width the extra 6% just sits
-        # as right-aligned whitespace next to the button (invisible).
+        return st.plotly_chart(
+            _apply_b_format_to_yaxes(_apply_time_controls(fig),
+                                     fmt_mode=fmt_mode),
+            **kwargs)
+    if raw_df is not None and raw_key is not None:
+        # No chart_title path: render chart FIRST, then the 📋 button
+        # on a normal row beneath it. We previously tried to overlay
+        # the button onto the rangeselector row via a hidden st.columns
+        # wrapped in a div with margin-bottom: -52px, but Streamlit's
+        # column container has an opaque ~150px min-height when it
+        # contains a button — independent of the column percentage —
+        # so the -52px pull-up never covered the full row in side-by-
+        # side layouts (RWA gold tab; Solana Tokens / Foreign L1 /
+        # Lending / Stablecoins panels). Visible as a ~200px empty
+        # band between caption and chart.
+        # Trade-off: button now sits in its own ~40px row below the
+        # plot instead of inline with the rangeselector — but it
+        # works identically in any column width and adds no new
+        # CSS-vs-Streamlit-internals coupling.
+        chart_result = st.plotly_chart(
+            _apply_b_format_to_yaxes(_apply_time_controls(fig),
+                                     fmt_mode=fmt_mode),
+            **kwargs)
+        # Shrink + right-align the button on a normal row.
         st.markdown("""
         <style>
-        div.chart-raw-btn-row {
-            margin-bottom: -52px;
-            position: relative;
-            z-index: 10;
-        }
-        div.chart-raw-btn-row div[data-testid="stButton"] > button {
+        div.chart-raw-btn-after div[data-testid="stButton"] > button {
             padding: 0 6px !important;
             min-width: 32px !important;
             height: 30px !important;
@@ -1917,14 +1924,16 @@ def _chart(fig: go.Figure, fmt_mode: str = "currency",
         }
         </style>
         """, unsafe_allow_html=True)
-        st.markdown('<div class="chart-raw-btn-row">', unsafe_allow_html=True)
-        _, _btn_col = st.columns([0.90, 0.10])
+        st.markdown('<div class="chart-raw-btn-after">',
+                    unsafe_allow_html=True)
+        _, _btn_col = st.columns([0.92, 0.08])
         with _btn_col:
             if st.button("📋", key=f"raw_btn_{raw_key}",
                          help="View raw data"):
                 _raw_data_modal(raw_df, raw_fmt,
                                 raw_filename or raw_key)
         st.markdown('</div>', unsafe_allow_html=True)
+        return chart_result
     return st.plotly_chart(
         _apply_b_format_to_yaxes(_apply_time_controls(fig), fmt_mode=fmt_mode),
         **kwargs)

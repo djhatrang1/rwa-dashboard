@@ -1207,6 +1207,12 @@ _STABLECOIN_TOKENS: list[tuple[str, str, datetime, int]] = [
 _CG_MC_CACHE: dict[str, tuple[float, dict]] = {}
 _CG_MC_TTL   = 3600.0   # seconds
 _CG_MC_LOCK  = threading.Lock()
+# Parallel cache for CG total_volumes (returned by the same
+# /coins/{id}/market_chart endpoint as MC, but kept under a separate
+# cache key so the two extractors don't stomp on each other).
+_CG_VOL_CACHE: dict[str, tuple[float, dict]] = {}
+_CG_VOL_TTL   = 3600.0
+_CG_VOL_LOCK  = threading.Lock()
 
 # Process-wide cache for DefiLlama per-chain market-cap history (free API).
 # Cached so concurrent scheduler threads don't duplicate work or hammer the API.
@@ -2152,6 +2158,55 @@ class TokenGroupMetricsPuller(DataPuller):
                 _CG_MC_CACHE[cg_id] = (now, out)
             return out
 
+    def _fetch_coingecko_vol(self, cg_id: str) -> dict[str, float]:
+        """Return {date_str: total_volume_usd} from CG market_chart.
+        Mirrors _fetch_coingecko_mc but extracts the total_volumes
+        field (CG's cross-chain daily trading volume aggregate) — used
+        to chart all-chain trading volume for tokens like the tokenized
+        gold set where we want one volume figure across Solana + ETH +
+        Arbitrum + BSC."""
+        now = time.time()
+        with _CG_VOL_LOCK:
+            hit = _CG_VOL_CACHE.get(cg_id)
+            if hit and now - hit[0] < _CG_VOL_TTL:
+                return hit[1]
+            cg_key = settings.coingecko_api_key
+            if cg_key:
+                base    = "https://pro-api.coingecko.com/api/v3"
+                headers = {"x-cg-pro-api-key": cg_key}
+                days    = "max"
+            else:
+                base    = "https://api.coingecko.com/api/v3"
+                headers = {}
+                days    = "365"
+            vols = None
+            for attempt in range(3):
+                try:
+                    r = requests.get(
+                        f"{base}/coins/{cg_id}/market_chart",
+                        params={"vs_currency": "usd", "days": days},
+                        headers=headers, timeout=30,
+                    )
+                    r.raise_for_status()
+                    vols = r.json().get("total_volumes", []) or []
+                    break
+                except Exception as exc:
+                    if attempt < 2:
+                        time.sleep(12 * (attempt + 1))
+                        continue
+                    self.logger.warning("%s CoinGecko vol fetch failed (%s): %s",
+                                        self.GROUP_LABEL, cg_id, exc)
+                    return hit[1] if hit else {}
+            out: dict[str, float] = {}
+            for ts, v in vols:
+                if v is None:
+                    continue
+                date = pd.to_datetime(ts, unit="ms").strftime("%Y-%m-%d")
+                out[date] = v
+            if out:
+                _CG_VOL_CACHE[cg_id] = (now, out)
+            return out
+
     def _fetch_sol_price_by_day(self, headers: dict, time_to: int) -> dict[str, float]:
         rows = self._paginated_ohlcv(headers, self._SOL_MINT,
                                      self.START_TS, time_to, endpoint="token")
@@ -2452,6 +2507,13 @@ class TokenGroupMetricsPuller(DataPuller):
         # aggregate by CG). Renderer's chain=None mode prefers this col
         # when present to get a historical series instead of Birdeye's
         # snapshot-only chain-suffixed cols.
+        # ── Additive per-token CG MC + Volume ─────────────────────────────────
+        # Two CG calls per unique symbol per pull (one each for MC + Vol).
+        # Both extracted from /coins/{id}/market_chart which returns both
+        # in one payload; LRU caches downstream dedupe by URL so the second
+        # call is essentially free within the cache TTL.
+        cg_vol_cols: list[str] = []
+        cg_vol_by_date: dict[str, dict] = {}
         if self.COINGECKO_PER_TOKEN_IDS:
             _seen_cg: set[str] = set()
             for tok in self.TOKENS:
@@ -2462,21 +2524,29 @@ class TokenGroupMetricsPuller(DataPuller):
                 cg_id = self.COINGECKO_PER_TOKEN_IDS.get(token_name)
                 if not cg_id:
                     continue
-                cg_data = self._fetch_coingecko_mc(cg_id)
-                if not cg_data:
-                    continue
                 safe_name = (token_name.lower()
                                        .replace("-", "_")
                                        .replace(" ", "_"))
-                col = f"mc_{safe_name}_cg_usd"
-                if col not in mc_cols:
-                    mc_cols.append(col)
-                for d, mc in cg_data.items():
-                    mc_cols_by_date.setdefault(d, {})[col] = mc
-                # Pace ourselves on free CG tier (10 calls/min). Pro tier
-                # (500+/min) only needs a tiny gap.
+                # MC
+                cg_mc_data = self._fetch_coingecko_mc(cg_id)
+                if cg_mc_data:
+                    col = f"mc_{safe_name}_cg_usd"
+                    if col not in mc_cols:
+                        mc_cols.append(col)
+                    for d, mc in cg_mc_data.items():
+                        mc_cols_by_date.setdefault(d, {})[col] = mc
+                # Volume
+                cg_vol_data = self._fetch_coingecko_vol(cg_id)
+                if cg_vol_data:
+                    vcol = f"vol_{safe_name}_cg_usd"
+                    if vcol not in cg_vol_cols:
+                        cg_vol_cols.append(vcol)
+                    for d, v in cg_vol_data.items():
+                        cg_vol_by_date.setdefault(d, {})[vcol] = v
+                # Pace: Pro tier handles 500+/min; free needs ~6s between calls.
                 time.sleep(0.1 if settings.coingecko_api_key else 6.5)
             all_dates.update(mc_cols_by_date.keys())
+            all_dates.update(cg_vol_by_date.keys())
 
         rows = []
         for date in sorted(all_dates):
@@ -2515,6 +2585,15 @@ class TokenGroupMetricsPuller(DataPuller):
                 row["total_market_cap_usd"] = mc_by_date.get(date)
             else:
                 row["total_market_cap_usd"] = total_mc if mc_valid else None
+            # CG per-token cross-chain volume (vol_<sym>_cg_usd) — independent
+            # of the chain-suffixed Birdeye vol cols; lets per-asset views
+            # (Tokenized commodities, etc.) render the all-chain volume
+            # stack without needing per-chain Birdeye OHLCV coverage on
+            # every chain.
+            if cg_vol_cols:
+                vday = cg_vol_by_date.get(date, {})
+                for vcol in cg_vol_cols:
+                    row[vcol] = vday.get(vcol)
             rows.append(row)
 
         return pd.DataFrame(rows) if rows else pd.DataFrame()
@@ -4766,7 +4845,13 @@ def init_pullers(settings: Settings, db: CacheDB) -> List[DataPuller]:
         _make_stock_group_puller(pname, label, tokens,
                                  group="tokenized_commodities",
                                  market_cap_source="birdeye_overview",
-                                 defillama_tokens=_COMMODITY_DEFILLAMA)(settings, db)
+                                 defillama_tokens=_COMMODITY_DEFILLAMA,
+                                 # CG per-token IDs power the all-chain
+                                 # tokenized-gold trading-volume chart on
+                                 # the Tokenized commodities asset
+                                 # vertical (8/10 gold tokens mapped;
+                                 # TXAU + CGO not listed on CG).
+                                 coingecko_per_token_ids=_cg_ids_for(label))(settings, db)
         for pname, label, tokens in _TOKENIZED_COMMODITY_GROUPS
     ]
     stablecoin_pullers = [
@@ -5483,7 +5568,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v56-xstocks-dl-prestocks-cg-proxy"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v57-commodities-cg-vol"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────
@@ -5821,10 +5906,7 @@ if __name__ == "__main__":
     # now each shows a placeholder so the navigation is clickable.
     if selected_asset:
         if selected_asset == "Tokenized commodities":
-            # All-chain tokenized gold MC — same renderer as the
-            # All-chain Tokenized Commodities tab on the chain view.
-            # Per-token stacked area across every chain DefiLlama/Birdeye
-            # covers (Solana primary, Ethereum for PAXG/XAUT, etc.).
+            # ── MC chart ──────────────────────────────────────────────────
             st.subheader("Tokenized Gold — Market Cap (all chains)")
             st.caption(
                 "Per-token market cap stacked across every chain. Sources: "
@@ -5838,6 +5920,86 @@ if __name__ == "__main__":
             else:
                 for p in commodity_pullers:
                     p.render_market_cap_chain(chain=None, stacked=True)
+
+                # ── Volume chart (CoinGecko cross-chain) ──────────────
+                st.divider()
+                st.subheader("Tokenized Gold — Trading Volume (all chains)")
+                st.caption(
+                    "Per-token daily trading volume aggregated across "
+                    "every chain by CoinGecko (8/10 gold tokens listed; "
+                    "TXAU + CGO not yet on CG → silently skipped). "
+                    "Stacked area, hover tooltip shows per-token + Total."
+                )
+                for p in commodity_pullers:
+                    df = p.get_latest()
+                    if df is None or df.empty:
+                        st.info("Waiting for first commodities pull…")
+                        continue
+                    df = df.copy()
+                    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+                    df = df[df["date"] >= "2020-01-01"]
+                    vol_cols = [c for c in df.columns
+                                if c.startswith("vol_")
+                                and c.endswith("_cg_usd")]
+                    if not vol_cols:
+                        st.info(
+                            "No CoinGecko volume data yet — the next pull "
+                            "(every 4h) will populate these columns."
+                        )
+                        continue
+                    # Sort by latest value desc so the biggest token is
+                    # drawn first (= top of tooltip, bottom of stack).
+                    # Stable color per token across reloads via the
+                    # token's original index in self.TOKENS (same logic
+                    # used by render_market_cap_chain).
+                    def _latest(col):
+                        s = df[col].dropna()
+                        return float(s.iloc[-1]) if len(s) else 0.0
+                    vol_cols.sort(key=_latest, reverse=True)
+                    _color_idx = {
+                        t[0].lower().replace("-", "_").replace(" ", "_"): i
+                        for i, t in enumerate(p.TOKENS)
+                    }
+                    fig = go.Figure()
+                    for vc in vol_cols:
+                        sym_key = vc[len("vol_"):-len("_cg_usd")]
+                        color = p._COLORS[
+                            _color_idx.get(sym_key, 0) % len(p._COLORS)]
+                        y = df[vc].ffill().fillna(0)
+                        label = sym_key.upper()
+                        fig.add_trace(go.Scatter(
+                            x=df["date"], y=y, name=label,
+                            mode="lines",
+                            line=dict(color=color, width=0.8),
+                            stackgroup="vol",
+                            customdata=y.map(_fmt_usd),
+                            hovertemplate=f"{label}: %{{customdata}}<extra></extra>",
+                        ))
+                    totals = df[vol_cols].ffill().fillna(0).sum(axis=1)
+                    fig.add_trace(go.Scatter(
+                        x=df["date"], y=totals, name="Total",
+                        mode="lines",
+                        line=dict(width=0, color="rgba(0,0,0,0)"),
+                        showlegend=False, stackgroup=None,
+                        customdata=totals.map(_fmt_usd),
+                        hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+                    ))
+                    y_max = float(totals.max() or 0)
+                    fig.update_layout(
+                        height=420, hovermode="x unified",
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        legend=dict(orientation="h", yanchor="bottom",
+                                    y=1.02, xanchor="right", x=1),
+                        yaxis=dict(tickprefix="$", tickformat="~s",
+                                   showgrid=True, rangemode="tozero",
+                                   range=[0, y_max * 1.10] if y_max > 0 else None),
+                    )
+                    _raw_vol = df[["date"] + vol_cols].copy()
+                    _raw_vol["total"] = totals.values
+                    _chart(fig, use_container_width=True,
+                           raw_df=_raw_vol.sort_values("date", ascending=False),
+                           raw_key="asset_gold_volume_cg",
+                           raw_filename="tokenized_gold_volume_cg_all_chains")
             st.stop()
 
         # Other asset verticals: placeholder until specs land.

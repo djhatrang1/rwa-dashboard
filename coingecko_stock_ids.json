@@ -1,4 +1,14 @@
 {
+  "Tokenized Commodities": {
+    "XAUM": "matrixdock-gold",
+    "GOLD": "gold-11",
+    "VNXAU": "vnx-gold",
+    "PAXG": "pax-gold",
+    "XAUt0": "tether-gold-tokens",
+    "XAUT": "tether-gold",
+    "DGLD": "gold-token-sa-dgld-tokenized-gold",
+    "PGOLD": "pleasing-gold"
+  },
   "PreStocks": {
     "ANTHROPIC": "anthropic-prestocks-2",
     "ANDURIL": "anduril-prestocks-2",

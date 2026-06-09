@@ -1876,6 +1876,20 @@ class TokenGroupMetricsPuller(DataPuller):
     #   {"type": "protocol",   "slug": "<slug>"}     → /protocol/{slug}    chainTvls.{chain}.tvl
     #   {"type": "stablecoin", "id":   <int>}        → /stablecoin/{id}    chainBalances.{chain}.tokens
     DEFILLAMA_TOKENS  : dict = {}
+    # Project-level DefiLlama aggregate. When set, the puller fetches
+    # /protocol/{slug} ONCE and writes one mc_<label>_<chain>_usd column
+    # per chain (vs DEFILLAMA_TOKENS which is per-token). Use this when
+    # you want the project's total MC (e.g. Ondo Global Markets) and
+    # DefiLlama tracks the project as one protocol — much faster than
+    # fetching 263 per-token Birdeye calls, and resilient to GHA cron
+    # timeouts (~1 HTTP call vs hundreds). Disables per-token MC
+    # fetching when set (mutually exclusive with MARKET_CAP_SOURCE).
+    DEFILLAMA_PROJECT_SLUG  : str = ""
+    # Optional column-name suffix prefix; defaults to GROUP_LABEL
+    # lowercased + underscored. Letting you decouple display label from
+    # column key in case GROUP_LABEL ever changes ('Ondo' → 'Ondo
+    # Global Markets') without invalidating the cache schema.
+    DEFILLAMA_PROJECT_LABEL : str = ""
     # Tokens still pulled/cached but hidden from the charts (display only).
     HIDDEN_TOKENS     : frozenset = frozenset()
     # Per-chain hidden overrides: {chain_lower: {sym1, sym2}}. Used to hide
@@ -2295,7 +2309,32 @@ class TokenGroupMetricsPuller(DataPuller):
                     if c not in mc_cols:
                         mc_cols.append(c)
 
-        if self.MARKET_CAP_SOURCE == "birdeye_overview":
+        if self.DEFILLAMA_PROJECT_SLUG:
+            # Project-level aggregate (e.g. Ondo Global Markets — one
+            # DL call returns multi-chain MC time series for the whole
+            # vertical, replacing hundreds of per-token Birdeye calls).
+            # Writes ONE column per chain: mc_<label>_<chain>_usd. No
+            # carry-forward needed (DL returns full history each call).
+            _dl_label = (self.DEFILLAMA_PROJECT_LABEL
+                         or self.GROUP_LABEL.lower()
+                                            .replace(" ", "_")
+                                            .replace("-", "_"))
+            try:
+                _dl_data = _fetch_dl_protocol(self.DEFILLAMA_PROJECT_SLUG)
+            except Exception as exc:
+                self.logger.warning(
+                    "DefiLlama project %s fetch failed: %s",
+                    self.DEFILLAMA_PROJECT_SLUG, exc)
+                _dl_data = {}
+            for _ch, _series in _dl_data.items():
+                _ch_safe = _chain_safe(_ch)
+                _col = f"mc_{_dl_label}_{_ch_safe}_usd"
+                if _col not in mc_cols:
+                    mc_cols.append(_col)
+                for _d, _mc in _series.items():
+                    mc_cols_by_date.setdefault(_d, {})[_col] = _mc
+            all_dates.update(mc_cols_by_date.keys())
+        elif self.MARKET_CAP_SOURCE == "birdeye_overview":
             # Legacy (chain-agnostic) MC col, one per UNIQUE symbol — kept so
             # the existing Solana per-token MC chart (render_market_cap) keeps
             # working without migration.
@@ -3208,6 +3247,8 @@ def _make_stock_group_puller(puller_name: str, label: str,
                               market_cap_source: str = "",
                               coingecko_ids: dict | None = None,
                               defillama_tokens: dict | None = None,
+                              defillama_project_slug: str = "",
+                              defillama_project_label: str = "",
                               hidden_tokens: set | None = None,
                               hidden_tokens_by_chain: dict | None = None,
                               skip_volume: bool = False) -> type:
@@ -3228,6 +3269,8 @@ def _make_stock_group_puller(puller_name: str, label: str,
             "MARKET_CAP_SOURCE"    : market_cap_source,
             "COINGECKO_IDS"        : coingecko_ids or {},
             "DEFILLAMA_TOKENS"     : defillama_tokens or {},
+            "DEFILLAMA_PROJECT_SLUG" : defillama_project_slug or "",
+            "DEFILLAMA_PROJECT_LABEL": defillama_project_label or "",
             "HIDDEN_TOKENS"        : frozenset(hidden_tokens or ()),
             "HIDDEN_TOKENS_BY_CHAIN": {
                 str(k).lower(): frozenset(v or ())
@@ -4509,11 +4552,30 @@ def init_pullers(settings: Settings, db: CacheDB) -> List[DataPuller]:
         _make_solana_puller(name, addr, start)(settings, db)
         for name, addr, start in _SOLANA_TOKENS
     ]
-    stock_pullers = [
-        _make_stock_group_puller(pname, label, tokens,
-                                 market_cap_source="birdeye_overview")(settings, db)
-        for pname, label, tokens in _TOKENIZED_STOCK_GROUPS
-    ]
+    # Per-group MC source overrides. xStocks + PreStocks continue with
+    # per-token Birdeye snapshots (no DefiLlama protocol mapping). The
+    # two Ondo sub-pullers both switch off per-token Birdeye MC; only
+    # the SOL puller fetches the DL aggregate (since DL returns all
+    # chains in one shot, having both pullers fetch would double-count).
+    # Result: one DL call gives us full multi-chain Ondo MC history.
+    _STOCK_MC_OVERRIDES: dict[str, dict] = {
+        "ondo_group_sol": {
+            "market_cap_source": "",   # disable per-token Birdeye MC
+            "defillama_project_slug":  "ondo-global-markets",
+            "defillama_project_label": "ondo",
+        },
+        "ondo_group_evm": {
+            "market_cap_source": "",   # no MC fetching at all (sol puller
+                                       # already wrote eth/bnb cols via DL)
+        },
+    }
+    stock_pullers = []
+    for pname, label, tokens in _TOKENIZED_STOCK_GROUPS:
+        override = _STOCK_MC_OVERRIDES.get(pname, {})
+        kwargs = {"market_cap_source": "birdeye_overview", **override}
+        stock_pullers.append(
+            _make_stock_group_puller(pname, label, tokens, **kwargs)(
+                settings, db))
     commodity_pullers = [
         _make_stock_group_puller(pname, label, tokens,
                                  group="tokenized_commodities",
@@ -4820,19 +4882,31 @@ if _os.getenv("PULL_ONLY") == "1":
 #    streamlit run stocks_dashboard.py
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _combined_stocks_df(pullers: list) -> pd.DataFrame | None:
+def _combined_stocks_df(pullers: list,
+                        chain: str | None = None) -> pd.DataFrame | None:
     """Merge per-group daily DataFrames into one wide table.
 
     Result columns: date | <GROUP_LABEL> …
-    Each project column = sum of all its per-token vol_*_usd columns
-    summed across EVERY puller that carries this GROUP_LABEL — required
-    because some projects (Ondo) are split into sub-pullers
-    (ondo_group_sol + ondo_group_evm) for cron-pull runtime budgets but
-    must still render as ONE project band on the combined chart."""
+    Each project column = sum of vol_*_usd columns across EVERY puller
+    that carries this GROUP_LABEL (handles the Ondo split into sub-
+    pullers — both ondo_group_sol + ondo_group_evm fold into one "Ondo"
+    band).
+
+    `chain` (optional) filters to `vol_*_<chain>_usd` cols only. WHEN
+    OMITTED, the function sums EVERY vol_*_usd col which (a) double-
+    counts Solana volume because the puller writes both the chain-
+    suffixed and the legacy chain-agnostic col for each Solana token,
+    and (b) leaks cross-chain volume into a chain-specific view (e.g.
+    the Solana-tab chart was summing $150-258M/day of EVM volume from
+    ondo_group_evm). Always pass `chain=<active_chain>` from a chain-
+    scoped view to get accurate numbers."""
     from collections import defaultdict
     by_label: dict[str, list] = defaultdict(list)
     for p in pullers:
         by_label[p.GROUP_LABEL].append(p)
+
+    suffix = (f"_{chain.lower().replace(' ', '_')}_usd"
+              if chain else None)
 
     result = None
     for label, plist in by_label.items():
@@ -4843,8 +4917,19 @@ def _combined_stocks_df(pullers: list) -> pd.DataFrame | None:
                 continue
             raw = raw.copy()
             raw["date"] = pd.to_datetime(raw["date"])
-            vol_cols = [c for c in raw.columns
-                        if c.startswith("vol_") and c.endswith("_usd")]
+            if suffix:
+                # Chain-filtered: only the per-chain suffixed cols. The
+                # legacy chain-agnostic vol_*_usd cols are EXCLUDED — they
+                # mirror the Solana chain-suffixed values 1:1 and would
+                # double the total.
+                vol_cols = [c for c in raw.columns
+                            if c.startswith("vol_") and c.endswith(suffix)]
+            else:
+                # No-chain mode: legacy behaviour. Caller is on the hook
+                # for double-count / cross-chain leak if any tokens span
+                # multiple chains.
+                vol_cols = [c for c in raw.columns
+                            if c.startswith("vol_") and c.endswith("_usd")]
             if not vol_cols:
                 continue
             sub = raw[["date"]].copy()
@@ -5120,7 +5205,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v53-ondo-split"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v54-ondo-dl-aggregate"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────
@@ -5556,8 +5641,13 @@ if __name__ == "__main__":
             st.info("No tokenized stock group pullers registered.")
         else:
             # ── Combined overview: all projects in one chart ───────────────────
+            # Default tab is the Solana view, so filter to Solana volume
+            # cols. Without this filter ondo_group_evm + xStocks EVM
+            # entries leaked $150-258M/day of Ethereum + BSC volume into
+            # the chart, AND Solana volumes were double-counted via the
+            # legacy chain-agnostic vol_*_usd cols.
             st.subheader("All Tokenized Stocks — Volume by Project")
-            combined_df = _combined_stocks_df(stocks_pullers)
+            combined_df = _combined_stocks_df(stocks_pullers, chain="Solana")
             if combined_df is None:
                 st.info("Waiting for first pull…")
             else:

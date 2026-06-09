@@ -1150,8 +1150,14 @@ def _render_rwa() -> None:
             st.info("No tokenized stock group pullers registered.")
         else:
             # Combined overview — all projects, one stacked vol chart.
+            # Chain-filtered to Solana so we don't (a) double-count
+            # Solana volume via the legacy chain-agnostic vol_*_usd
+            # cols that mirror the chain-suffixed ones, and (b) bleed
+            # Ethereum / BSC volume from ondo_group_evm + xStocks EVM
+            # entries into a Solana-titled chart.
             st.subheader("All Tokenized Stocks — Volume by Project")
-            combined_df = sd._combined_stocks_df(stocks_pullers)
+            combined_df = sd._combined_stocks_df(
+                stocks_pullers, chain="Solana")
             if combined_df is None:
                 st.info("Waiting for first pull…")
             else:

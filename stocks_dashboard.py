@@ -335,6 +335,80 @@ class DataPuller(abc.ABC):
         return df
 
 
+@st.cache_data(ttl=3600, show_spinner="Fetching CG ticker data…")
+def _fetch_gold_cex_breakdown(symbol_cg_pairs: tuple) -> pd.DataFrame:
+    """Pull /coins/{id}/tickers from CoinGecko for each gold token,
+    filter to CEX (non-DEX) tickers, aggregate by (symbol, exchange).
+
+    `symbol_cg_pairs` is a tuple of (our_symbol, cg_id) tuples — hashable
+    so @st.cache_data can key on it. our_symbol is used in the output
+    instead of CG's raw `base` field (which returns weird truncations
+    like 'GOLD11' / 'VNXGOL' / 'GOLDTO' for tokens whose tickers don't
+    use a clean uppercase shortname).
+
+    Returns DataFrame[symbol, exchange, vol_usd] sorted desc.
+
+    CG tickers is a 24h-rolling SNAPSHOT (no per-exchange historical
+    series), so this powers a single-snapshot bar chart. Cached 1h —
+    8 CG calls per cache miss, 0 per hit. CEX-vs-DEX heuristic: DEX
+    market names contain a `(<chain>)` qualifier; CEX names are bare."""
+    import requests as _requests_local
+    try:
+        key = st.secrets.get("COINGECKO_API_KEY", "")
+    except Exception:
+        key = ""
+    if not key:
+        key = os.environ.get("COINGECKO_API_KEY", "")
+    if key:
+        base    = "https://pro-api.coingecko.com/api/v3"
+        headers = {"x-cg-pro-api-key": key}
+    else:
+        base    = "https://api.coingecko.com/api/v3"
+        headers = {}
+    _KNOWN_DEX_IDS = {
+        "uniswap_v2","uniswap_v3","uniswap_v4","sushiswap","curve",
+        "balancer","balancer_v2","balancer_v3","pancakeswap_new",
+        "raydium","raydium_clmm","orca","jupiter","jupiter_v6",
+        "aerodrome","traderjoe","quickswap","cake_swap","velodrome",
+        "fluid","supernova",
+    }
+    def _is_dex(t: dict) -> bool:
+        mk   = t.get("market") or {}
+        mid  = (mk.get("identifier") or "").lower()
+        name = mk.get("name", "")
+        return mid in _KNOWN_DEX_IDS or ("(" in name and ")" in name)
+    rows: list[dict] = []
+    for sym, cg_id in symbol_cg_pairs:
+        try:
+            r = _requests_local.get(
+                f"{base}/coins/{cg_id}/tickers",
+                params={"page": 1}, headers=headers, timeout=20)
+            r.raise_for_status()
+            tickers = (r.json() or {}).get("tickers") or []
+        except Exception as exc:
+            log.warning("CG tickers fetch failed for %s: %s", cg_id, exc)
+            continue
+        per_exchange: dict[str, float] = {}
+        for t in tickers:
+            if _is_dex(t):
+                continue
+            mk = t.get("market") or {}
+            ex = mk.get("name") or mk.get("identifier")
+            if not ex:
+                continue
+            v = (t.get("converted_volume") or {}).get("usd", 0) or 0
+            if v <= 0:
+                continue
+            per_exchange[ex] = per_exchange.get(ex, 0) + float(v)
+        for ex, v in per_exchange.items():
+            rows.append({"symbol": sym, "exchange": ex, "vol_usd": v})
+    if not rows:
+        return pd.DataFrame(columns=["symbol", "exchange", "vol_usd"])
+    return (pd.DataFrame(rows)
+              .sort_values("vol_usd", ascending=False)
+              .reset_index(drop=True))
+
+
 @st.cache_data(ttl=14_400, show_spinner=False)
 def _cached_latest_payload(puller_name: str):
     """Module-level cache wrapper for the latest-pull DataFrame. Keyed by
@@ -6053,20 +6127,14 @@ if __name__ == "__main__":
                 # Celo/Ink/Conflux/Stable/TON/Hyperliquid/Apechain) but
                 # it's drowned out by CEX so we don't try to split it.
                 st.divider()
-                st.subheader("Tokenized Gold — Trading Volume by Chain (DEX + CEX)")
+                st.subheader("Tokenized Gold — DEX Volume by Chain")
                 st.caption(
-                    "Stacked daily volume where each per-chain band = "
-                    "**on-chain DEX volume only** (Birdeye OHLCV V3 per "
-                    "(token, chain) for the 10 Birdeye-supported chains "
-                    "gold tokens live on). The **CEX** band on top is "
-                    "the residual after subtracting Birdeye DEX volume "
-                    "from CoinGecko's cross-chain total — almost entirely "
-                    "centralized-exchange volume (Binance / Kraken / HTX / "
-                    "etc.) which routes ~95% of PAXG and XAUT trading "
-                    "off-chain. Small unsupported-chain DEX volume "
-                    "(XDC / Plume / HashKey / Tron / etc.) is rolled into "
-                    "the CEX band rather than split out — drowned by "
-                    "CEX in either case."
+                    "Stacked daily DEX volume per chain. Source: Birdeye "
+                    "OHLCV V3 per (token, chain) across the Birdeye-"
+                    "supported chains gold tokens live on. **On-chain "
+                    "DEX volume only** — centralized exchange volume "
+                    "(Binance / Kraken / WhiteBIT / etc.) renders in the "
+                    "separate per-exchange chart below."
                 )
                 for p in commodity_pullers:
                     df_b = p.get_latest()
@@ -6110,25 +6178,15 @@ if __name__ == "__main__":
                             df_b[c] = p._clip_outliers(
                                 df_b[c], factor=25.0, min_retained=0.5)
                     # Sum per chain
+                    # Sum per chain. CEX (centralized exchange) volume
+                    # is INTENTIONALLY excluded here — it has no chain
+                    # attribution and renders separately below as a
+                    # per-exchange bar chart broken down by specific CEX
+                    # (Binance / Kraken / WhiteBIT / etc.) via CG /tickers.
                     chain_totals: dict[str, pd.Series] = {}
                     for chain, cols in by_chain.items():
                         chain_totals[chain] = (
                             df_b[cols].fillna(0).sum(axis=1))
-                    # Other-chains residual: CG cross-chain total
-                    # minus sum of Birdeye per-chain.
-                    cg_vol_cols = [c for c in df_b.columns
-                                   if c.startswith("vol_")
-                                   and c.endswith("_cg_usd")]
-                    if cg_vol_cols:
-                        # Clip the CG cols too for consistency.
-                        for c in cg_vol_cols:
-                            df_b[c] = p._clip_outliers(
-                                df_b[c], factor=25.0, min_retained=0.5)
-                        cg_total = df_b[cg_vol_cols].fillna(0).sum(axis=1)
-                        birdeye_total = sum(chain_totals.values())
-                        cex_residual = (cg_total - birdeye_total).clip(lower=0)
-                        if cex_residual.sum() > 0:
-                            chain_totals["cex"] = cex_residual
                     # Sort chains by latest value desc
                     def _latest_v(c):
                         s = chain_totals[c].dropna()
@@ -6142,7 +6200,6 @@ if __name__ == "__main__":
                         "bsc":"BSC","base":"Base","optimism":"Optimism",
                         "sui":"Sui","monad":"Monad","mantle":"Mantle",
                         "zksync":"zkSync","aptos":"Aptos",
-                        "cex":"CEX (Binance / Kraken / etc.)",
                     }
                     CHAIN_COLOR = {
                         "ethereum":"#627EEA", "solana":"#9945FF",
@@ -6152,7 +6209,6 @@ if __name__ == "__main__":
                         "optimism":"#FF0420", "sui":"#4DA2FF",
                         "monad":"#836EF9",    "mantle":"#9CDA6B",
                         "zksync":"#8C8DFC",   "aptos":"#00C8B4",
-                        "cex":"#FFB347",  # warm amber — CEX off-chain
                     }
                     fig_ch = go.Figure()
                     for ch in chain_order:
@@ -6195,6 +6251,103 @@ if __name__ == "__main__":
                            raw_df=_raw_ch.sort_values("date", ascending=False),
                            raw_key="asset_gold_volume_by_chain",
                            raw_filename="tokenized_gold_volume_by_chain")
+
+                # ── CEX volume by exchange (snapshot via CG /tickers) ──
+                # Horizontal stacked bar — one row per exchange,
+                # segmented by token. SNAPSHOT only (CG /tickers is
+                # 24h-rolling current, not a daily history) so no
+                # rangeselector. Top-15 exchanges by total vol across
+                # all gold tokens shown; rest aggregated into 'Other'.
+                st.divider()
+                st.subheader("Tokenized Gold — CEX Volume (24h, by exchange)")
+                st.caption(
+                    "Snapshot of the latest 24h centralized-exchange "
+                    "volume across all tokenized gold, broken down by "
+                    "exchange. Source: CoinGecko `/coins/{id}/tickers` "
+                    "filtered to CEX entries (DEX tickers excluded via "
+                    "the `(<chain>)` market-name heuristic). Per-token "
+                    "segments stack inside each exchange bar so you can "
+                    "see which token drives each venue's volume. CG "
+                    "doesn't expose per-CEX historical series so this "
+                    "chart is point-in-time, not a time-series."
+                )
+                # Gather (symbol, cg_id) pairs for the gold tokens.
+                # Passing pairs (rather than just cg_ids) keeps the
+                # output keyed on our preferred symbols (XAUM/GOLD/VNXAU
+                # /etc.) instead of CG's raw `base` field which returns
+                # weird truncations for tokens with non-clean tickers.
+                _gold_pairs = tuple(sorted(
+                    (sym, cgid) for sym, cgid in
+                    _cg_ids_for("Tokenized Commodities").items() if cgid
+                ))
+                cex_df = _fetch_gold_cex_breakdown(_gold_pairs)
+                if cex_df.empty:
+                    st.info(
+                        "No CEX data — CoinGecko `/tickers` returned no "
+                        "entries (cache miss may have failed; retry in a "
+                        "few minutes)."
+                    )
+                else:
+                    # Top-15 exchanges by total vol; bucket rest as "Other".
+                    by_ex = (cex_df.groupby("exchange")["vol_usd"]
+                             .sum().sort_values(ascending=False))
+                    top_exchanges = list(by_ex.head(15).index)
+                    cex_df["exchange_grp"] = cex_df["exchange"].where(
+                        cex_df["exchange"].isin(top_exchanges), "Other CEXs")
+                    # Re-aggregate with the Other bucket
+                    pivot = (cex_df.groupby(
+                                ["exchange_grp", "symbol"])["vol_usd"]
+                             .sum().unstack(fill_value=0))
+                    # Row order: by total vol desc; 'Other CEXs' last.
+                    row_totals = pivot.sum(axis=1).sort_values(ascending=False)
+                    row_order = [r for r in row_totals.index if r != "Other CEXs"]
+                    if "Other CEXs" in pivot.index:
+                        row_order.append("Other CEXs")
+                    pivot = pivot.loc[row_order]
+                    # Token color: reuse the puller's per-token palette
+                    # so colors match the per-token chart at the top.
+                    _color_idx = {
+                        t[0].upper(): i for i, t in enumerate(p.TOKENS)
+                    }
+                    # Column order: by total vol across all exchanges desc
+                    col_totals = pivot.sum(axis=0).sort_values(ascending=False)
+                    token_order = list(col_totals.index)
+                    fig_cex = go.Figure()
+                    for sym in token_order:
+                        color = p._COLORS[
+                            _color_idx.get(sym, 0) % len(p._COLORS)]
+                        x_vals = pivot[sym].values
+                        fig_cex.add_trace(go.Bar(
+                            y=pivot.index, x=x_vals, name=sym,
+                            orientation="h",
+                            marker=dict(color=color),
+                            customdata=[_fmt_usd(v) for v in x_vals],
+                            hovertemplate=f"{sym}: %{{customdata}}<extra></extra>",
+                        ))
+                    fig_cex.update_layout(
+                        barmode="stack",
+                        height=max(380, 32 * len(row_order)),
+                        hovermode="y unified",
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        legend=dict(orientation="h", yanchor="bottom",
+                                    y=1.02, xanchor="right", x=1),
+                        xaxis=dict(tickprefix="$", tickformat="~s",
+                                   showgrid=True),
+                        yaxis=dict(autorange="reversed"),  # biggest at top
+                    )
+                    _raw_cex = pivot.reset_index().rename(
+                        columns={"exchange_grp": "exchange"})
+                    _raw_cex["total"] = _raw_cex[token_order].sum(axis=1)
+                    _raw_cex = _raw_cex.sort_values("total", ascending=False)
+                    grand_cex = float(_raw_cex["total"].sum())
+                    st.caption(
+                        f"Total CEX volume (24h, all tokens, all listed "
+                        f"exchanges): **${grand_cex:,.0f}**"
+                    )
+                    _chart(fig_cex, use_container_width=True,
+                           raw_df=_raw_cex,
+                           raw_key="asset_gold_cex_by_exchange",
+                           raw_filename="tokenized_gold_cex_by_exchange")
             st.stop()
 
         # Other asset verticals: placeholder until specs land.

@@ -3223,6 +3223,21 @@ class TokenGroupMetricsPuller(DataPuller):
         for token_name, s in token_series:
             mdf[token_name] = s.loc[mdf.index].values
 
+        # Suppress 1970-01-01 epoch artifacts — when an upstream source
+        # (Birdeye OHLCV V3 leading row, CG market_chart bogus
+        # timestamp, etc.) emits a unix-second 0, pd.to_datetime turns
+        # it into 1970-01-01. The per-token .notna().any() filter
+        # above keeps that row alive if ANY token had a value at the
+        # epoch, dragging the chart's x-axis back to 1970. No real
+        # tokenized-asset data exists before 2020 so this is a safe
+        # floor (same filter applied in _combined_stocks_df).
+        mdf = (mdf[mdf["date"] >= "2020-01-01"]
+               .reset_index(drop=True))
+        if mdf.empty:
+            scope = "any chain" if chain is None else chain
+            st.info(f"No post-2020 market-cap data yet for {scope}.")
+            return
+
         # Pre-clip DefiLlama-style isolated 1-day spikes per token before any
         # rendering. Catches glitches like XAUM Solana 2026-03-27 (\$10.24M
         # between Mar 26 \$1.74M and Mar 28 \$5.20M — neighbor-mean replaces

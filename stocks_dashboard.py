@@ -6820,10 +6820,7 @@ if __name__ == "__main__":
                                     "Birdeye OHLCV V3 summed across "
                                     "chains; **CEX** (yellow) = "
                                     "CoinGecko global total − on-chain "
-                                    "DEX (residual, clamped to ≥0). "
-                                    "Tokenized gold trades ~95% on "
-                                    "centralized venues so yellow "
-                                    "dominates."
+                                    "DEX (residual, clamped to ≥0)."
                                 ),
                             ) as (tab_d, tab_w, tab_m):
                                 with tab_d:

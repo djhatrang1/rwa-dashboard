@@ -432,6 +432,69 @@ def _fetch_gold_cex_breakdown(symbol_cg_pairs: tuple) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=14_400, show_spinner=False)
+def _fetch_paxg_price_history() -> pd.DataFrame:
+    """Daily PAXG/USD spot price from CoinGecko (4h cache).
+
+    PAXG is 1:1 backed by one troy ounce of LBMA-certified gold held in
+    Brink's vaults, so its on-market USD price tracks LBMA gold spot to
+    within a few-bps redemption-arbitrage band. Used as the gold-price
+    overlay on the Tokenized Gold Global Volume chart to read
+    volume/price correlation at a glance — we use PAXG instead of an
+    LBMA / Kitco feed because (a) it's already on our authorised CG
+    feed (no new data source), (b) it's a 24/7 series that aligns with
+    crypto trading volume dates, and (c) the redemption peg holds the
+    basis tight enough for a chart-overlay use case.
+
+    Returns DataFrame[date, usd] sorted asc. Empty on CG failure (the
+    overlay is then silently skipped without breaking the volume chart).
+    """
+    import requests as _requests_local
+    try:
+        key = st.secrets.get("COINGECKO_API_KEY", "")
+    except Exception:
+        key = ""
+    if not key:
+        key = os.environ.get("COINGECKO_API_KEY", "")
+    if key:
+        base    = "https://pro-api.coingecko.com/api/v3"
+        headers = {"x-cg-pro-api-key": key}
+        days    = "max"
+    else:
+        base    = "https://api.coingecko.com/api/v3"
+        headers = {}
+        days    = "365"
+    try:
+        r = _requests_local.get(
+            f"{base}/coins/pax-gold/market_chart",
+            params={"vs_currency": "usd", "days": days},
+            headers=headers, timeout=30,
+        )
+        r.raise_for_status()
+        prices = r.json().get("prices", []) or []
+    except Exception as exc:
+        log.warning("CG PAXG price fetch failed: %s", exc)
+        return pd.DataFrame(columns=["date", "usd"])
+    rows: list[dict] = []
+    for ts, v in prices:
+        if v is None:
+            continue
+        rows.append({
+            "date": pd.to_datetime(ts, unit="ms"),
+            "usd":  float(v),
+        })
+    if not rows:
+        return pd.DataFrame(columns=["date", "usd"])
+    df = pd.DataFrame(rows)
+    # Normalize to date floor (CG returns hourly samples for short
+    # windows, daily samples for long windows — collapse to daily mean
+    # so we can join cleanly with the volume series).
+    df["date"] = df["date"].dt.tz_localize(None).dt.normalize()
+    df = (df.groupby("date", as_index=False)["usd"].mean()
+            .sort_values("date").reset_index(drop=True))
+    return df
+
+
+@st.cache_data(ttl=14_400, show_spinner=False)
 def _cached_latest_payload(puller_name: str):
     """Module-level cache wrapper for the latest-pull DataFrame. Keyed by
     puller name; TTL 4 hours — matches the GitHub Actions cron cadence
@@ -6078,10 +6141,14 @@ if __name__ == "__main__":
                     "combined: Binance / Kraken / WhiteBIT / Uniswap / "
                     "etc.). 8/10 gold tokens listed; TXAU + CGO not yet "
                     "on CG → silently skipped. Stacked area, hover "
-                    "tooltip shows per-token + Total. The two charts "
-                    "below decompose this total: left splits the on-"
-                    "chain DEX slice by chain; right splits the global "
-                    "total into CEX vs DEX shares."
+                    "tooltip shows per-token + Total. The gold line "
+                    "(right y-axis) is **PAXG spot price (USD/oz)** "
+                    "from CoinGecko — PAXG is 1:1 LBMA-backed so it "
+                    "tracks spot gold within a tight peg basis; useful "
+                    "for reading volume/price correlation. The two "
+                    "charts below decompose this total: left splits "
+                    "the on-chain DEX slice by chain; right splits the "
+                    "global total into CEX vs DEX shares."
                 )
                 for p in commodity_pullers:
                     df = p.get_latest()
@@ -6147,6 +6214,31 @@ if __name__ == "__main__":
                         customdata=totals.map(_fmt_usd),
                         hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
                     ))
+                    # ── PAXG spot-gold price overlay (right y-axis) ──
+                    # PAXG is 1:1 backed by an LBMA troy ounce so its
+                    # USD price ≈ spot gold within a tight peg basis.
+                    # Plotting on a secondary y-axis lets the eye read
+                    # volume/price correlation (e.g. does volume spike
+                    # on gold-price breakouts?) without leaving the
+                    # chart. Reindexed against the volume series' date
+                    # axis so the line aligns row-for-row.
+                    _paxg_df = _fetch_paxg_price_history()
+                    _paxg_aligned = None
+                    if not _paxg_df.empty:
+                        _vol_dates = pd.DatetimeIndex(
+                            pd.to_datetime(df["date"].values)).normalize()
+                        _paxg_aligned = (
+                            _paxg_df.set_index("date")["usd"]
+                                    .reindex(_vol_dates).values)
+                        fig.add_trace(go.Scatter(
+                            x=df["date"], y=_paxg_aligned,
+                            name="Gold $/oz (PAXG)",
+                            mode="lines", yaxis="y2",
+                            line=dict(color="#D4AF37", width=1.6),  # metallic gold
+                            customdata=[(f"${v:,.0f}" if pd.notna(v) else "—")
+                                        for v in _paxg_aligned],
+                            hovertemplate="Gold: %{customdata}/oz<extra></extra>",
+                        ))
                     y_max = float(totals.max() or 0)
                     fig.update_layout(
                         height=420, hovermode="x unified",
@@ -6156,9 +6248,16 @@ if __name__ == "__main__":
                         yaxis=dict(tickprefix="$", tickformat="~s",
                                    showgrid=True, rangemode="tozero",
                                    range=[0, y_max * 1.10] if y_max > 0 else None),
+                        yaxis2=dict(
+                            overlaying="y", side="right",
+                            showgrid=False, tickprefix="$",
+                            tickformat=",.0f", rangemode="normal",
+                        ),
                     )
                     _raw_vol = df[["date"] + vol_cols].copy()
                     _raw_vol["total"] = totals.values
+                    if _paxg_aligned is not None:
+                        _raw_vol["gold_usd_oz_paxg"] = _paxg_aligned
                     _chart(fig, use_container_width=True,
                            raw_df=_raw_vol.sort_values("date", ascending=False),
                            raw_key="asset_gold_volume_cg",

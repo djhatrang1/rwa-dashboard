@@ -2051,8 +2051,14 @@ class TokenGroupMetricsPuller(DataPuller):
 
     def _paginated_ohlcv(self, headers: dict, address: str, time_from: int,
                          time_to: int, endpoint: str = "token") -> list[dict]:
-        # v3 token endpoint returns data for tokens (like Ondo) where v1 returns empty;
-        # pair endpoint stays on the original /defi/ohlcv/pair path.
+        # v3 token endpoint returns data for tokens (like Ondo) where v1
+        # returns empty; pair endpoint stays on the original
+        # /defi/ohlcv/pair path. v3 supports Solana / Ethereum / Monad
+        # / BSC / Base / Optimism / Sui / zkSync but NOT Avalanche /
+        # Arbitrum / Polygon (returns HTTP 422 "Chain X is not
+        # supported yet"). For those chains we fall back to the legacy
+        # /defi/ohlcv endpoint which returns the same shape minus the
+        # v_usd field — computed manually as v × close below.
         if endpoint == "token":
             path      = "/defi/v3/ohlcv"
             time_key  = "unix_time"   # v3 uses unix_time, not unixTime
@@ -2061,6 +2067,7 @@ class TokenGroupMetricsPuller(DataPuller):
             time_key  = "unixTime"
         rows: list[dict] = []
         t_from = time_from
+        used_legacy = False
         while t_from < time_to:
             try:
                 params: dict = {"type": "1D", "time_from": t_from,
@@ -2071,6 +2078,22 @@ class TokenGroupMetricsPuller(DataPuller):
                     f"{self.settings.birdeye_base_url}{path}",
                     headers=headers, params=params, timeout=20,
                 )
+                # Fall back to legacy /defi/ohlcv on 422 ("Chain X is
+                # not supported yet" by v3). Legacy uses 'unixTime' as
+                # the time key and lacks v_usd — we derive it from v *
+                # c after the loop.
+                if (endpoint == "token" and not used_legacy
+                        and resp.status_code in (400, 422)
+                        and "not supported" in resp.text.lower()):
+                    path = "/defi/ohlcv"
+                    time_key = "unixTime"
+                    used_legacy = True
+                    self.logger.info(
+                        "%s OHLCV v3 not supported for %s — falling "
+                        "back to legacy /defi/ohlcv (v_usd computed "
+                        "client-side as v × close)",
+                        self.GROUP_LABEL, address[:8])
+                    continue   # retry same window with new path
                 resp.raise_for_status()
                 # The v3 endpoint may return data as {"items": [...]} or as a bare
                 # list directly under "data".  Handle both shapes defensively.
@@ -2089,6 +2112,15 @@ class TokenGroupMetricsPuller(DataPuller):
             if len(items) < 1000:
                 break
             t_from = int(items[-1][time_key]) + 86_400
+        # Legacy endpoint omits v_usd — compute from v × close + map
+        # unixTime → unix_time so downstream code (which expects v3
+        # shape) doesn't need to special-case.
+        if used_legacy:
+            for r in rows:
+                if r.get("v_usd") is None and r.get("v") is not None:
+                    r["v_usd"] = float(r["v"]) * float(r.get("c") or 0)
+                if "unix_time" not in r and "unixTime" in r:
+                    r["unix_time"] = r["unixTime"]
         return rows
 
     # ── Chain helpers ───────────────────────────────────────────────────────────
@@ -5014,16 +5046,19 @@ _TOKENIZED_COMMODITY_GROUPS: list[tuple[str, str, list]] = [
             ("XAUM", "0x23ae4fd8e7844cdbc97775496ebd0e8cc9b51ce9", "BinanceSmartChain"),
             ("XAUM", "0xa7e22972a19dd924af03f2dc16c9e15f96f0a366", "Polygon"),
             ("XAUM", "0x9d297676e7a4b771ab74e0b8cee2bee16ce14d0f0adcd1e6f7e63c92e7c5ed44", "Sui"),
-            # XAUt0 (Tether Gold LayerZero OFT) — 5 extra Birdeye chains.
-            # Avalanche/Monad/BSC/Polygon/Arbitrum mirror Ethereum XAUT
-            # via LayerZero OFT bridge. Smaller deployments
-            # (HyperEVM/Plasma/Celo/Ink/Conflux/Stable/TON/Hyperliquid)
-            # exist on CG but Birdeye doesn't cover those chains.
-            ("XAUt0", "0x2775d5105276781b4bcce21d8d1ce53d0cf03c4b", "Avalanche"),
-            ("XAUt0", "0x01bff41798a0bcf287b996046ca68b395f0c6a89", "Monad"),
-            ("XAUt0", "0x21caef8a43163eea86989be0d4a9ed9b3018fe40", "BinanceSmartChain"),
-            ("XAUt0", "0xf1815bd50389c46847f0bda824ec8da914045d14", "Polygon"),
-            ("XAUt0", "0x40461291347e1ecbb01b0c0c0b4f5d7a0e4e8a18", "Arbitrum"),
+            # Tether Gold cross-chain mirrors — labeled XAUT on EVM
+            # chains (same underlying as Ethereum-native XAUT) and
+            # XAUt0 only on Solana per Tether's branding. CG's
+            # `tether-gold-tokens` platforms field had stale/wrong
+            # addresses for several EVM chains — replaced with the
+            # actual Birdeye-confirmed ones (verified via Birdeye
+            # /defi/v3/search keyword=XAUt0 per chain). BSC has near-
+            # zero liquidity ($37 LP, $0 vol) but kept for completeness.
+            ("XAUT", "0x2775d5105276781B4b85bA6eA6a6653bEeD1dd32", "Avalanche"),
+            ("XAUT", "0x01bFF41798a0BcF287b996046Ca68b395DbC1071", "Monad"),
+            ("XAUT", "0x987F1DA5ed2D6cf25B90c3ADE8661b0869247777", "BinanceSmartChain"),
+            ("XAUT", "0xF1815bd50389c46847f0Bda824eC8da914045D14", "Polygon"),
+            ("XAUT", "0x40461291347e1eCbb09499F3371D3f17f10d7159", "Arbitrum"),
             # VNXAU — 3 extra chains beyond Solana.
             ("VNXAU", "0x6d57b2e05f26c26b549231c866bdd39779e4a488", "Ethereum"),
             ("VNXAU", "0xac3fe22294beaed9d1cb2cf1c1afc6e10aa1a7f5", "Base"),

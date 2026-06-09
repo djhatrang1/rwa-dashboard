@@ -6193,6 +6193,22 @@ if __name__ == "__main__":
                     for chain, cols in by_chain.items():
                         chain_totals[chain] = (
                             df_b[cols].fillna(0).sum(axis=1))
+                    # Drop chains with literally zero DEX volume across
+                    # the entire history — keeps them out of the legend
+                    # (PGOLD has $84M MC but 0 on-chain trading, XAUt0
+                    # has no Arbitrum liquidity, etc.). If a chain ever
+                    # starts trading the band will appear automatically
+                    # on the next pull.
+                    chain_totals = {
+                        ch: s for ch, s in chain_totals.items()
+                        if float(s.sum() or 0) > 0
+                    }
+                    if not chain_totals:
+                        st.info(
+                            "No DEX volume recorded yet for any "
+                            "tokenized gold on Birdeye-supported chains."
+                        )
+                        continue
                     # Sort chains by latest value desc
                     def _latest_v(c):
                         s = chain_totals[c].dropna()

@@ -6465,10 +6465,28 @@ if __name__ == "__main__":
                                 _raw_ch[CHAIN_LABEL.get(ch, ch.title())] = (
                                     chain_totals[ch].values)
                             _raw_ch["total"] = grand_totals.values
-                            _chart(fig_ch, use_container_width=True,
-                                   raw_df=_raw_ch.sort_values("date", ascending=False),
-                                   raw_key="asset_gold_volume_by_chain",
-                                   raw_filename="tokenized_gold_volume_by_chain")
+                            # Render WITHOUT raw_df/raw_key so _chart()
+                            # skips its CSS-pulled-button row. In narrow
+                            # half-width columns the inner
+                            # st.columns([0.96, 0.04]) that path uses
+                            # creates a tall empty band that the -52px
+                            # margin pull doesn't fully cover → visible
+                            # as a huge gap below the caption. We render
+                            # the 📋 button manually AFTER the chart so
+                            # nothing reserves space above the plot.
+                            _chart(fig_ch, use_container_width=True)
+                            _, _btn_r = st.columns([0.92, 0.08])
+                            with _btn_r:
+                                if st.button(
+                                    "📋",
+                                    key="raw_btn_asset_gold_volume_by_chain",
+                                    help="View raw data",
+                                ):
+                                    _raw_data_modal(
+                                        _raw_ch.sort_values("date", ascending=False),
+                                        None,
+                                        "tokenized_gold_volume_by_chain",
+                                    )
 
                     # ─── RIGHT: CEX vs DEX (CG global − Birdeye DEX) ─
                     with col_cv:
@@ -6533,10 +6551,23 @@ if __name__ == "__main__":
                                 "CEX": cex_residual.values,
                                 "total": grand_cv.values,
                             })
-                            _chart(fig_cv, use_container_width=True,
-                                   raw_df=_raw_cv.sort_values("date", ascending=False),
-                                   raw_key="asset_gold_cex_vs_dex",
-                                   raw_filename="tokenized_gold_cex_vs_dex")
+                            # Same narrow-column workaround as the left
+                            # chart — skip _chart()'s CSS-pulled-button
+                            # path and render the 📋 button manually
+                            # under the chart to avoid the empty-row gap.
+                            _chart(fig_cv, use_container_width=True)
+                            _, _btn_r2 = st.columns([0.92, 0.08])
+                            with _btn_r2:
+                                if st.button(
+                                    "📋",
+                                    key="raw_btn_asset_gold_cex_vs_dex",
+                                    help="View raw data",
+                                ):
+                                    _raw_data_modal(
+                                        _raw_cv.sort_values("date", ascending=False),
+                                        None,
+                                        "tokenized_gold_cex_vs_dex",
+                                    )
                         else:
                             st.info(
                                 "No CoinGecko volume data yet — the "

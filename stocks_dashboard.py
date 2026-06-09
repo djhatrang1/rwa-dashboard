@@ -5478,6 +5478,40 @@ def _combined_stocks_df(pullers: list,
     return result.sort_values("date").reset_index(drop=True)
 
 
+def _combined_stocks_df_all_chains(pullers: list) -> pd.DataFrame | None:
+    """All-chain volume by project — sums each chain's suffixed
+    `vol_*_<chain>_usd` cols per project so the result has one col per
+    project = total across every chain it's deployed on. Avoids the
+    chain=None double-count (Solana tokens carry both legacy chain-
+    agnostic + chain-suffixed cols, so chain=None summed both).
+
+    Iterates known stock-deployment chains (Solana / Ethereum / BSC /
+    Base / Arbitrum / Polygon / Avalanche), calls _combined_stocks_df
+    per chain, then element-wise sums the per-project columns via
+    `DataFrame.add(fill_value=0)`. Outer-join on date so any chain's
+    history range survives even if other chains weren't live yet.
+    Returns None if no chain produced data."""
+    KNOWN_CHAINS = ("Solana", "Ethereum", "Binance", "Base",
+                    "Arbitrum", "Polygon", "Avalanche")
+    per_chain: list[pd.DataFrame] = []
+    for ch in KNOWN_CHAINS:
+        df_ch = _combined_stocks_df(pullers, chain=ch)
+        if df_ch is None or df_ch.empty:
+            continue
+        per_chain.append(df_ch)
+    if not per_chain:
+        return None
+    # Element-wise sum across per-chain frames, indexed by date so
+    # `add(fill_value=0)` aligns on matching project columns and
+    # treats missing dates as 0 contributions.
+    merged = per_chain[0].set_index("date")
+    for df_ch in per_chain[1:]:
+        merged = merged.add(df_ch.set_index("date"), fill_value=0)
+    return (merged.reset_index()
+                  .sort_values("date")
+                  .reset_index(drop=True))
+
+
 def _build_combined_stocks_fig(df: pd.DataFrame, labels: list[str],
                                 period: str, height: int) -> go.Figure:
     """Stacked bar figure of tokenized-stock volume by project.
@@ -6900,6 +6934,66 @@ if __name__ == "__main__":
                 ),
                 col_aggs={l: "last" for l in _mc_labels},
             )
+
+            # ── All Tokenized Equities — Volume by Project (all chains) ──
+            # Uses _combined_stocks_df_all_chains which sums each
+            # chain's suffixed cols per project — no double-count of
+            # Solana tokens (which carry both legacy + chain-suffixed
+            # cols).
+            st.divider()
+            _vol_combined = _combined_stocks_df_all_chains(stocks_pullers)
+            if _vol_combined is None or _vol_combined.empty:
+                st.info(
+                    "No tokenized-stocks volume data on any tracked "
+                    "chain yet. The next pull (every 4h) will populate "
+                    "this view."
+                )
+            else:
+                _vol_labels = list(dict.fromkeys(
+                    p.GROUP_LABEL for p in stocks_pullers))
+                _vol_present = [l for l in _vol_labels
+                                if l in _vol_combined.columns]
+                if _vol_present:
+                    _vol_raw = _vol_combined.copy()
+                    _vol_raw["Total"] = (_vol_raw[_vol_present].fillna(0)
+                                                              .sum(axis=1))
+                    # _build_combined_stocks_fig handles its own
+                    # weekly/monthly resampling via the `period` arg, so
+                    # we pass D/W/M directly per tab instead of using
+                    # _chart_dwm_simple's resample-then-build flow.
+                    with _chart_dwm_frame(
+                        "All Tokenized Equities — Volume by Project (all chains)",
+                        raw_df=_vol_raw.sort_values("date", ascending=False),
+                        raw_key="asset_equities_combined_vol_all",
+                        raw_filename="tokenized_equities_combined_volume_all_chains",
+                        caption=(
+                            "Stacked daily trading volume per project, "
+                            "summed across every chain the project is "
+                            "deployed on (Solana / Ethereum / BSC / "
+                            "Base / Arbitrum). Source: Birdeye OHLCV "
+                            "V3 per (token, chain). On-chain DEX "
+                            "volume only — centralized exchange "
+                            "volume isn't tracked for tokenized stocks."
+                        ),
+                    ) as (tab_d, tab_w, tab_m):
+                        with tab_d:
+                            _chart(
+                                _build_combined_stocks_fig(
+                                    _vol_combined, _vol_labels, "D", 380),
+                                use_container_width=True,
+                            )
+                        with tab_w:
+                            _chart(
+                                _build_combined_stocks_fig(
+                                    _vol_combined, _vol_labels, "W", 380),
+                                use_container_width=True,
+                            )
+                        with tab_m:
+                            _chart(
+                                _build_combined_stocks_fig(
+                                    _vol_combined, _vol_labels, "M", 380),
+                                use_container_width=True,
+                            )
 
             # ── Per-project breakdowns — 2 per row, all-chain MC each ────
             st.divider()

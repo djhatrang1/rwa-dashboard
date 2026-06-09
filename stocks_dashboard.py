@@ -6258,14 +6258,26 @@ if __name__ == "__main__":
                         "sui":"Sui","monad":"Monad","mantle":"Mantle",
                         "zksync":"zkSync","aptos":"Aptos",
                     }
+                    # Maximally-distinct hues — brand colors collide
+                    # too much (3 purples for Solana/Polygon/Monad,
+                    # 2 blues for Ethereum/Arbitrum). Picked from
+                    # opposite quadrants of the color wheel so adjacent
+                    # bands always read as different colors.
                     CHAIN_COLOR = {
-                        "ethereum":"#627EEA", "solana":"#9945FF",
-                        "arbitrum":"#28A0F0", "avalanche":"#E84142",
-                        "polygon":"#8247E5",  "binance_smart_chain":"#F3BA2F",
-                        "bsc":"#F3BA2F",      "base":"#0052FF",
-                        "optimism":"#FF0420", "sui":"#4DA2FF",
-                        "monad":"#836EF9",    "mantle":"#9CDA6B",
-                        "zksync":"#8C8DFC",   "aptos":"#00C8B4",
+                        "ethereum":            "#4285F4",  # google blue
+                        "solana":              "#9945FF",  # Solana brand purple
+                        "arbitrum":            "#06B6D4",  # cyan
+                        "avalanche":           "#EF4444",  # red
+                        "polygon":             "#EC4899",  # magenta/pink
+                        "monad":               "#F97316",  # orange
+                        "binance_smart_chain": "#FBBF24",  # yellow
+                        "bsc":                 "#FBBF24",
+                        "base":                "#1E40AF",  # navy
+                        "optimism":            "#FB7185",  # coral
+                        "sui":                 "#14B8A6",  # teal
+                        "mantle":              "#84CC16",  # lime
+                        "zksync":              "#A78BFA",  # lavender
+                        "aptos":               "#10B981",  # emerald
                     }
                     fig_ch = go.Figure()
                     for ch in chain_order:
@@ -6309,122 +6321,13 @@ if __name__ == "__main__":
                            raw_key="asset_gold_volume_by_chain",
                            raw_filename="tokenized_gold_volume_by_chain")
 
-                # ── CEX volume by exchange (snapshot via CG /tickers) ──
-                # Horizontal stacked bar — one row per exchange,
-                # segmented by token. SNAPSHOT only (CG /tickers is
-                # 24h-rolling current, not a daily history) so no
-                # rangeselector. Top-15 exchanges by total vol across
-                # all gold tokens shown; rest aggregated into 'Other'.
-                st.divider()
-                st.subheader("Tokenized Gold — CEX Volume (24h, by exchange)")
-                st.caption(
-                    "Snapshot of the latest 24h centralized-exchange "
-                    "volume across all tokenized gold, broken down by "
-                    "exchange. Source: CoinGecko `/coins/{id}/tickers` "
-                    "filtered to CEX entries (DEX tickers excluded via "
-                    "the `(<chain>)` market-name heuristic). Per-token "
-                    "segments stack inside each exchange bar so you can "
-                    "see which token drives each venue's volume. CG "
-                    "doesn't expose per-CEX historical series so this "
-                    "chart is point-in-time, not a time-series."
-                )
-                # Gather (symbol, cg_id) pairs for the gold tokens.
-                # Passing pairs (rather than just cg_ids) keeps the
-                # output keyed on our preferred symbols (XAUM/GOLD/VNXAU
-                # /etc.) instead of CG's raw `base` field which returns
-                # weird truncations for tokens with non-clean tickers.
-                _gold_pairs = tuple(sorted(
-                    (sym, cgid) for sym, cgid in
-                    _cg_ids_for("Tokenized Commodities").items() if cgid
-                ))
-                cex_df = _fetch_gold_cex_breakdown(_gold_pairs)
-                if cex_df.empty:
-                    st.info(
-                        "No CEX data — CoinGecko `/tickers` returned no "
-                        "entries (cache miss may have failed; retry in a "
-                        "few minutes)."
-                    )
-                else:
-                    # Top-15 exchanges by total vol; bucket rest as "Other".
-                    by_ex = (cex_df.groupby("exchange")["vol_usd"]
-                             .sum().sort_values(ascending=False))
-                    top_exchanges = list(by_ex.head(15).index)
-                    cex_df["exchange_grp"] = cex_df["exchange"].where(
-                        cex_df["exchange"].isin(top_exchanges), "Other CEXs")
-                    # Re-aggregate with the Other bucket
-                    pivot = (cex_df.groupby(
-                                ["exchange_grp", "symbol"])["vol_usd"]
-                             .sum().unstack(fill_value=0))
-                    # Row order: by total vol desc; 'Other CEXs' last.
-                    row_totals = pivot.sum(axis=1).sort_values(ascending=False)
-                    row_order = [r for r in row_totals.index if r != "Other CEXs"]
-                    if "Other CEXs" in pivot.index:
-                        row_order.append("Other CEXs")
-                    pivot = pivot.loc[row_order]
-                    # Token color: reuse the puller's per-token palette
-                    # so colors match the per-token chart at the top.
-                    _color_idx = {
-                        t[0].upper(): i for i, t in enumerate(p.TOKENS)
-                    }
-                    # Column order: by total vol across all exchanges desc
-                    col_totals = pivot.sum(axis=0).sort_values(ascending=False)
-                    token_order = list(col_totals.index)
-                    fig_cex = go.Figure()
-                    for sym in token_order:
-                        color = p._COLORS[
-                            _color_idx.get(sym, 0) % len(p._COLORS)]
-                        x_vals = pivot[sym].values
-                        fig_cex.add_trace(go.Bar(
-                            y=pivot.index, x=x_vals, name=sym,
-                            orientation="h",
-                            marker=dict(color=color),
-                            customdata=[_fmt_usd(v) for v in x_vals],
-                            hovertemplate=f"{sym}: %{{customdata}}<extra></extra>",
-                        ))
-                    fig_cex.update_layout(
-                        barmode="stack",
-                        height=max(380, 32 * len(row_order)),
-                        hovermode="y unified",
-                        margin=dict(t=10, b=10, l=10, r=10),
-                        legend=dict(orientation="h", yanchor="bottom",
-                                    y=1.02, xanchor="right", x=1),
-                        xaxis=dict(tickprefix="$", tickformat="~s",
-                                   showgrid=True),
-                        yaxis=dict(autorange="reversed"),  # biggest at top
-                    )
-                    _raw_cex = pivot.reset_index().rename(
-                        columns={"exchange_grp": "exchange"})
-                    _raw_cex["total"] = _raw_cex[token_order].sum(axis=1)
-                    _raw_cex = _raw_cex.sort_values("total", ascending=False)
-                    grand_cex = float(_raw_cex["total"].sum())
-                    st.caption(
-                        f"Total CEX volume (24h, all tokens, all listed "
-                        f"exchanges): **${grand_cex:,.0f}**"
-                    )
-                    # Render directly via st.plotly_chart — bypassing
-                    # _chart() because that wrapper applies
-                    # _apply_time_controls which force-sets xaxis.type=
-                    # "date" (adds a rangeslider + rangeselector and
-                    # mangles numeric values into bogus Unix-timestamp
-                    # dates). For a horizontal bar chart neither makes
-                    # sense — the x-axis is a USD scale, not time.
-                    # Explicit B/M/K tickformat applied here since the
-                    # _apply_b_format_to_yaxes helper only walks yaxes.
-                    fig_cex.update_xaxes(
-                        type="linear", tickprefix="$", tickformat="~s",
-                        showgrid=True,
-                    )
-                    # 📋 raw-data button rendered manually since we're
-                    # not going through the _chart() wrapper.
-                    _btn_col_l, _btn_col_r = st.columns([0.95, 0.05])
-                    with _btn_col_r:
-                        if st.button("📋", key="raw_btn_asset_gold_cex",
-                                     help="View raw data"):
-                            _raw_data_modal(
-                                _raw_cex,
-                                {c: "${:,.0f}" for c in token_order + ["total"]},
-                                "tokenized_gold_cex_by_exchange")
-                    st.plotly_chart(fig_cex, use_container_width=True)
+                # ── CEX volume by exchange — TEMPORARILY HIDDEN ──────
+                # The CG /tickers 24h-snapshot bar chart is hidden
+                # until we have a historical per-exchange data source
+                # (Allium query pending — user is sourcing it). Logic
+                # preserved in git history (commits leading up to this
+                # one); restore by reverting / cherry-picking the
+                # render block back in once the Allium query ID lands.
             st.stop()
 
         # Other asset verticals: placeholder until specs land.

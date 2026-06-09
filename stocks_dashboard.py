@@ -5750,6 +5750,52 @@ def _build_combined_stocks_mc_fig(df: pd.DataFrame, labels: list[str],
     return fig
 
 
+# ── Subheader + raw-data button on a single row ──────────────────────────────
+def _chart_header(title: str, *, raw_df: pd.DataFrame, raw_key: str,
+                  raw_fmt: dict | None = None,
+                  raw_filename: str | None = None) -> None:
+    """Render an st.subheader title with the 📋 raw-data button on the
+    same row, right-flush. Pair with _chart(fig, use_container_width=True)
+    called WITHOUT raw_df/raw_key — moves the button placement out of
+    the _chart() wrapper into a stable layout that works in any column
+    width (the subheader text in the left column gives the row real
+    content so Streamlit's row min-height never balloons; the button
+    just sits next to it without the empty-column padding bug that
+    broke the previous in-rangeselector overlay).
+
+    Use this whenever a chart already has an st.subheader-style title
+    above it. For charts with no title row (legacy uses), the
+    raw_df+raw_key path of _chart() still renders the 📋 button on a
+    normal row beneath the chart.
+    """
+    # One-shot compact-button CSS scoped to a wrapper class. Streamlit's
+    # default button is too tall to sit cleanly next to a subheader; this
+    # shrinks it to 30px tall and nudges it down so the icon centers on
+    # the subheader baseline. Scoped via a unique wrapper so unrelated
+    # st.button calls keep their default size.
+    st.markdown("""
+    <style>
+    div.chart-header-btn div[data-testid="stButton"] > button {
+        padding: 0 6px !important;
+        min-width: 32px !important;
+        height: 30px !important;
+        font-size: 14px !important;
+        margin-top: 18px !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    _t_col, _btn_col = st.columns([0.92, 0.08])
+    with _t_col:
+        st.subheader(title)
+    with _btn_col:
+        st.markdown('<div class="chart-header-btn">',
+                    unsafe_allow_html=True)
+        if st.button("📋", key=f"raw_btn_{raw_key}",
+                     help="View raw data"):
+            _raw_data_modal(raw_df, raw_fmt, raw_filename or raw_key)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+
 # ── Raw-data modal (module-level so solana_dashboard.py can import it) ───────
 @st.dialog("📋 Raw Data", width="large")
 def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
@@ -6382,16 +6428,16 @@ if __name__ == "__main__":
 
                     # ─── LEFT: on-chain DEX volume by chain ─────────
                     with col_dex:
-                        st.subheader("On-chain DEX Volume by Chain")
-                        st.caption(
-                            "Stacked daily DEX volume per chain. "
-                            "Source: Birdeye OHLCV V3 per (token, "
-                            "chain) across the Birdeye-supported chains "
-                            "gold tokens live on. **On-chain DEX only** "
-                            "— CEX volume is rendered separately in the "
-                            "chart to the right."
-                        )
                         if not by_chain or not chain_totals:
+                            st.subheader("On-chain DEX Volume by Chain")
+                            st.caption(
+                                "Stacked daily DEX volume per chain. "
+                                "Source: Birdeye OHLCV V3 per (token, "
+                                "chain) across the Birdeye-supported "
+                                "chains gold tokens live on. **On-chain "
+                                "DEX only** — CEX volume is rendered "
+                                "separately in the chart to the right."
+                            )
                             st.info(
                                 "No on-chain DEX volume recorded yet "
                                 "for any tokenized gold on Birdeye-"
@@ -6485,24 +6531,44 @@ if __name__ == "__main__":
                                 _raw_ch[CHAIN_LABEL.get(ch, ch.title())] = (
                                     chain_totals[ch].values)
                             _raw_ch["total"] = grand_totals.values
-                            _chart(fig_ch, use_container_width=True,
-                                   raw_df=_raw_ch.sort_values("date", ascending=False),
-                                   raw_key="asset_gold_volume_by_chain",
-                                   raw_filename="tokenized_gold_volume_by_chain")
+                            # Title + 📋 button on a single row above the
+                            # chart, then caption, then chart (button-on-
+                            # rangeselector overlay broke in narrow cols).
+                            _chart_header(
+                                "On-chain DEX Volume by Chain",
+                                raw_df=_raw_ch.sort_values("date", ascending=False),
+                                raw_key="asset_gold_volume_by_chain",
+                                raw_filename="tokenized_gold_volume_by_chain",
+                            )
+                            st.caption(
+                                "Stacked daily DEX volume per chain. "
+                                "Source: Birdeye OHLCV V3 per (token, "
+                                "chain) across the Birdeye-supported "
+                                "chains gold tokens live on. **On-chain "
+                                "DEX only** — CEX volume is rendered "
+                                "separately in the chart to the right."
+                            )
+                            _chart(fig_ch, use_container_width=True)
 
                     # ─── RIGHT: CEX vs DEX (CG global − Birdeye DEX) ─
                     with col_cv:
-                        st.subheader("CEX vs DEX Volume")
-                        st.caption(
-                            "Daily volume split into two stacks: "
-                            "**DEX** (blue) = on-chain Birdeye OHLCV "
-                            "V3 summed across chains; **CEX** (yellow) "
-                            "= CoinGecko global total − on-chain DEX "
-                            "(residual, clamped to ≥0). Tokenized gold "
-                            "trades ~95% on centralized venues so "
-                            "yellow dominates."
-                        )
-                        if cg_cols:
+                        if not cg_cols:
+                            st.subheader("CEX vs DEX Volume")
+                            st.caption(
+                                "Daily volume split into two stacks: "
+                                "**DEX** (blue) = on-chain Birdeye "
+                                "OHLCV V3 summed across chains; **CEX** "
+                                "(yellow) = CoinGecko global total − "
+                                "on-chain DEX (residual, clamped to "
+                                "≥0). Tokenized gold trades ~95% on "
+                                "centralized venues so yellow dominates."
+                            )
+                            st.info(
+                                "No CoinGecko volume data yet — the "
+                                "next pull (every 4h) will populate "
+                                "the CEX-vs-DEX split."
+                            )
+                        else:
                             fig_cv = go.Figure()
                             # DEX first → renders as the BOTTOM band of
                             # the stack (the thin sliver). CEX renders
@@ -6553,16 +6619,23 @@ if __name__ == "__main__":
                                 "CEX": cex_residual.values,
                                 "total": grand_cv.values,
                             })
-                            _chart(fig_cv, use_container_width=True,
-                                   raw_df=_raw_cv.sort_values("date", ascending=False),
-                                   raw_key="asset_gold_cex_vs_dex",
-                                   raw_filename="tokenized_gold_cex_vs_dex")
-                        else:
-                            st.info(
-                                "No CoinGecko volume data yet — the "
-                                "next pull (every 4h) will populate "
-                                "the CEX-vs-DEX split."
+                            # Title + 📋 button row, caption, then chart.
+                            _chart_header(
+                                "CEX vs DEX Volume",
+                                raw_df=_raw_cv.sort_values("date", ascending=False),
+                                raw_key="asset_gold_cex_vs_dex",
+                                raw_filename="tokenized_gold_cex_vs_dex",
                             )
+                            st.caption(
+                                "Daily volume split into two stacks: "
+                                "**DEX** (blue) = on-chain Birdeye "
+                                "OHLCV V3 summed across chains; **CEX** "
+                                "(yellow) = CoinGecko global total − "
+                                "on-chain DEX (residual, clamped to "
+                                "≥0). Tokenized gold trades ~95% on "
+                                "centralized venues so yellow dominates."
+                            )
+                            _chart(fig_cv, use_container_width=True)
 
                 # ── CEX volume by exchange — TEMPORARILY HIDDEN ──────
                 # The CG /tickers 24h-snapshot bar chart is hidden

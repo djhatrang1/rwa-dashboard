@@ -5215,27 +5215,43 @@ _STOCKS_PROJECT_COLORS: dict[str, str] = {
 
 
 def _combined_stocks_mc_chain_df(pullers: list,
-                                 chain: str) -> pd.DataFrame | None:
+                                 chain: str | None) -> pd.DataFrame | None:
     """Merge per-project chain-specific MC into one wide DataFrame.
 
     Result columns: date | <GROUP_LABEL> …
     Per-project MC resolution priority (gives the most-historical
     series available for each project):
-      1. Project-level DefiLlama aggregate col
-         (mc_<dl_project_label>_<chain>_usd) — set by pullers with
-         DEFILLAMA_PROJECT_SLUG; full daily history.
-      2. CG cross-chain proxy on Solana view only — when puller has
-         COINGECKO_IS_SOLANA_PROXY=True (all tokens live on Solana,
-         so CG's all-chain MC = Solana MC); sums mc_<sym>_cg_usd
-         cols across every CG-mapped token in the project.
-      3. Per-token chain-suffixed cols (Birdeye snapshot — usually
-         single-dot since Token Overview doesn't return history).
+      1. Project-level DefiLlama aggregate col(s) —
+         chain=str   → mc_<dl_label>_<chain>_usd
+         chain=None  → sum ALL mc_<dl_label>_<any-chain>_usd cols
+      2. CG cross-chain MC (mc_<sym>_cg_usd cols summed) when:
+         • chain=Solana AND COINGECKO_IS_SOLANA_PROXY (PreStocks)
+         • chain=None always (CG IS the cross-chain aggregate)
+      3. Per-token chain-suffixed cols (Birdeye snapshot, usually
+         single-dot):
+         chain=str   → mc_<token>_<chain>_usd
+         chain=None  → sum mc_<token>_<any-chain>_usd
 
     Aggregated per GROUP_LABEL across every puller (handles Ondo's
     sol/evm split — both fold into one Ondo band)."""
     from collections import defaultdict
-    chain_lower = chain.lower().replace(" ", "_")
-    suffix = f"_{chain_lower}_usd"
+    chain_lower = chain.lower().replace(" ", "_") if chain else None
+    suffix = f"_{chain_lower}_usd" if chain_lower else None
+    # Known chain suffixes used to identify per-chain MC cols vs the
+    # bare-chain-agnostic legacy `mc_<token>_usd` col + the special
+    # `_cg_usd` cross-chain col. Used in chain=None mode to recognise
+    # which cols to sum across.
+    _KNOWN_CHAIN_SUFFIXES = (
+        "_solana_usd", "_ethereum_usd", "_binance_usd",
+        "_binance_smart_chain_usd", "_base_usd", "_arbitrum_usd",
+        "_polygon_usd", "_avalanche_usd", "_optimism_usd",
+    )
+
+    def _is_chain_col(col: str) -> bool:
+        return (col.startswith("mc_") and col.endswith("_usd")
+                and not col.endswith("_cg_usd")
+                and any(col.endswith(s) for s in _KNOWN_CHAIN_SUFFIXES))
+
     by_label: dict[str, list] = defaultdict(list)
     for p in pullers:
         by_label[p.GROUP_LABEL].append(p)
@@ -5250,37 +5266,63 @@ def _combined_stocks_mc_chain_df(pullers: list,
             raw = raw.copy()
             raw["date"] = pd.to_datetime(raw["date"])
 
-            # ── Priority 1: DL project-aggregate col ──────────────────
+            # ── Priority 1: DL project-aggregate col(s) ───────────────
             agg_candidates = []
             _dl_label = getattr(p, "DEFILLAMA_PROJECT_LABEL", "") or ""
-            if _dl_label:
-                agg_candidates.append(f"mc_{_dl_label}_{chain_lower}_usd")
-            _g = (p.GROUP_LABEL or "").lower().replace(
+            _g_label = (p.GROUP_LABEL or "").lower().replace(
                 "-", "_").replace(" ", "_")
-            if _g:
-                agg_candidates.append(f"mc_{_g}_{chain_lower}_usd")
-            agg_col = next((c for c in agg_candidates
-                            if c in raw.columns and raw[c].notna().any()),
-                           None)
+            if chain_lower:
+                # Single chain — look for matching DL col with that
+                # suffix. Dedupe candidates because when DEFILLAMA_
+                # PROJECT_LABEL == GROUP_LABEL (e.g. xStocks where both
+                # equal 'xstocks') the two appends produce the SAME
+                # col name and summing it twice doubles the value.
+                if _dl_label:
+                    agg_candidates.append(f"mc_{_dl_label}_{chain_lower}_usd")
+                if _g_label and _g_label != _dl_label:
+                    agg_candidates.append(f"mc_{_g_label}_{chain_lower}_usd")
+                agg_cols = list(dict.fromkeys(
+                    c for c in agg_candidates
+                    if c in raw.columns and raw[c].notna().any()))
+            else:
+                # All chains — find ALL DL aggregate cols matching the
+                # project's label prefix (DL writes one per chain).
+                # Same dedupe applies (set semantics on prefixes).
+                prefixes = []
+                if _dl_label: prefixes.append(f"mc_{_dl_label}_")
+                if _g_label and _g_label != _dl_label:
+                    prefixes.append(f"mc_{_g_label}_")
+                agg_cols = list(dict.fromkeys(
+                    c for c in raw.columns
+                    if any(c.startswith(pf) for pf in prefixes)
+                    and _is_chain_col(c)
+                    and raw[c].notna().any()))
+                # Track for the Priority-3 fallback to exclude these cols.
+                agg_candidates = list(agg_cols)
 
-            if agg_col:
-                sub_v = raw[agg_col].fillna(0)
-            elif (chain_lower == "solana"
-                  and getattr(p, "COINGECKO_IS_SOLANA_PROXY", False)):
-                # ── Priority 2: CG cross-chain MC = Solana MC ─────────
-                # Valid only when EVERY token in this project lives on
-                # Solana (so CG's cross-chain aggregate has no other
-                # chain to add). PreStocks set this flag.
+            if agg_cols:
+                # ffill each col then sum (handles missing days per chain).
+                sub_v = raw[agg_cols].ffill().fillna(0).sum(axis=1)
+            elif (getattr(p, "COINGECKO_IS_SOLANA_PROXY", False)
+                  and chain_lower == "solana") or chain_lower is None:
+                # ── Priority 2: CG cross-chain MC ─────────────────────
+                # Solana-only projects (CG = Solana MC) OR the all-
+                # chains view (CG IS cross-chain). Sum mc_*_cg_usd.
                 cg_cols = [c for c in raw.columns
                            if c.startswith("mc_") and c.endswith("_cg_usd")]
                 if not cg_cols:
                     continue
                 sub_v = raw[cg_cols].ffill().fillna(0).sum(axis=1)
             else:
-                # ── Priority 3: per-token chain-suffixed (Birdeye) ────
-                mc_cols = [c for c in raw.columns
-                           if c.startswith("mc_") and c.endswith(suffix)
-                           and c not in agg_candidates]
+                # ── Priority 3: per-token Birdeye chain-suffixed cols ──
+                if chain_lower:
+                    mc_cols = [c for c in raw.columns
+                               if c.startswith("mc_") and c.endswith(suffix)
+                               and c not in agg_candidates]
+                else:
+                    mc_cols = [c for c in raw.columns
+                               if _is_chain_col(c)
+                               and c not in agg_candidates]
                 if not mc_cols:
                     continue
                 # ffill across single-day cron gaps THEN sum so a missed
@@ -5833,6 +5875,36 @@ if __name__ == "__main__":
             "Treasuries & MMFs",
         ])
         with chain_tabs[0]:
+            # ── Combined MC chart (project bands stacked) ─────────────
+            # Renders at the top of every chain tab — when chain=None
+            # uses the all-chains view (sums DL aggregates across chains
+            # + CG cross-chain for projects without DL coverage). For
+            # specific chains, prefers DL aggregate when available
+            # (xstocks Solana+Arb, Ondo every chain), falls back to
+            # Birdeye per-token snapshots otherwise.
+            _mc_combined = _combined_stocks_mc_chain_df(
+                stocks_pullers, chain=dl_chain)
+            if _mc_combined is not None and not _mc_combined.empty:
+                _mc_labels = list(dict.fromkeys(
+                    p.GROUP_LABEL for p in stocks_pullers))
+                _mc_present = [l for l in _mc_labels
+                               if l in _mc_combined.columns]
+                if _mc_present:
+                    _mc_raw = _mc_combined.copy()
+                    _mc_raw["Total"] = (_mc_raw[_mc_present].ffill()
+                                                            .fillna(0)
+                                                            .sum(axis=1))
+                    _chart(
+                        _build_combined_stocks_mc_fig(
+                            _mc_combined, _mc_labels, height=400),
+                        use_container_width=True,
+                        chart_title=f"All Tokenized Stocks — Market Cap by Project ({scope_label})",
+                        raw_df=_mc_raw.sort_values("date", ascending=False),
+                        raw_key=f"main_stocks_combined_mc_{(dl_chain or 'all').lower().replace(' ', '_')}",
+                        raw_filename=f"tokenized_stocks_combined_mc_{(dl_chain or 'all').lower().replace(' ', '_')}",
+                    )
+                    st.divider()
+
             # xStocks now has Birdeye-native EVM volume (Backed.fi deploys the
             # same 0x proxy on Ethereum + BSC), so the non-Solana stock tabs get
             # a real volume chart on top of the per-chain MC chart.

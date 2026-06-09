@@ -6844,6 +6844,94 @@ if __name__ == "__main__":
                 # render block back in once the Allium query ID lands.
             st.stop()
 
+        if selected_asset == "Tokenized equities":
+            # ── All-chain combined Market Cap by Project ─────────────────
+            # Mirrors the "All Tokenized Stocks — Market Cap by Project"
+            # chart from the main dashboard's per-chain tabs, but with
+            # chain=None so _combined_stocks_mc_chain_df sums across
+            # every chain each project is deployed on (DL aggregate for
+            # the projects that have it; CG cross-chain for the rest).
+            if not stocks_pullers:
+                st.info("No tokenized stocks pullers registered.")
+                st.stop()
+            _mc_combined = _combined_stocks_mc_chain_df(
+                stocks_pullers, chain=None)
+            if _mc_combined is None or _mc_combined.empty:
+                st.info(
+                    "No tokenized-stocks market-cap data yet. The next "
+                    "pull (every 4h) will populate this view."
+                )
+                st.stop()
+            # dedupe project labels — the post-Ondo-split registry has
+            # 2 pullers labelled "Ondo" (sol + evm). Both fold into one
+            # Ondo column, so we only want "Ondo" in the legend once.
+            _mc_labels = list(dict.fromkeys(
+                p.GROUP_LABEL for p in stocks_pullers))
+            _mc_present = [l for l in _mc_labels
+                           if l in _mc_combined.columns]
+            if not _mc_present:
+                st.info(
+                    "No project columns in the all-chain market-cap "
+                    "aggregate. Verify the pullers wrote at least one "
+                    "of: DL aggregate (mc_<slug>_dl_usd), CG cross-"
+                    "chain (mc_<sym>_cg_usd), or Birdeye per-chain "
+                    "snapshots."
+                )
+                st.stop()
+            _mc_raw = _mc_combined.copy()
+            _mc_raw["Total"] = (_mc_raw[_mc_present].ffill()
+                                                    .fillna(0)
+                                                    .sum(axis=1))
+            _chart_dwm_simple(
+                "All Tokenized Equities — Market Cap by Project (all chains)",
+                source_df=_mc_combined,
+                build_fig=lambda df_view: _build_combined_stocks_mc_fig(
+                    df_view, _mc_labels, height=460),
+                raw_df=_mc_raw.sort_values("date", ascending=False),
+                raw_key="asset_equities_combined_mc_all",
+                raw_filename="tokenized_equities_combined_mc_all_chains",
+                caption=(
+                    "Per-project tokenized-equity market cap stacked "
+                    "across every chain. Sources: DefiLlama aggregate "
+                    "(xStocks, Ondo); CoinGecko cross-chain MC for "
+                    "PreStocks (Solana-only) + per-token fallbacks. "
+                    "Total band = aggregate tokenized-equity MC. Hover "
+                    "shows per-project + Total at each date."
+                ),
+                col_aggs={l: "last" for l in _mc_labels},
+            )
+
+            # ── Per-project breakdowns — 2 per row, all-chain MC each ────
+            st.divider()
+            st.subheader("Per-project breakdown")
+            st.caption(
+                "Each project's per-token market cap, summed across "
+                "every chain it's deployed on."
+            )
+            # Dedupe by GROUP_LABEL so the post-Ondo-split registry
+            # (ondo_group_sol + ondo_group_evm both labelled "Ondo")
+            # renders one Ondo card, not two; biased to the sol sub-
+            # puller since it owns the DL aggregate + CG cross-chain
+            # cols needed for the all-chain view.
+            _per_proj = _dedupe_pullers_for_chain(stocks_pullers, "solana")
+            for row_start in range(0, len(_per_proj), 2):
+                col_a, col_b = st.columns(2, gap="medium")
+                for col, p in zip(
+                    (col_a, col_b),
+                    _per_proj[row_start: row_start + 2],
+                ):
+                    with col:
+                        _safe_p = (getattr(p, "name", p.GROUP_LABEL)
+                                   .lower().replace("-", "_")
+                                   .replace(" ", "_"))
+                        p.render_market_cap_chain(
+                            chain=None, stacked=True,
+                            raw_key=f"asset_equities_mc_{_safe_p}",
+                            chart_title=f"{p.GROUP_LABEL} — Market Cap (all chains)",
+                        )
+                st.divider()
+            st.stop()
+
         # Other asset verticals: placeholder until specs land.
         st.info(
             f"📊 **{selected_asset}** view is coming soon. "

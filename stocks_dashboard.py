@@ -6439,9 +6439,23 @@ if __name__ == "__main__":
                             y_max_ch = float(grand_totals.max() or 0)
                             fig_ch.update_layout(
                                 height=420, hovermode="x unified",
+                                # Tighter top margin since the legend now
+                                # lives below the chart — without this, the
+                                # narrow column reserves ~150px above the
+                                # plot for the (legend + rangeselector)
+                                # stack, leaving a huge gap below the
+                                # caption.
                                 margin=dict(t=10, b=10, l=10, r=10),
-                                legend=dict(orientation="h", yanchor="bottom",
-                                            y=1.02, xanchor="right", x=1),
+                                # Legend BELOW chart (yanchor=top, y<0) —
+                                # in a half-width column the 6-entry
+                                # horizontal legend doesn't fit on one
+                                # line if placed above, and stacking it
+                                # over the rangeselector buttons forces
+                                # Plotly to expand top margin. Below the
+                                # chart it has all the width it needs and
+                                # plays well with the bottom rangeslider.
+                                legend=dict(orientation="h", yanchor="top",
+                                            y=-0.22, xanchor="center", x=0.5),
                                 yaxis=dict(tickprefix="$", tickformat="~s",
                                            showgrid=True, rangemode="tozero",
                                            range=[0, y_max_ch * 1.10] if y_max_ch > 0 else None),
@@ -6503,8 +6517,12 @@ if __name__ == "__main__":
                             fig_cv.update_layout(
                                 height=420, hovermode="x unified",
                                 margin=dict(t=10, b=10, l=10, r=10),
-                                legend=dict(orientation="h", yanchor="bottom",
-                                            y=1.02, xanchor="right", x=1),
+                                # Match left-column chart: legend below
+                                # the plot so the half-width column
+                                # doesn't reserve excess top margin for
+                                # legend + rangeselector stacking.
+                                legend=dict(orientation="h", yanchor="top",
+                                            y=-0.22, xanchor="center", x=0.5),
                                 yaxis=dict(tickprefix="$", tickformat="~s",
                                            showgrid=True, rangemode="tozero",
                                            range=[0, y_max_cv * 1.10] if y_max_cv > 0 else None),

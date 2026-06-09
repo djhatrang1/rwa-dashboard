@@ -286,79 +286,81 @@ def _render_sol_token() -> None:
         st.warning("Birdeye OHLCV returned no data — try refreshing.")
         return
 
-    st.subheader("Daily Price (USD)")
-    st.caption(f"Source: Birdeye OHLCV V3, daily close · "
-               f"{len(ohlcv)} days from "
-               f"{ohlcv['date'].min().date()} → {ohlcv['date'].max().date()}")
-    fig_p = _go.Figure()
-    fig_p.add_trace(_go.Scatter(
-        x=ohlcv["date"], y=ohlcv["close"], name="SOL",
-        mode="lines", line=dict(color="#9945FF", width=1.5),
-        hovertemplate="%{y:$,.2f}<extra>SOL</extra>",
-    ))
-    fig_p.update_layout(
-        height=380, hovermode="x unified",
-        margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
-        yaxis=dict(tickprefix="$", tickformat=".2f", showgrid=True,
-                   rangemode="tozero"),
-    )
-    sd._chart(fig_p, use_container_width=True,
-              raw_df=ohlcv[["date", "close", "v_usd"]],
-              raw_key="sol_price", raw_filename="sol_daily_ohlcv",
-              raw_fmt={"close": "${:,.2f}", "v_usd": "${:,.0f}"})
+    # ── Price (D/W/M) ──────────────────────────────────────────────────────
+    def _build_sol_price_fig(df_view):
+        fig = _go.Figure()
+        fig.add_trace(_go.Scatter(
+            x=df_view["date"], y=df_view["close"], name="SOL",
+            mode="lines", line=dict(color="#9945FF", width=1.5),
+            hovertemplate="%{y:$,.2f}<extra>SOL</extra>",
+        ))
+        fig.update_layout(
+            height=380, hovermode="x unified",
+            margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
+            yaxis=dict(tickprefix="$", tickformat=".2f", showgrid=True,
+                       rangemode="tozero"),
+        )
+        return fig
 
-    st.subheader("Daily Trading Volume (USD)")
-    st.caption(
-        "Source: Birdeye OHLCV V3 v_usd · all venues aggregated · outlier "
-        "days suppressed (>50× global median) — catches Birdeye v_usd "
-        "glitches like 2023-01-03 reporting \\$41T (50,466× median) and "
-        "the Apr-2026 \\$89-440B cluster; preserves the Jan 18-20 2025 "
-        "TRUMP-launch burst (~32× median, real)."
+    sd._chart_dwm_simple(
+        "Daily Price (USD)",
+        source_df=ohlcv[["date", "close"]].copy(),
+        build_fig=_build_sol_price_fig,
+        raw_df=ohlcv[["date", "close", "v_usd"]],
+        raw_key="sol_price",
+        raw_filename="sol_daily_ohlcv",
+        raw_fmt={"close": "${:,.2f}", "v_usd": "${:,.0f}"},
+        caption=(f"Source: Birdeye OHLCV V3, daily close · "
+                 f"{len(ohlcv)} days from "
+                 f"{ohlcv['date'].min().date()} → {ohlcv['date'].max().date()}"
+                 f" · Weekly/Monthly = period-close price."),
+        col_aggs={"close": "last"},
     )
-    # Reuse the puller's static outlier clipper but disable the
-    # min_retained guard for SOL. The default (0.5) protects sparse-but-
-    # real distributions (e.g. USDe stablecoin with low median + occasional
-    # legit burst days). SOL has the OPPOSITE problem: one absurd Birdeye
-    # glitch day (2023-01-03 reported \$41T, 50,466× median) is so massive
-    # it singlehandedly accounts for >97% of total cumulative v_usd, so
-    # clipping it would leave <50% retained → guard would trip and
-    # preserve the glitch. Forcing min_retained=0 lets the clip do its job.
-    # factor=50 (vs the 25 we use on stablecoin/commodity charts) is the
-    # right cutoff for SOL: catches the 2023-01-03 glitch (\$41T = 50,466×
-    # median) + the suspect April-2026 cluster (\$89B-\$440B, 100-536×),
-    # but preserves the legit Jan 18-20 2025 TRUMP-launch burst (\$24B-
-    # \$33B = 29-40× median). On a token with this much real daily volume
-    # variance, the tighter 25× threshold would over-clip.
+
+    # ── Volume (D/W/M) ─────────────────────────────────────────────────────
+    # Outlier clip — factor=50, min_retained=0 (SOL has one 2023-01-03
+    # $41T glitch that's so massive it accounts for >97% of cumulative
+    # v_usd; the default 0.5 retained-guard would preserve it).
     v_clipped = sd.TokenGroupMetricsPuller._clip_outliers(
         ohlcv["v_usd"], factor=50.0, min_retained=0.0)
-    fig_v = _go.Figure()
-    fig_v.add_trace(_go.Bar(
-        x=ohlcv["date"], y=v_clipped, name="Volume",
-        marker_color="#14F195", opacity=0.85,
-        hovertemplate="%{y:$,.0f}<extra>v_usd</extra>",
-    ))
-    fig_v.update_layout(
-        height=320, hovermode="x unified",
-        margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
-        yaxis=dict(tickprefix="$", tickformat="~s", showgrid=True,
-                   rangemode="tozero"),
-    )
-    # Raw data shows BOTH the clipped (visible) and original v_usd so the
-    # downloader can see which days got suppressed by the outlier filter.
-    _vol_raw = ohlcv[["date", "v_usd"]].copy()
-    _vol_raw["v_usd_clipped"] = v_clipped
-    sd._chart(fig_v, use_container_width=True,
-              raw_df=_vol_raw, raw_key="sol_vol",
-              raw_filename="sol_daily_volume",
-              raw_fmt={"v_usd": "${:,.0f}", "v_usd_clipped": "${:,.0f}"})
+    _sol_vol_df = ohlcv[["date"]].copy()
+    _sol_vol_df["v_usd"] = v_clipped.values
 
-    # ── Holder Count chart — Birdeye /token/v1/holder/chart ───────────────
-    st.subheader("Holder Count")
-    st.caption(
-        "Source: Birdeye `/token/v1/holder/chart` daily, paginated. "
-        "Net-change percentages reflect day-over-day deltas in unique "
-        "holder addresses."
+    def _build_sol_vol_fig(df_view):
+        fig = _go.Figure()
+        fig.add_trace(_go.Bar(
+            x=df_view["date"], y=df_view["v_usd"], name="Volume",
+            marker_color="#14F195", opacity=0.85,
+            hovertemplate="%{y:$,.0f}<extra>v_usd</extra>",
+        ))
+        fig.update_layout(
+            height=320, hovermode="x unified",
+            margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
+            yaxis=dict(tickprefix="$", tickformat="~s", showgrid=True,
+                       rangemode="tozero"),
+        )
+        return fig
+
+    _vol_raw = ohlcv[["date", "v_usd"]].copy()
+    _vol_raw["v_usd_clipped"] = v_clipped.values
+    sd._chart_dwm_simple(
+        "Daily Trading Volume (USD)",
+        source_df=_sol_vol_df,
+        build_fig=_build_sol_vol_fig,
+        raw_df=_vol_raw, raw_key="sol_vol",
+        raw_filename="sol_daily_volume",
+        raw_fmt={"v_usd": "${:,.0f}", "v_usd_clipped": "${:,.0f}"},
+        caption=(
+            "Source: Birdeye OHLCV V3 v_usd · all venues aggregated · "
+            "outlier days suppressed (>50× median) — kills the "
+            "2023-01-03 $41T glitch + Apr-2026 cluster; preserves the "
+            "real Jan 18-20 2025 TRUMP-launch burst. Weekly/Monthly = "
+            "summed volume across the period."
+        ),
+        col_aggs={"v_usd": "sum"},
     )
+
+    # ── Holders (D/W/M) ────────────────────────────────────────────────────
     with st.spinner("Loading SOL holder history…"):
         holders_df = _fetch_sol_holders_history()
     if holders_df.empty:
@@ -367,23 +369,35 @@ def _render_sol_token() -> None:
             f"snapshot from /defi/token_overview: **{holders:,}**."
         )
     else:
-        fig_h = _go.Figure()
-        fig_h.add_trace(_go.Scatter(
-            x=holders_df["date"], y=holders_df["holder"], name="Holders",
-            mode="lines", line=dict(color="#7DCE82", width=1.5),
-            hovertemplate="Holders: %{y:,.0f}<extra></extra>",
-        ))
-        fig_h.update_layout(
-            height=340, hovermode="x unified",
-            margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
-            yaxis=dict(showgrid=True, rangemode="tozero", tickformat=","),
+        def _build_sol_holders_fig(df_view):
+            fig = _go.Figure()
+            fig.add_trace(_go.Scatter(
+                x=df_view["date"], y=df_view["holder"], name="Holders",
+                mode="lines", line=dict(color="#7DCE82", width=1.5),
+                hovertemplate="Holders: %{y:,.0f}<extra></extra>",
+            ))
+            fig.update_layout(
+                height=340, hovermode="x unified",
+                margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
+                yaxis=dict(showgrid=True, rangemode="tozero",
+                           tickformat=","),
+            )
+            return fig
+
+        sd._chart_dwm_simple(
+            "Holder Count",
+            source_df=holders_df,
+            build_fig=_build_sol_holders_fig,
+            raw_df=holders_df, raw_key="sol_holders",
+            raw_filename="sol_holder_history",
+            raw_fmt={"holder": "{:,}"},
+            caption=(
+                "Source: Birdeye `/token/v1/holder/chart` daily, "
+                "paginated. Weekly/Monthly = period-close holder count."
+            ),
+            col_aggs={"holder": "last"},
+            fmt_mode="count",
         )
-        # fmt_mode="count" — holder count is an integer, not a USD value,
-        # so the y-axis ticks should read '6.8M' not '$6.8M'.
-        sd._chart(fig_h, use_container_width=True, fmt_mode="count",
-                  raw_df=holders_df, raw_key="sol_holders",
-                  raw_filename="sol_holder_history",
-                  raw_fmt={"holder": "{:,}"})
 
     # ── Optional seed-backed charts (MC, supply) ──────────────────────────
     # `fmt_mode` controls y-axis prefix: 'currency' adds '$', 'count' doesn't.
@@ -395,9 +409,9 @@ def _render_sol_token() -> None:
         ("Circulating Supply", "mc_seed_sol_supply.json", "#5BC0EB",
                                 "count",    f"{supply:,.0f} SOL"),
     ]:
-        st.subheader(label)
         seed = _load_sol_seed(filename)
         if seed.empty:
+            st.subheader(label)
             st.info(
                 f"No historical {label.lower()} series yet. Drop a seed file "
                 f"named `{filename}` at the repo root with the same shape as "
@@ -407,33 +421,44 @@ def _render_sol_token() -> None:
                 f"**{snapshot_str}**."
             )
             continue
-        fig = _go.Figure()
-        fig.add_trace(_go.Scatter(
-            x=seed["date"], y=seed["value"], name=label,
-            mode="lines", line=dict(color=color, width=1.5),
-            hovertemplate=f"{label}: %{{y:,.0f}}<extra></extra>",
-        ))
-        # Tight y-axis range so the line uses the full vertical space instead
-        # of being a near-flat trace bunched up against the chart top.
-        # Floor: 95% of min — for SOL supply that's 537M × 0.95 ≈ 510M, so
-        # the chart starts around 500M instead of 0 and the supply growth
-        # actually reads. Ceiling: 105% of max for a bit of headroom above
-        # the latest value.
-        y_min, y_max = float(seed["value"].min()), float(seed["value"].max())
-        y_range = [y_min * 0.95, y_max * 1.05] if y_max > 0 else None
-        fig.update_layout(
-            height=340, hovermode="x unified",
-            margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
-            yaxis=dict(showgrid=True, range=y_range),
-        )
-        # Raw data uses the per-chart label (Market Cap / Supply) to
-        # disambiguate the two loop iterations' button keys + CSV filenames.
+
+        # Bind loop vars to closure args so each iteration's builder
+        # captures the right label/color/seed.
+        def _build_sol_seed_fig(df_view, _label=label, _color=color, _seed_full=seed):
+            fig = _go.Figure()
+            fig.add_trace(_go.Scatter(
+                x=df_view["date"], y=df_view["value"], name=_label,
+                mode="lines", line=dict(color=_color, width=1.5),
+                hovertemplate=f"{_label}: %{{y:,.0f}}<extra></extra>",
+            ))
+            # Tight y-axis range so a near-flat trace doesn't bunch
+            # against the chart top — derived from the full daily seed
+            # so the W/M tabs share the same vertical scale.
+            y_min = float(_seed_full["value"].min())
+            y_max = float(_seed_full["value"].max())
+            y_range = ([y_min * 0.95, y_max * 1.05]
+                       if y_max > 0 else None)
+            fig.update_layout(
+                height=340, hovermode="x unified",
+                margin=dict(t=10, b=10, l=10, r=10), showlegend=False,
+                yaxis=dict(showgrid=True, range=y_range),
+            )
+            return fig
+
         _safe_label = label.lower().replace(" ", "_")
         _raw = seed.rename(columns={"value": _safe_label})
-        sd._chart(fig, use_container_width=True, fmt_mode=fmt_mode,
-                  raw_df=_raw, raw_key=f"sol_{_safe_label}",
-                  raw_filename=f"sol_{_safe_label}",
-                  raw_fmt={_safe_label: "${:,.0f}" if fmt_mode == "currency" else "{:,.2f}"})
+        sd._chart_dwm_simple(
+            label,
+            source_df=seed,
+            build_fig=_build_sol_seed_fig,
+            raw_df=_raw,
+            raw_key=f"sol_{_safe_label}",
+            raw_filename=f"sol_{_safe_label}",
+            raw_fmt={_safe_label: "${:,.0f}" if fmt_mode == "currency"
+                                            else "{:,.2f}"},
+            col_aggs={"value": "last"},  # MC/supply are stocks, not flows
+            fmt_mode=fmt_mode,
+        )
 
 
 # ── Lending vertical — DefiLlama-backed supply + borrow per protocol ──────────
@@ -1006,32 +1031,36 @@ def _build_foreign_l1_group_charts(group_label: str, pullers: list) -> None:
     keep = wide[mc_cols].notna().any(axis=1)
     wide = wide.loc[keep].reset_index(drop=True)
 
+    _safe_group = group_label.lower().replace(" ", "_")
     col_left, col_right = st.columns(2, gap="medium")
 
-    # ── Left: stacked-area MC ───────────────────────────────────────────
-    with col_left:
-        fig_mc = _go.Figure()
-        totals_mc = wide[mc_cols].ffill().fillna(0).sum(axis=1)
+    # ── Left: stacked-area MC (D/W/M) ───────────────────────────────────
+    def _build_fl1_mc_fig(df_view):
+        fig = _go.Figure()
+        present_mc = [c for c in mc_cols if c in df_view.columns]
+        totals_mc = df_view[present_mc].ffill().fillna(0).sum(axis=1)
         for sym in frames:
+            col = f"mc_{sym}"
+            if col not in df_view.columns:
+                continue
             color = _FOREIGN_L1_COLORS.get(sym, "#888888")
-            y = wide[f"mc_{sym}"].ffill().fillna(0.0)
-            fig_mc.add_trace(_go.Scatter(
-                x=wide["date"], y=y, name=sym,
+            y = df_view[col].ffill().fillna(0.0)
+            fig.add_trace(_go.Scatter(
+                x=df_view["date"], y=y, name=sym,
                 mode="lines", line=dict(width=0.8, color=color),
-                stackgroup="mc", hoverinfo="x+y+name",
+                stackgroup="mc",
                 customdata=y.map(sd._fmt_usd),
                 hovertemplate=f"{sym}: %{{customdata}}<extra></extra>",
             ))
-        # Invisible Total trace → 'Total: $X.XB' line in unified hover.
-        fig_mc.add_trace(_go.Scatter(
-            x=wide["date"], y=totals_mc, name="Total",
+        fig.add_trace(_go.Scatter(
+            x=df_view["date"], y=totals_mc, name="Total",
             mode="lines", line=dict(width=0, color="rgba(0,0,0,0)"),
             showlegend=False, stackgroup=None,
             customdata=totals_mc.map(sd._fmt_usd),
             hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
         ))
         y_max_mc = float(totals_mc.max() or 0)
-        fig_mc.update_layout(
+        fig.update_layout(
             height=360, hovermode="x unified",
             margin=dict(t=10, b=10, l=10, r=10),
             legend=dict(orientation="h", yanchor="bottom", y=1.02,
@@ -1039,39 +1068,49 @@ def _build_foreign_l1_group_charts(group_label: str, pullers: list) -> None:
             yaxis=dict(showgrid=True, rangemode="tozero",
                        range=[0, y_max_mc * 1.10] if y_max_mc > 0 else None),
         )
-        # Raw data: per-token MC values + computed Total.
-        _mc_raw = wide[["date"] + mc_cols].copy()
-        _mc_raw["total"] = totals_mc.values
-        _safe_group = group_label.lower().replace(" ", "_")
-        sd._chart(fig_mc, use_container_width=True,
-                  chart_title=f"{group_label} — Aggregated Market Cap",
-                  raw_df=_mc_raw, raw_key=f"fl1_mc_{_safe_group}",
-                  raw_filename=f"foreign_l1_{_safe_group}_market_cap")
+        return fig
 
-    # ── Right: stacked-bar daily volume ─────────────────────────────────
-    with col_right:
-        fig_v = _go.Figure()
-        totals_v = wide[vol_cols].fillna(0).sum(axis=1).replace(0, float("nan"))
+    _mc_source = wide[["date"] + mc_cols].copy()
+    _mc_raw = _mc_source.copy()
+    _mc_raw["total"] = (wide[mc_cols].ffill().fillna(0).sum(axis=1).values)
+    with col_left:
+        sd._chart_dwm_simple(
+            f"{group_label} — Aggregated Market Cap",
+            source_df=_mc_source,
+            build_fig=_build_fl1_mc_fig,
+            raw_df=_mc_raw, raw_key=f"fl1_mc_{_safe_group}",
+            raw_filename=f"foreign_l1_{_safe_group}_market_cap",
+            col_aggs={f"mc_{s}": "last" for s in frames},
+        )
+
+    # ── Right: stacked-bar daily volume (D/W/M) ─────────────────────────
+    def _build_fl1_vol_fig(df_view):
+        fig = _go.Figure()
+        present_vol = [c for c in vol_cols if c in df_view.columns]
         for sym in frames:
+            col = f"vol_{sym}"
+            if col not in df_view.columns:
+                continue
             color = _FOREIGN_L1_COLORS.get(sym, "#888888")
-            # Replace 0s with NaN so the bar doesn't render — Plotly draws
-            # a 0-height tick mark otherwise that visually fills the day.
-            y = wide[f"vol_{sym}"].replace(0, float("nan"))
-            fig_v.add_trace(_go.Bar(
-                x=wide["date"], y=y, name=sym,
+            # 0 → NaN so Plotly doesn't draw a 0-height tick mark.
+            y = df_view[col].replace(0, float("nan"))
+            fig.add_trace(_go.Bar(
+                x=df_view["date"], y=y, name=sym,
                 marker_color=color, opacity=0.8,
                 customdata=y.map(sd._fmt_usd),
                 hovertemplate=f"{sym}: %{{customdata}}<extra></extra>",
             ))
-        fig_v.add_trace(_go.Scatter(
-            x=wide["date"], y=totals_v, name="Total",
+        totals_v = (df_view[present_vol].fillna(0).sum(axis=1)
+                                        .replace(0, float("nan")))
+        fig.add_trace(_go.Scatter(
+            x=df_view["date"], y=totals_v, name="Total",
             mode="lines", line=dict(width=0, color="rgba(0,0,0,0)"),
             showlegend=False,
             customdata=totals_v.map(sd._fmt_usd),
             hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
         ))
         y_max_v = float(totals_v.max() or 0)
-        fig_v.update_layout(
+        fig.update_layout(
             height=360, hovermode="x unified", barmode="stack",
             margin=dict(t=10, b=10, l=10, r=10),
             legend=dict(orientation="h", yanchor="bottom", y=1.02,
@@ -1079,12 +1118,20 @@ def _build_foreign_l1_group_charts(group_label: str, pullers: list) -> None:
             yaxis=dict(showgrid=True, rangemode="tozero",
                        range=[0, y_max_v * 1.10] if y_max_v > 0 else None),
         )
-        _vol_raw = wide[["date"] + vol_cols].copy()
-        _vol_raw["total"] = wide[vol_cols].fillna(0).sum(axis=1).values
-        sd._chart(fig_v, use_container_width=True,
-                  chart_title=f"{group_label} — Aggregated Daily Volume",
-                  raw_df=_vol_raw, raw_key=f"fl1_vol_{_safe_group}",
-                  raw_filename=f"foreign_l1_{_safe_group}_volume")
+        return fig
+
+    _vol_source = wide[["date"] + vol_cols].copy()
+    _vol_raw = _vol_source.copy()
+    _vol_raw["total"] = wide[vol_cols].fillna(0).sum(axis=1).values
+    with col_right:
+        sd._chart_dwm_simple(
+            f"{group_label} — Aggregated Daily Volume",
+            source_df=_vol_source,
+            build_fig=_build_fl1_vol_fig,
+            raw_df=_vol_raw, raw_key=f"fl1_vol_{_safe_group}",
+            raw_filename=f"foreign_l1_{_safe_group}_volume",
+            col_aggs={f"vol_{s}": "sum" for s in frames},
+        )
 
 
 def _render_foreign_l1() -> None:

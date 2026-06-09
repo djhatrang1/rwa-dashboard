@@ -3201,20 +3201,13 @@ class TokenGroupMetricsPuller(DataPuller):
         for _tn in [t for t, _ in token_series]:
             mdf[_tn] = self._clip_isolated_spikes(mdf[_tn])
 
-        # Color stays attached to the token across reloads — pulled from
-        # the token's ORIGINAL self.TOKENS index, not its sorted-rank
-        # index. Means PAXG stays its color even if it falls below XAUT
-        # next week.
+        # Color stays attached to the token across reloads.
         _color_idx = {t[0]: i for i, t in enumerate(self.TOKENS)}
-        fig = go.Figure()
+        token_names_all = [t for t, _ in token_series]
 
-        # ── chain=None + CG cols present + LARGE-N tokens ─────────────────
-        # Render mode: ONE bold Total line (visible) + per-token traces
-        # hidden behind legendonly. Reserved for groups with so many
-        # tokens that a stacked area becomes unreadable (xStocks 70+,
-        # Ondo 264). For smaller groups (Commodities 10, PreStocks 7)
-        # fall through to the regular stacked-area path requested by
-        # the caller's stacked=True.
+        # CG mode flag: ONE bold Total line + per-token legendonly traces
+        # for large-N groups (xStocks 70+, Ondo 264). Token count is
+        # fixed per render, so this is a constant for all 3 D/W/M tabs.
         _CG_MODE_TOKEN_THRESHOLD = 15
         _cg_mode = (
             chain is None
@@ -3222,144 +3215,137 @@ class TokenGroupMetricsPuller(DataPuller):
             and any(c.startswith("mc_") and c.endswith("_cg_usd")
                     for c in df.columns)
         )
-        if _cg_mode:
-            token_names = [t for t, _ in token_series]
-            totals = mdf[token_names].ffill().fillna(0).sum(axis=1)
-            # Total trace first — bold gold line, visible.
-            fig.add_trace(go.Scatter(
-                x=mdf["date"], y=totals, name="Total",
-                mode="lines+markers",
-                line=dict(color="#FFD700", width=2.5),
-                marker=dict(color="#FFD700", size=5),
-                customdata=totals.map(_fmt_usd),
-                hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
-            ))
-            # Per-token traces — start hidden; user toggles in the legend.
-            for i, (token_name, _) in enumerate(token_series):
-                color = self._COLORS[
-                    _color_idx.get(token_name, i) % len(self._COLORS)]
-                sub = mdf[["date", token_name]].dropna(subset=[token_name])
+
+        # Build the figure given an mdf_view (daily / weekly / monthly).
+        # Closure so the same logic runs across all 3 D/W/M tabs.
+        def _build_mc_fig(mdf_view):
+            fig = go.Figure()
+            if _cg_mode:
+                totals_v = (mdf_view[token_names_all].ffill().fillna(0)
+                                                     .sum(axis=1))
                 fig.add_trace(go.Scatter(
-                    x=sub["date"], y=sub[token_name], name=token_name,
+                    x=mdf_view["date"], y=totals_v, name="Total",
                     mode="lines+markers",
-                    line=dict(color=color, width=1),
-                    marker=dict(color=color, size=3),
-                    visible="legendonly",
-                    customdata=sub[token_name].map(_fmt_usd),
-                    hovertemplate="%{fullData.name}: %{customdata}<extra></extra>",
+                    line=dict(color="#FFD700", width=2.5),
+                    marker=dict(color="#FFD700", size=5),
+                    customdata=totals_v.map(_fmt_usd),
+                    hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
                 ))
-            y_max = float(totals.max() or 0)
-            y_range = [0, y_max * 1.10] if y_max > 0 else None
+                for i, (tn, _) in enumerate(token_series):
+                    color = self._COLORS[
+                        _color_idx.get(tn, i) % len(self._COLORS)]
+                    sub = mdf_view[["date", tn]].dropna(subset=[tn])
+                    fig.add_trace(go.Scatter(
+                        x=sub["date"], y=sub[tn], name=tn,
+                        mode="lines+markers",
+                        line=dict(color=color, width=1),
+                        marker=dict(color=color, size=3),
+                        visible="legendonly",
+                        customdata=sub[tn].map(_fmt_usd),
+                        hovertemplate="%{fullData.name}: %{customdata}<extra></extra>",
+                    ))
+                y_max_v = float(totals_v.max() or 0)
+            else:
+                for i, (tn, _) in enumerate(token_series):
+                    color = self._COLORS[
+                        _color_idx.get(tn, i) % len(self._COLORS)]
+                    y = mdf_view[tn]
+                    if stacked:
+                        # ffill carries last good MC across cron-runner
+                        # outage gaps; fillna(0) catches leading window
+                        # before the token existed.
+                        y = y.ffill().fillna(0.0)
+                        fig.add_trace(go.Scatter(
+                            x=mdf_view["date"], y=y, name=tn,
+                            mode="lines+markers",
+                            line=dict(color=color, width=1.2),
+                            marker=dict(color=color, size=4),
+                            stackgroup="mc",
+                            customdata=y.map(_fmt_usd),
+                            hovertemplate="%{fullData.name}: %{customdata}<extra></extra>",
+                        ))
+                    else:
+                        sub = mdf_view[["date", tn]].dropna(subset=[tn])
+                        fig.add_trace(go.Scatter(
+                            x=sub["date"], y=sub[tn], name=tn,
+                            mode="lines+markers",
+                            line=dict(color=color, width=2),
+                            marker=dict(color=color, size=5),
+                            customdata=sub[tn].map(_fmt_usd),
+                            hovertemplate="%{fullData.name}: %{customdata}<extra></extra>",
+                        ))
+                y_max_v = 0.0
+                if stacked:
+                    totals_v = (mdf_view[token_names_all].ffill().fillna(0)
+                                                         .sum(axis=1))
+                    y_max_v = float(totals_v.max() or 0)
+                    # Invisible Total trace → bold Total in unified hover.
+                    fig.add_trace(go.Scatter(
+                        x=mdf_view["date"], y=totals_v, name="Total",
+                        mode="lines",
+                        line=dict(width=0, color="rgba(0,0,0,0)"),
+                        showlegend=False, stackgroup=None,
+                        customdata=totals_v.map(_fmt_usd),
+                        hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+                    ))
+                else:
+                    for tn in token_names_all:
+                        _s = mdf_view[tn].dropna()
+                        y_max_v = max(y_max_v, float(_s.max() or 0))
+            y_range_v = [0, y_max_v * 1.10] if y_max_v > 0 else None
             fig.update_layout(
                 height=380, hovermode="x unified",
                 margin=dict(t=10, b=10, l=10, r=10),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02,
                             xanchor="right", x=1),
-                yaxis=dict(tickprefix="$", tickformat="~s", showgrid=True,
-                           range=y_range, rangemode="tozero"),
+                yaxis=dict(tickprefix="$", tickformat="~s",
+                           showgrid=True, range=y_range_v,
+                           rangemode="tozero"),
             )
+            return fig
+
+        # Raw export: built once from the DAILY mdf so the CSV always
+        # downloads the underlying daily granularity regardless of which
+        # tab the user is viewing. Append total = row-wise sum.
+        _raw = None
+        if raw_key:
+            _raw = mdf[["date"] + token_names_all].copy()
+            _raw_totals = (mdf[token_names_all].ffill().fillna(0)
+                                               .sum(axis=1))
+            _raw["total"] = _raw_totals.values
+
+        # Render path:
+        #   • chart_title + raw_key → D/W/M frame (new pattern)
+        #   • only raw_key → legacy single chart with chart_title kw
+        #   • neither → bare chart, no raw button
+        if chart_title and raw_key and _raw is not None:
+            # MC aggregation: 'last' per token col (MC is a stock, not a flow).
+            _agg = {tn: "last" for tn in token_names_all}
+            with _chart_dwm_frame(
+                chart_title,
+                raw_df=_raw,
+                raw_key=raw_key,
+                raw_filename=raw_key,
+            ) as (tab_d, tab_w, tab_m):
+                with tab_d:
+                    _chart(_build_mc_fig(mdf), use_container_width=True)
+                with tab_w:
+                    _chart(_build_mc_fig(
+                        _resample_dwm(mdf, "W", col_aggs=_agg)),
+                        use_container_width=True)
+                with tab_m:
+                    _chart(_build_mc_fig(
+                        _resample_dwm(mdf, "M", col_aggs=_agg)),
+                        use_container_width=True)
+        else:
             raw_kwargs = {}
-            if raw_key:
-                _raw = mdf[["date"] + token_names].copy()
-                _raw["total"] = totals.values
-                raw_kwargs = {
-                    "raw_df": _raw,
-                    "raw_key": raw_key,
-                    "raw_filename": raw_key,
-                }
+            if raw_key and _raw is not None:
+                raw_kwargs = {"raw_df": _raw, "raw_key": raw_key,
+                              "raw_filename": raw_key}
             if chart_title:
                 raw_kwargs["chart_title"] = chart_title
-            _chart(fig, use_container_width=True, **raw_kwargs)
-            return
-
-        for i, (token_name, _) in enumerate(token_series):
-            color = self._COLORS[
-                _color_idx.get(token_name, i) % len(self._COLORS)]
-            y = mdf[token_name]
-            if stacked:
-                # Forward-fill THEN fill leading NaNs with 0. ffill carries the
-                # token's last good MC across mid-series gaps (e.g. cron-runner
-                # outages on May 12-14 2026 where Solscan + Birdeye both
-                # reported 0/missing for 3 days). fillna(0) only catches the
-                # leading window before the token existed — those genuinely
-                # are zero MC, not a data gap. Without ffill, every cron miss
-                # collapses the stack to zero for that day, producing a fake
-                # cliff in the area chart.
-                y = y.ffill().fillna(0.0)
-                fig.add_trace(go.Scatter(
-                    x=mdf["date"], y=y, name=token_name,
-                    mode="lines+markers",
-                    line=dict(color=color, width=1.2),
-                    marker=dict(color=color, size=4), stackgroup="mc",
-                    customdata=y.map(_fmt_usd),
-                    hovertemplate="%{fullData.name}: %{customdata}<extra></extra>",
-                ))
-            else:
-                sub = mdf[["date", token_name]].dropna(subset=[token_name])
-                fig.add_trace(go.Scatter(
-                    x=sub["date"], y=sub[token_name], name=token_name,
-                    mode="lines+markers",
-                    line=dict(color=color, width=2),
-                    marker=dict(color=color, size=5),
-                    customdata=sub[token_name].map(_fmt_usd),
-                    hovertemplate="%{fullData.name}: %{customdata}<extra></extra>",
-                ))
-        # Pad y-axis above stacked-peak. Plotly's autorange on stackgroup
-        # figures sometimes picks the rounded nice-tick that equals the
-        # actual peak (e.g. \$15G when stacked total = \$15.40B), clipping
-        # the topmost ribbon. Compute the real stacked max + 10% headroom.
-        # Also compute the row-wise total to drive the bonus "Total" line
-        # in the unified hover tooltip (added below as an invisible trace).
-        y_max = 0.0
-        totals: pd.Series | None = None
-        if stacked:
-            token_names = [t for t, _ in token_series]
-            totals = mdf[token_names].ffill().fillna(0).sum(axis=1)
-            y_max = float(totals.max() or 0)
-        else:
-            for _t, _s in token_series:
-                y_max = max(y_max, float(_s.max() or 0))
-        y_range = [0, y_max * 1.10] if y_max > 0 else None
-
-        # Invisible "Total" trace — adds a bold Total line to the unified
-        # hover tooltip without drawing anything on the chart itself
-        # (line.width=0 + showlegend=False). Added LAST so it renders at
-        # the BOTTOM of the tooltip, summarizing the per-token rows above.
-        if stacked and totals is not None:
-            fig.add_trace(go.Scatter(
-                x=mdf["date"], y=totals, name="Total",
-                mode="lines", line=dict(width=0, color="rgba(0,0,0,0)"),
-                showlegend=False, stackgroup=None,
-                customdata=totals.map(_fmt_usd),
-                hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
-            ))
-        fig.update_layout(
-            height=380, hovermode="x unified",
-            margin=dict(t=10, b=10, l=10, r=10),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                        xanchor="right", x=1),
-            yaxis=dict(tickprefix="$",
-                       tickformat="~s", showgrid=True,
-                       range=y_range, rangemode="tozero"),
-        )
-        # Raw data: mdf already has 'date' + one column per token. Append
-        # 'total' (row-wise sum) so the CSV mirrors the unified-hover Total.
-        raw_kwargs = {}
-        if raw_key:
-            _token_names = [t for t, _ in token_series]
-            _raw = mdf[["date"] + _token_names].copy()
-            if stacked and totals is not None:
-                _raw["total"] = totals.values
-            else:
-                _raw["total"] = _raw[_token_names].fillna(0).sum(axis=1).values
-            raw_kwargs = {
-                "raw_df": _raw,
-                "raw_key": raw_key,
-                "raw_filename": raw_key,
-            }
-        if chart_title:
-            raw_kwargs["chart_title"] = chart_title
-        _chart(fig, use_container_width=True, **raw_kwargs)
+            _chart(_build_mc_fig(mdf), use_container_width=True,
+                   **raw_kwargs)
 
     @staticmethod
     def _clip_isolated_spikes(series: pd.Series, factor: float = 2.0) -> pd.Series:
@@ -5792,6 +5778,38 @@ def _resample_dwm(df: pd.DataFrame, period: str,
     return (df.groupby(period_col, as_index=False)
               .agg(agg)
               .rename(columns={period_col: "date"}))
+
+
+def _chart_dwm_simple(title: str, source_df: pd.DataFrame,
+                      build_fig, *,
+                      raw_df: pd.DataFrame, raw_key: str,
+                      raw_fmt: dict | None = None,
+                      raw_filename: str | None = None,
+                      caption: str | None = None,
+                      col_aggs: dict | None = None,
+                      fmt_mode: str = "currency") -> None:
+    """One-shot wrapper around _chart_dwm_frame for the common pattern of
+    one source DataFrame + one build_fig closure that handles Daily,
+    Weekly, and Monthly. Calls build_fig(df_view) three times — once for
+    daily, twice for the resampled weekly/monthly views.
+
+    Saves callers the with-block dance for charts that don't need
+    per-tab specialization.
+    """
+    with _chart_dwm_frame(title, raw_df=raw_df, raw_key=raw_key,
+                          raw_fmt=raw_fmt, raw_filename=raw_filename,
+                          caption=caption) as (tab_d, tab_w, tab_m):
+        with tab_d:
+            _chart(build_fig(source_df), use_container_width=True,
+                   fmt_mode=fmt_mode)
+        with tab_w:
+            _chart(build_fig(_resample_dwm(source_df, "W",
+                                           col_aggs=col_aggs)),
+                   use_container_width=True, fmt_mode=fmt_mode)
+        with tab_m:
+            _chart(build_fig(_resample_dwm(source_df, "M",
+                                           col_aggs=col_aggs)),
+                   use_container_width=True, fmt_mode=fmt_mode)
 
 
 @contextmanager

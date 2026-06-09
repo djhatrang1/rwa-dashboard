@@ -3326,6 +3326,13 @@ class TokenGroupMetricsPuller(DataPuller):
             fig.update_layout(
                 height=380, hovermode="x unified",
                 margin=dict(t=10, b=10, l=10, r=10),
+                # Hide Plotly's inline legend for large-N CG-mode
+                # charts — at xStocks (70+) / Ondo (264+) sizes the
+                # legend dominates the chart vertically. The
+                # collapsible HTML legend rendered below the chart
+                # (see render_market_cap_chain) shows the swatches
+                # without stealing chart real-estate.
+                showlegend=not _cg_mode,
                 legend=dict(orientation="h", yanchor="bottom", y=1.02,
                             xanchor="right", x=1),
                 yaxis=dict(tickprefix="$", tickformat="~s",
@@ -3376,6 +3383,39 @@ class TokenGroupMetricsPuller(DataPuller):
                 raw_kwargs["chart_title"] = chart_title
             _chart(_build_mc_fig(mdf), use_container_width=True,
                    **raw_kwargs)
+
+        # Collapsible HTML legend for large-N CG-mode charts. The
+        # plotly inline legend is hidden in _build_mc_fig (showlegend=
+        # False when _cg_mode); this expander keeps the swatches
+        # available without stealing chart real-estate. Same pattern
+        # as the per-puller volume chart's legend expander — colors
+        # mirror _build_mc_fig's _color_idx logic so the swatch next
+        # to each token name matches the trace color in the chart.
+        if _cg_mode:
+            with st.expander(f"Legend ({len(token_names_all)} tokens)",
+                             expanded=False):
+                # Token order = MC-rank descending (largest first), so
+                # the legend reads top-down by latest size — the same
+                # order the user would scan visually on the chart.
+                items_html = ""
+                for i, tn in enumerate(token_names_all):
+                    color = self._COLORS[
+                        _color_idx.get(tn, i) % len(self._COLORS)]
+                    items_html += (
+                        f'<div style="display:flex;align-items:center;'
+                        f'gap:5px;white-space:nowrap">'
+                        f'<span style="display:inline-block;width:12px;'
+                        f'height:12px;border-radius:2px;'
+                        f'background:{color};flex-shrink:0"></span>'
+                        f'<span style="font-size:0.8rem">{tn}</span>'
+                        f'</div>'
+                    )
+                st.markdown(
+                    f'<div style="display:grid;'
+                    f'grid-template-columns:repeat(8,1fr);'
+                    f'gap:6px 16px;padding:4px 0">{items_html}</div>',
+                    unsafe_allow_html=True,
+                )
 
     @staticmethod
     def _clip_isolated_spikes(series: pd.Series, factor: float = 2.0) -> pd.Series:

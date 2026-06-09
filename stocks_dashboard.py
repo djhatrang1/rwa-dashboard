@@ -1921,20 +1921,28 @@ class TokenGroupMetricsPuller(DataPuller):
     _USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     _USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
 
-    # Birdeye Peak chart series — text-capable shades, legible on dark canvas
+    # Per-token series colors — 12 distinct hues for the per-token stacked
+    # charts (Commodities, Stablecoins, Treasuries, etc.). Previous palette
+    # had 3 tans / 2 navies / 3 greens / 2 crimsons that visually merged
+    # at chart scale; with 10+ commodity tokens several looked identical.
+    # New palette mirrors the bright/distinct lending palette in
+    # solana_dashboard so colors stay consistent across both dashboards.
+    # Token-to-color mapping is stable per-puller (see _color_idx in
+    # render_market_cap_chain — index into self.TOKENS, not sorted rank,
+    # so PAXG keeps its color even when MC rank shifts week-to-week).
     _COLORS = [
-        "#d2b58f",  # tan/7
-        "#6F97D5",  # navy/6
-        "#6FD58F",  # green/6
-        "#D56F7C",  # crimson/6
-        "#9590A0",  # purple/6
-        "#cc8943",  # tan/5 (amber)
-        "#56B276",  # green/5
-        "#B25667",  # crimson/5
-        "#567AB2",  # navy/5
-        "#BBA383",  # earth/6
-        "#2E9F59",  # green/4
-        "#6C6678",  # purple/5
+        "#FF8C42",  # orange
+        "#5BC0EB",  # cyan
+        "#7DCE82",  # mint
+        "#9B5DE5",  # violet
+        "#F15BB5",  # pink
+        "#FEE440",  # yellow
+        "#00BBF9",  # azure
+        "#00F5D4",  # turquoise
+        "#FB8B24",  # amber
+        "#A4036F",  # magenta
+        "#FF6B6B",  # coral
+        "#4ECDC4",  # teal
     ]
 
     # ── Helpers ───────────────────────────────────────────────────────────────

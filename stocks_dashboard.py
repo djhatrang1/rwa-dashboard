@@ -2774,6 +2774,18 @@ class TokenGroupMetricsPuller(DataPuller):
                     "on the next pull.")
             return
 
+        # Sort token_series by latest non-null value descending so the
+        # largest token is added FIRST as a trace. Plotly lists traces in
+        # the unified-hover tooltip in add-order top-down, so first-added
+        # = top-of-tooltip. Also means the largest band is at the bottom
+        # of the visual stack — that anchors the chart and makes growth
+        # of the smaller bands easier to read above it. Tokens with all-
+        # NaN series were already filtered above.
+        def _latest_val(name_series):
+            s = name_series[1].dropna()
+            return float(s.iloc[-1]) if len(s) else 0.0
+        token_series.sort(key=_latest_val, reverse=True)
+
         # Restrict rows to those with at least one MC reading.
         keep = pd.concat([s for _, s in token_series], axis=1).notna().any(axis=1)
         mdf = df.loc[keep, ["date"]].copy().sort_values("date")
@@ -2788,9 +2800,15 @@ class TokenGroupMetricsPuller(DataPuller):
         for _tn in [t for t, _ in token_series]:
             mdf[_tn] = self._clip_isolated_spikes(mdf[_tn])
 
+        # Color stays attached to the token across reloads — pulled from
+        # the token's ORIGINAL self.TOKENS index, not its sorted-rank
+        # index. Means PAXG stays its color even if it falls below XAUT
+        # next week.
+        _color_idx = {t[0]: i for i, t in enumerate(self.TOKENS)}
         fig = go.Figure()
         for i, (token_name, _) in enumerate(token_series):
-            color = self._COLORS[i % len(self._COLORS)]
+            color = self._COLORS[
+                _color_idx.get(token_name, i) % len(self._COLORS)]
             y = mdf[token_name]
             if stacked:
                 # Forward-fill THEN fill leading NaNs with 0. ffill carries the

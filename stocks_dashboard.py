@@ -3250,9 +3250,13 @@ class TokenGroupMetricsPuller(DataPuller):
         _color_idx = {t[0]: i for i, t in enumerate(self.TOKENS)}
         token_names_all = [t for t, _ in token_series]
 
-        # CG mode flag: ONE bold Total line + per-token legendonly traces
-        # for large-N groups (xStocks 70+, Ondo 264). Token count is
-        # fixed per render, so this is a constant for all 3 D/W/M tabs.
+        # CG mode flag: large-N all-chain groups (xStocks 70+, Ondo
+        # 264+) get a top-10-by-latest-MC stacked area + an "Others"
+        # bucket band, rather than the legacy ONE-Total-line +
+        # per-token-legendonly layout. The Top-10 + Others view is
+        # readable (you can see how much each of the top 10 names
+        # contributes) without overwhelming the chart with hundreds of
+        # near-zero bands.
         _CG_MODE_TOKEN_THRESHOLD = 15
         _cg_mode = (
             chain is None
@@ -3260,35 +3264,87 @@ class TokenGroupMetricsPuller(DataPuller):
             and any(c.startswith("mc_") and c.endswith("_cg_usd")
                     for c in df.columns)
         )
+        _CG_MODE_TOP_N = 10
+
+        # Use the collapsible HTML legend (below the chart) whenever
+        # the inline Plotly legend would overlap with the rangeselector
+        # buttons. Triggers for ALL chain=None MC charts with ≥ 6
+        # tokens — catches PreStocks (7 tokens with long names like
+        # POLYMARKET/ANTHROPIC that wrap the inline legend to 2 rows
+        # over the 1M/3M/6M buttons), commodities (10), xStocks (77),
+        # Ondo (264). Per-chain views and small groups keep the inline
+        # legend since space isn't an issue there.
+        _use_collapsible_legend = (
+            chain is None and len(token_series) >= 6
+        )
+
+        # Top-N + Others split for _cg_mode charts. token_series is
+        # pre-sorted by latest MC desc (line ~3217) so first N are the
+        # largest as-of-today. Computed outside the closure so all
+        # three D/W/M tabs share the same Top-N classification — the
+        # named bands stay consistent across granularities.
+        _cg_top_tokens: list[str] = []
+        _cg_others_tokens: list[str] = []
+        if _cg_mode:
+            _cg_top_tokens = [t for t, _ in token_series[:_CG_MODE_TOP_N]]
+            _cg_others_tokens = [t for t, _ in token_series[_CG_MODE_TOP_N:]]
 
         # Build the figure given an mdf_view (daily / weekly / monthly).
         # Closure so the same logic runs across all 3 D/W/M tabs.
         def _build_mc_fig(mdf_view):
             fig = go.Figure()
             if _cg_mode:
+                # Top-N named bands + "Others" bucket as a stacked
+                # area. Add in MC-rank asc order (smallest last) so
+                # Plotly stacks the largest band at the BOTTOM (anchor)
+                # and smaller bands on top — same convention the
+                # regular stacked path uses below. _cg_top_tokens is
+                # sorted desc, so reverse to get asc add order.
+                for tn in reversed(_cg_top_tokens):
+                    color = self._COLORS[
+                        _color_idx.get(tn, 0) % len(self._COLORS)]
+                    y = mdf_view[tn].ffill().fillna(0.0)
+                    fig.add_trace(go.Scatter(
+                        x=mdf_view["date"], y=y, name=tn,
+                        mode="lines",
+                        line=dict(color=color, width=1.0),
+                        stackgroup="mc",
+                        customdata=y.map(_fmt_usd),
+                        hovertemplate=f"{tn}: %{{customdata}}<extra></extra>",
+                    ))
+                # Others band — sum of every token outside the Top-N.
+                # Rendered last so it sits on TOP of the named bands
+                # (visually OK since it's typically the long tail of
+                # near-zero values; for groups where Others is large
+                # it stays clearly distinguishable as the grey cap).
+                others_y = None
+                if _cg_others_tokens:
+                    others_y = (mdf_view[_cg_others_tokens].ffill()
+                                                          .fillna(0)
+                                                          .sum(axis=1))
+                    others_label = f"Others ({len(_cg_others_tokens)})"
+                    fig.add_trace(go.Scatter(
+                        x=mdf_view["date"], y=others_y,
+                        name=others_label,
+                        mode="lines",
+                        line=dict(color="#888888", width=1.0),
+                        stackgroup="mc",
+                        customdata=others_y.map(_fmt_usd),
+                        hovertemplate=f"{others_label}: %{{customdata}}<extra></extra>",
+                    ))
+                # Invisible Total trace → bold Total line in the
+                # unified hover tooltip. Sum across ALL tokens (not
+                # just Top-N) so the Total matches the true aggregate.
                 totals_v = (mdf_view[token_names_all].ffill().fillna(0)
                                                      .sum(axis=1))
                 fig.add_trace(go.Scatter(
                     x=mdf_view["date"], y=totals_v, name="Total",
-                    mode="lines+markers",
-                    line=dict(color="#FFD700", width=2.5),
-                    marker=dict(color="#FFD700", size=5),
+                    mode="lines",
+                    line=dict(width=0, color="rgba(0,0,0,0)"),
+                    showlegend=False, stackgroup=None,
                     customdata=totals_v.map(_fmt_usd),
                     hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
                 ))
-                for i, (tn, _) in enumerate(token_series):
-                    color = self._COLORS[
-                        _color_idx.get(tn, i) % len(self._COLORS)]
-                    sub = mdf_view[["date", tn]].dropna(subset=[tn])
-                    fig.add_trace(go.Scatter(
-                        x=sub["date"], y=sub[tn], name=tn,
-                        mode="lines+markers",
-                        line=dict(color=color, width=1),
-                        marker=dict(color=color, size=3),
-                        visible="legendonly",
-                        customdata=sub[tn].map(_fmt_usd),
-                        hovertemplate="%{fullData.name}: %{customdata}<extra></extra>",
-                    ))
                 y_max_v = float(totals_v.max() or 0)
             else:
                 for i, (tn, _) in enumerate(token_series):
@@ -3341,13 +3397,14 @@ class TokenGroupMetricsPuller(DataPuller):
             fig.update_layout(
                 height=380, hovermode="x unified",
                 margin=dict(t=10, b=10, l=10, r=10),
-                # Hide Plotly's inline legend for large-N CG-mode
-                # charts — at xStocks (70+) / Ondo (264+) sizes the
-                # legend dominates the chart vertically. The
-                # collapsible HTML legend rendered below the chart
-                # (see render_market_cap_chain) shows the swatches
-                # without stealing chart real-estate.
-                showlegend=not _cg_mode,
+                # Hide Plotly's inline legend whenever the collapsible
+                # HTML legend (rendered below the chart) is in play —
+                # avoids the inline legend overlapping with the
+                # rangeselector buttons on any chain=None MC chart
+                # with ≥6 tokens (xStocks/Ondo/Commodities/PreStocks).
+                # The HTML expander shows the swatches without
+                # stealing chart real-estate.
+                showlegend=not _use_collapsible_legend,
                 legend=dict(orientation="h", yanchor="bottom", y=1.02,
                             xanchor="right", x=1),
                 yaxis=dict(tickprefix="$", tickformat="~s",
@@ -3399,38 +3456,70 @@ class TokenGroupMetricsPuller(DataPuller):
             _chart(_build_mc_fig(mdf), use_container_width=True,
                    **raw_kwargs)
 
-        # Collapsible HTML legend for large-N CG-mode charts. The
-        # plotly inline legend is hidden in _build_mc_fig (showlegend=
-        # False when _cg_mode); this expander keeps the swatches
-        # available without stealing chart real-estate. Same pattern
-        # as the per-puller volume chart's legend expander — colors
-        # mirror _build_mc_fig's _color_idx logic so the swatch next
+        # Collapsible HTML legend for any chain=None MC chart with ≥ 6
+        # tokens (xStocks/Ondo/Commodities/PreStocks). Plotly's inline
+        # legend is hidden in _build_mc_fig (showlegend=False) to
+        # avoid overlapping the rangeselector buttons. This expander
+        # surfaces the swatches without stealing chart real-estate.
+        # Colors mirror _build_mc_fig's _color_idx logic so swatch next
         # to each token name matches the trace color in the chart.
-        if _cg_mode:
+        if _use_collapsible_legend:
             with st.expander(f"Legend ({len(token_names_all)} tokens)",
                              expanded=False):
-                # Token order = MC-rank descending (largest first), so
-                # the legend reads top-down by latest size — the same
-                # order the user would scan visually on the chart.
-                items_html = ""
-                for i, tn in enumerate(token_names_all):
-                    color = self._COLORS[
-                        _color_idx.get(tn, i) % len(self._COLORS)]
-                    items_html += (
-                        f'<div style="display:flex;align-items:center;'
-                        f'gap:5px;white-space:nowrap">'
-                        f'<span style="display:inline-block;width:12px;'
-                        f'height:12px;border-radius:2px;'
-                        f'background:{color};flex-shrink:0"></span>'
-                        f'<span style="font-size:0.8rem">{tn}</span>'
-                        f'</div>'
-                    )
+                if _cg_mode:
+                    # Top-N + Others view — 11 swatches in the main
+                    # grid (matches the bands rendered on the chart),
+                    # then a small-text list of the tokens bucketed
+                    # into Others so the user can drill in.
+                    _legend_entries = []
+                    for i, tn in enumerate(_cg_top_tokens):
+                        color = self._COLORS[
+                            _color_idx.get(tn, i) % len(self._COLORS)]
+                        _legend_entries.append((tn, color))
+                    if _cg_others_tokens:
+                        _legend_entries.append(
+                            (f"Others ({len(_cg_others_tokens)})",
+                             "#888888"))
+                else:
+                    # Token order = MC-rank descending (largest first),
+                    # so the legend reads top-down by latest size — the
+                    # same order the user would scan visually on the
+                    # chart.
+                    _legend_entries = [
+                        (tn,
+                         self._COLORS[_color_idx.get(tn, i)
+                                      % len(self._COLORS)])
+                        for i, tn in enumerate(token_names_all)
+                    ]
+                items_html = "".join(
+                    f'<div style="display:flex;align-items:center;'
+                    f'gap:5px;white-space:nowrap">'
+                    f'<span style="display:inline-block;width:12px;'
+                    f'height:12px;border-radius:2px;'
+                    f'background:{color};flex-shrink:0"></span>'
+                    f'<span style="font-size:0.8rem">{tn}</span>'
+                    f'</div>'
+                    for tn, color in _legend_entries
+                )
                 st.markdown(
                     f'<div style="display:grid;'
                     f'grid-template-columns:repeat(8,1fr);'
                     f'gap:6px 16px;padding:4px 0">{items_html}</div>',
                     unsafe_allow_html=True,
                 )
+                if _cg_mode and _cg_others_tokens:
+                    # List the tokens bucketed into "Others" so the
+                    # grey band is actually inspectable. Capped at 100
+                    # names visually to avoid a wall of text for Ondo's
+                    # 250+ outside-top-10 tokens; the rest are reachable
+                    # via the 📋 raw-data download.
+                    _shown = _cg_others_tokens[:100]
+                    _trailer = ("…" if len(_cg_others_tokens) > 100
+                                else "")
+                    st.caption(
+                        f"**Others includes ({len(_cg_others_tokens)}):** "
+                        + ", ".join(_shown) + _trailer
+                    )
 
     @staticmethod
     def _clip_isolated_spikes(series: pd.Series, factor: float = 2.0) -> pd.Series:

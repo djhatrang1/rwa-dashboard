@@ -1314,7 +1314,6 @@ def _render_rwa() -> None:
                 st.subheader(f"{p.GROUP_LABEL} — Trading Volume (Solana)")
                 p.render_volume_chain(chain="solana", clip_outliers=True)
 
-                st.subheader(f"{p.GROUP_LABEL} — Market Cap by Token")
                 st.caption(
                     "Solana-only market cap per token, stacked. Sourced from "
                     "DefiLlama (XAUM) plus Solscan-seeded history for GOLD / "
@@ -1322,7 +1321,14 @@ def _render_rwa() -> None:
                     "Overview snapshots — total band height = total tokenized "
                     "gold MC on Solana."
                 )
-                p.render_market_cap_chain(chain="Solana", stacked=True)
+                _safe_p = (getattr(p, "name", p.GROUP_LABEL).lower()
+                                                          .replace("-", "_")
+                                                          .replace(" ", "_"))
+                p.render_market_cap_chain(
+                    chain="Solana", stacked=True,
+                    raw_key=f"sd_commod_mc_{_safe_p}",
+                    chart_title=f"{p.GROUP_LABEL} — Market Cap by Token (Solana)",
+                )
 
     # ── Treasuries & MMFs ───────────────────────────────────────────────────
     with tab_treasuries:
@@ -1330,13 +1336,19 @@ def _render_rwa() -> None:
             st.info("No treasury pullers registered.")
         else:
             for p in treasury_pullers:
-                st.subheader(f"{p.GROUP_LABEL} — Market Cap (Solana)")
                 st.caption(
                     "Per-token market cap on Solana, from DefiLlama's free "
                     "API (daily history). These tokens have no on-chain "
                     "trading activity tracked; only market cap is shown."
                 )
-                p.render_market_cap_chain(chain="Solana", stacked=True)
+                _safe_p = (getattr(p, "name", p.GROUP_LABEL).lower()
+                                                          .replace("-", "_")
+                                                          .replace(" ", "_"))
+                p.render_market_cap_chain(
+                    chain="Solana", stacked=True,
+                    raw_key=f"sd_treas_mc_{_safe_p}",
+                    chart_title=f"{p.GROUP_LABEL} — Market Cap (Solana)",
+                )
 
 
 # ── Prediction Markets vertical (Dune Analytics) ──────────────────────────────

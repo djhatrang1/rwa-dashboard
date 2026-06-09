@@ -691,7 +691,12 @@ class USDCVolumePuller(DataPuller):
         return pd.concat(clean_frames, ignore_index=True)
 
     def _stacked_bar(self, df: pd.DataFrame, x: str, title: str, chain_order: list, period: str = "d") -> None:
-        """Render a stacked bar chart + per-chain totals + raw table."""
+        """Render a stacked bar chart + per-chain totals.
+
+        📋 button is rendered once at the render() level (above the
+        D/W/M tabs) and the global st-key-raw_* CSS pins it onto the
+        tab row — so we don't render a per-tab button here.
+        """
         fig = px.bar(
             df,
             x=x,
@@ -707,8 +712,6 @@ class USDCVolumePuller(DataPuller):
             hovermode="x unified",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             yaxis_tickformat="$~s",
-            # x-axis controls (type=date, rangeslider, range-selector buttons)
-            # are applied uniformly by _chart() — no need to set them here.
         )
         _chart(fig, use_container_width=True)
 
@@ -716,14 +719,6 @@ class USDCVolumePuller(DataPuller):
         cols = st.columns(len(chain_totals))
         for col, (chain, vol) in zip(cols, chain_totals.items()):
             col.metric(chain, f"${vol / 1e9:.1f}B")
-
-        _, _raw_col = st.columns([0.95, 0.05])
-        with _raw_col:
-            if st.button("📋", key=f"raw_usdc_{period}", help="View raw data"):
-                _raw_data_modal(
-                    df.sort_values([x, "chain"], ascending=[False, True]),
-                    {"volume_usd": "${:,.0f}"},
-                )
 
     def render(self) -> None:
         st.subheader("USDC Trading Volume by Chain")
@@ -754,38 +749,49 @@ class USDCVolumePuller(DataPuller):
         c3.metric("Top Chain (latest day)", top_chain)
 
         # ── Daily / Weekly / Monthly tabs ────────────────────────────────────
-        tab_daily, tab_weekly, tab_monthly = st.tabs(["Daily", "Weekly", "Monthly"])
+        # chartwrap_/raw_ key pair triggers the global CSS that absolute-
+        # positions the 📋 button onto the tab row's right edge.
+        with st.container(key="chartwrap_usdc_chain"):
+            if st.button("📋", key="raw_usdc_chain",
+                         help="View raw data"):
+                _raw_data_modal(
+                    df.sort_values(["date", "chain"],
+                                   ascending=[False, True]),
+                    {"volume_usd": "${:,.0f}"},
+                )
+            tab_daily, tab_weekly, tab_monthly = st.tabs(
+                ["Daily", "Weekly", "Monthly"])
 
-        with tab_daily:
-            self._stacked_bar(
-                df, "date",
-                "USDC Daily Volume by Chain (Jan 2024 → today)",
-                chain_order, period="d",
-            )
+            with tab_daily:
+                self._stacked_bar(
+                    df, "date",
+                    "USDC Daily Volume by Chain (Jan 2024 → today)",
+                    chain_order, period="d",
+                )
 
-        with tab_weekly:
-            weekly = (
-                df.assign(week=df["date"].dt.to_period("W").dt.start_time)
-                .groupby(["week", "chain"], as_index=False)["volume_usd"].sum()
-                .rename(columns={"week": "week_start"})
-            )
-            self._stacked_bar(
-                weekly, "week_start",
-                "USDC Weekly Volume by Chain (Jan 2024 → today)",
-                chain_order, period="w",
-            )
+            with tab_weekly:
+                weekly = (
+                    df.assign(week=df["date"].dt.to_period("W").dt.start_time)
+                    .groupby(["week", "chain"], as_index=False)["volume_usd"].sum()
+                    .rename(columns={"week": "week_start"})
+                )
+                self._stacked_bar(
+                    weekly, "week_start",
+                    "USDC Weekly Volume by Chain (Jan 2024 → today)",
+                    chain_order, period="w",
+                )
 
-        with tab_monthly:
-            monthly = (
-                df.assign(month=df["date"].dt.to_period("M").dt.start_time)
-                .groupby(["month", "chain"], as_index=False)["volume_usd"].sum()
-                .rename(columns={"month": "month_start"})
-            )
-            self._stacked_bar(
-                monthly, "month_start",
-                "USDC Monthly Volume by Chain (Jan 2024 → today)",
-                chain_order, period="m",
-            )
+            with tab_monthly:
+                monthly = (
+                    df.assign(month=df["date"].dt.to_period("M").dt.start_time)
+                    .groupby(["month", "chain"], as_index=False)["volume_usd"].sum()
+                    .rename(columns={"month": "month_start"})
+                )
+                self._stacked_bar(
+                    monthly, "month_start",
+                    "USDC Monthly Volume by Chain (Jan 2024 → today)",
+                    chain_order, period="m",
+                )
 
 
 # ── 5b. Generic Solana Token Metrics Puller ───────────────────────────────────
@@ -1259,15 +1265,23 @@ class SolanaTokenMetricsPuller(DataPuller):
                 c3.metric("Circulating Supply",
                           f"{supply/1e6:.2f}M" if supply else "N/A")
 
-        tab_d, tab_w, tab_m = st.tabs(["Daily", "Weekly", "Monthly"])
-        with tab_d:
-            _chart(self._build_fig(df, height=520), use_container_width=True)
-        with tab_w:
-            _chart(self._build_fig(self._resample(df, "W"), height=520),
-                            use_container_width=True)
-        with tab_m:
-            _chart(self._build_fig(self._resample(df, "M"), height=520),
-                            use_container_width=True)
+        # chartwrap_/raw_ key pair triggers the global CSS that pins the
+        # 📋 button onto the D/W/M tab row's right edge.
+        with st.container(key=f"chartwrap_{self.name}_full"):
+            if st.button("📋", key=f"raw_{self.name}_full",
+                         help="View raw data"):
+                _raw_data_modal(df.sort_values("date", ascending=False),
+                                self.raw_data_fmt())
+            tab_d, tab_w, tab_m = st.tabs(["Daily", "Weekly", "Monthly"])
+            with tab_d:
+                _chart(self._build_fig(df, height=520),
+                       use_container_width=True)
+            with tab_w:
+                _chart(self._build_fig(self._resample(df, "W"), height=520),
+                                use_container_width=True)
+            with tab_m:
+                _chart(self._build_fig(self._resample(df, "M"), height=520),
+                                use_container_width=True)
 
     def raw_data_fmt(self) -> dict:
         """Column format dict used for the raw-data modal."""
@@ -1619,54 +1633,70 @@ def _render_all_chain_stablecoins() -> None:
         delta=f"{sign_dollar}  ({pct:+.2f}%)",
     )
 
-    # ── Stacked area: per-chain breakdown over time ────────────────────────
-    st.subheader("Stablecoin Market Cap by Chain — Stacked Historical")
-    st.caption(
-        "Per-chain stablecoin circulating supply, sourced from "
-        "DefiLlama `/stablecoincharts/{chain}`. Top 10 chains by latest MC "
-        "shown stacked; bottom layer is the largest chain. CoinGecko doesn't "
-        "expose a per-chain split, so this view uses DefiLlama exclusively. "
-        "Tron under-reports here vs its catalog total (~$90B) — DefiLlama's "
-        "per-chain endpoint counts USDT-Tron under a different chain bucket."
-    )
-    fig = go.Figure()
-    # Sort chains by latest MC so the stack reads largest-at-bottom
+    # ── Stacked area: per-chain breakdown over time (D/W/M) ────────────
+    # Sort chains by latest MC so the stack reads largest-at-bottom.
     sorted_chains = sorted(chain_frames.keys(),
                            key=lambda c: -float(latest_row.get(f"mc_{c}_usd", 0) or 0))
     palette = ["#FF8C42", "#5BC0EB", "#7DCE82", "#9B5DE5", "#F15BB5",
                "#FEE440", "#00BBF9", "#00F5D4", "#FB8B24", "#A4036F"]
-    for i, ch in enumerate(sorted_chains):
-        col = f"mc_{ch}_usd"
-        y = wide[col].ffill().fillna(0.0)
+    totals_daily = wide[mc_cols].ffill().fillna(0).sum(axis=1)
+
+    def _build_stables_chain_fig(df_view):
+        fig = go.Figure()
+        for i, ch in enumerate(sorted_chains):
+            col = f"mc_{ch}_usd"
+            if col not in df_view.columns:
+                continue
+            y = df_view[col].ffill().fillna(0.0)
+            fig.add_trace(go.Scatter(
+                x=df_view["date"], y=y, name=ch,
+                mode="lines",
+                line=dict(width=0.8, color=palette[i % len(palette)]),
+                stackgroup="stables",
+            ))
+        present_cols = [f"mc_{ch}_usd" for ch in sorted_chains
+                        if f"mc_{ch}_usd" in df_view.columns]
+        totals_v = df_view[present_cols].ffill().fillna(0).sum(axis=1)
         fig.add_trace(go.Scatter(
-            x=wide["date"], y=y, name=ch,
-            mode="lines", line=dict(width=0.8, color=palette[i % len(palette)]),
-            stackgroup="stables", hoverinfo="x+y+name",
+            x=df_view["date"], y=totals_v, name="Total",
+            mode="lines", line=dict(width=0, color="rgba(0,0,0,0)"),
+            showlegend=False, stackgroup=None,
+            customdata=totals_v.map(_fmt_usd),
+            hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
         ))
-    # Pad y-axis 10% above the stacked peak so the topmost ribbon isn't
-    # flush with the top tick (see render_market_cap_chain for context).
-    totals = wide[mc_cols].ffill().fillna(0).sum(axis=1)
-    stacked_max = float(totals.max() or 0)
-    # Bonus "Total" line in the unified hover tooltip — see
-    # render_market_cap_chain for the rationale.
-    fig.add_trace(go.Scatter(
-        x=wide["date"], y=totals, name="Total",
-        mode="lines", line=dict(width=0, color="rgba(0,0,0,0)"),
-        showlegend=False, stackgroup=None,
-        customdata=totals.map(_fmt_usd),
-        hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
-    ))
-    fig.update_layout(
-        height=460, hovermode="x unified",
-        margin=dict(t=10, b=10, l=10, r=10),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                    xanchor="right", x=1),
-        yaxis=dict(tickprefix="$",
-                   tickformat="~s", showgrid=True,
-                   range=[0, stacked_max * 1.10] if stacked_max > 0 else None,
-                   rangemode="tozero"),
+        stacked_max = float(totals_v.max() or 0)
+        fig.update_layout(
+            height=460, hovermode="x unified",
+            margin=dict(t=10, b=10, l=10, r=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                        xanchor="right", x=1),
+            yaxis=dict(tickprefix="$", tickformat="~s", showgrid=True,
+                       range=[0, stacked_max * 1.10] if stacked_max > 0 else None,
+                       rangemode="tozero"),
+        )
+        return fig
+
+    _raw_stables = wide[["date"] + mc_cols].copy()
+    _raw_stables["total"] = totals_daily.values
+    _chart_dwm_simple(
+        "Stablecoin Market Cap by Chain — Stacked Historical",
+        source_df=wide[["date"] + mc_cols].copy(),
+        build_fig=_build_stables_chain_fig,
+        raw_df=_raw_stables.sort_values("date", ascending=False),
+        raw_key="all_stablecoins_by_chain",
+        raw_filename="stablecoins_market_cap_by_chain",
+        caption=(
+            "Per-chain stablecoin circulating supply, sourced from "
+            "DefiLlama `/stablecoincharts/{chain}`. Top 10 chains by "
+            "latest MC shown stacked; bottom layer is the largest "
+            "chain. CoinGecko doesn't expose a per-chain split, so "
+            "this view uses DefiLlama exclusively. Tron under-reports "
+            "here vs its catalog total (~$90B) — DefiLlama's per-"
+            "chain endpoint counts USDT-Tron under a different chain "
+            "bucket."
+        ),
+        col_aggs={c: "last" for c in mc_cols},
     )
-    _chart(fig, use_container_width=True)
 
     # ── CoinGecko top-N table ──────────────────────────────────────────────
     st.subheader("Top Stablecoins by Global Market Cap")
@@ -6294,20 +6324,27 @@ if __name__ == "__main__":
     # now each shows a placeholder so the navigation is clickable.
     if selected_asset:
         if selected_asset == "Tokenized commodities":
-            # ── MC chart ──────────────────────────────────────────────────
-            st.subheader("Tokenized Gold — Market Cap (all chains)")
-            st.caption(
-                "Per-token market cap stacked across every chain. Sources: "
-                "DefiLlama (PAXG / XAUT / XAUM / CGO multi-chain) + "
-                "Solscan-seeded history for the Solana-native tokens "
-                "(GOLD / VNXAU / DGLD / TXAU / PGOLD / XAUt0). Hover "
-                "tooltip shows per-token + Total at each date."
-            )
+            # ── MC chart (D/W/M via render_market_cap_chain) ──────────────
             if not commodity_pullers:
                 st.info("No tokenized commodity pullers registered.")
             else:
                 for p in commodity_pullers:
-                    p.render_market_cap_chain(chain=None, stacked=True)
+                    _safe_p = (getattr(p, "name", p.GROUP_LABEL).lower()
+                                                              .replace("-", "_")
+                                                              .replace(" ", "_"))
+                    p.render_market_cap_chain(
+                        chain=None, stacked=True,
+                        raw_key=f"asset_commod_mc_{_safe_p}",
+                        chart_title="Tokenized Gold — Market Cap (all chains)",
+                    )
+                    st.caption(
+                        "Per-token market cap stacked across every chain. "
+                        "Sources: DefiLlama (PAXG / XAUT / XAUM / CGO "
+                        "multi-chain) + Solscan-seeded history for the "
+                        "Solana-native tokens (GOLD / VNXAU / DGLD / TXAU "
+                        "/ PGOLD / XAUt0). Hover tooltip shows per-token "
+                        "+ Total at each date."
+                    )
 
                 # ── Volume chart (CoinGecko cross-chain) ──────────────
                 st.divider()
@@ -6928,12 +6965,22 @@ if __name__ == "__main__":
                 if show_volume and birdeye_chain:
                     st.subheader(f"{heading} — Trading Volume ({scope_label})")
                     p.render_volume_chain(chain=birdeye_chain)
-                st.subheader(f"{heading} — Market Cap ({scope_label})")
                 st.caption(
                     f"Per-token market cap on {scope_label}. Birdeye first; "
                     "DefiLlama free API supplies multi-chain history where "
                     "Birdeye has no coverage.")
-                p.render_market_cap_chain(chain=dl_chain, stacked=True)
+                # Pass chart_title + raw_key so render_market_cap_chain
+                # uses its D/W/M frame (with the title rendered there)
+                # instead of the legacy single-chart path.
+                _safe_p = (getattr(p, "name", heading).lower()
+                                                      .replace("-", "_")
+                                                      .replace(" ", "_"))
+                _safe_ch = (dl_chain or "all").lower().replace(" ", "_")
+                p.render_market_cap_chain(
+                    chain=dl_chain, stacked=True,
+                    raw_key=f"main_mc_{_safe_p}_{_safe_ch}",
+                    chart_title=f"{heading} — Market Cap ({scope_label})",
+                )
                 any_data = True
             if not any_data:
                 st.info(f"No {group_label.lower()} data on {scope_label} yet.")
@@ -6964,14 +7011,16 @@ if __name__ == "__main__":
                     _mc_raw["Total"] = (_mc_raw[_mc_present].ffill()
                                                             .fillna(0)
                                                             .sum(axis=1))
-                    _chart(
-                        _build_combined_stocks_mc_fig(
-                            _mc_combined, _mc_labels, height=400),
-                        use_container_width=True,
-                        chart_title=f"All Tokenized Stocks — Market Cap by Project ({scope_label})",
+                    _safe_chain = (dl_chain or 'all').lower().replace(' ', '_')
+                    _chart_dwm_simple(
+                        f"All Tokenized Stocks — Market Cap by Project ({scope_label})",
+                        source_df=_mc_combined,
+                        build_fig=lambda df_view: _build_combined_stocks_mc_fig(
+                            df_view, _mc_labels, height=400),
                         raw_df=_mc_raw.sort_values("date", ascending=False),
-                        raw_key=f"main_stocks_combined_mc_{(dl_chain or 'all').lower().replace(' ', '_')}",
-                        raw_filename=f"tokenized_stocks_combined_mc_{(dl_chain or 'all').lower().replace(' ', '_')}",
+                        raw_key=f"main_stocks_combined_mc_{_safe_chain}",
+                        raw_filename=f"tokenized_stocks_combined_mc_{_safe_chain}",
+                        col_aggs={l: "last" for l in _mc_labels},
                     )
                     st.divider()
 
@@ -6999,14 +7048,19 @@ if __name__ == "__main__":
                 # the per-token MC chart directly under a fresh heading.
                 _render_all_chain_stablecoins()
                 st.divider()
-                st.subheader("Stablecoins Market Cap by Token")
                 st.caption(
                     "Each tracked stablecoin's market cap summed across every "
                     "chain it's deployed on. Useful for comparing token-level "
                     "trajectories that the per-chain stack above doesn't show."
                 )
                 for p in stablecoin_pullers:
-                    p.render_market_cap_chain(chain=None, stacked=True)
+                    _safe_sp = (getattr(p, "name", p.GROUP_LABEL)
+                                .lower().replace("-", "_").replace(" ", "_"))
+                    p.render_market_cap_chain(
+                        chain=None, stacked=True,
+                        raw_key=f"main_stables_mc_{_safe_sp}",
+                        chart_title=f"{p.GROUP_LABEL} — Market Cap (All chains)",
+                    )
             else:
                 _render_chain_group("Stablecoins", stablecoin_pullers,
                                     show_volume=True)
@@ -7096,13 +7150,8 @@ if __name__ == "__main__":
         else:
             for p in commodity_pullers:
                 st.subheader(f"{p.GROUP_LABEL} — Trading Volume (Solana)")
-                # Restrict to Solana-native tokens so the Ethereum-only PAXG /
-                # XAUT entries (which carry Birdeye Ethereum volume, not Solana)
-                # don't pollute this stack. clip_outliers suppresses Birdeye
-                # v_usd glitch days (>10× per-token median).
                 p.render_volume_chain(chain="solana", clip_outliers=True)
 
-                st.subheader(f"{p.GROUP_LABEL} — Market Cap by Token")
                 st.caption(
                     "Solana-only market cap per token, stacked. Sourced from "
                     "DefiLlama (XAUM) plus Solscan-seeded history for GOLD / "
@@ -7110,23 +7159,33 @@ if __name__ == "__main__":
                     "Overview snapshots — total band height = total tokenized "
                     "gold MC on Solana."
                 )
-                p.render_market_cap_chain(chain="Solana", stacked=True)
+                _safe_p = (getattr(p, "name", p.GROUP_LABEL).lower()
+                                                          .replace("-", "_")
+                                                          .replace(" ", "_"))
+                p.render_market_cap_chain(
+                    chain="Solana", stacked=True,
+                    raw_key=f"main_sol_commodity_mc_{_safe_p}",
+                    chart_title=f"{p.GROUP_LABEL} — Market Cap by Token (Solana)",
+                )
 
     with tab_stablecoins:
         if not stablecoin_pullers:
             st.info("No stablecoin pullers registered.")
         else:
             for p in stablecoin_pullers:
-                st.subheader(f"{p.GROUP_LABEL} — Market Cap (Solana)")
                 st.caption(
                     "Solana-only market cap per token, stacked. Sourced from "
                     "DefiLlama (free API, daily history) plus the Solscan-derived "
                     "seed JSONs and same-day Birdeye Token Overview snapshots."
                 )
-                # Chain-aware renderer reads mc_<sym>_solana_usd (DefiLlama +
-                # seed + Birdeye snapshot all converge into this col) and dedupes
-                # by symbol so multi-chain TOKENS entries don't break the chart.
-                p.render_market_cap_chain(chain="Solana", stacked=True)
+                _safe_p = (getattr(p, "name", p.GROUP_LABEL).lower()
+                                                          .replace("-", "_")
+                                                          .replace(" ", "_"))
+                p.render_market_cap_chain(
+                    chain="Solana", stacked=True,
+                    raw_key=f"main_sol_stables_mc_{_safe_p}",
+                    chart_title=f"{p.GROUP_LABEL} — Market Cap (Solana)",
+                )
 
                 # Split the volume view: USDC's cross-pair v_usd dwarfs every
                 # other Solana stable by 10-100×, flattening the rest into the
@@ -7160,12 +7219,18 @@ if __name__ == "__main__":
             st.info("No treasury pullers registered.")
         else:
             for p in treasury_pullers:
-                st.subheader(f"{p.GROUP_LABEL} — Market Cap (Solana)")
                 st.caption(
                     "Per-token market cap on Solana, from DefiLlama's free API "
                     "(daily history). These tokens have no on-chain trading "
                     "activity tracked; only market cap is shown. Pick a different "
                     "chain in the sidebar to see the same data for that chain."
                 )
-                p.render_market_cap_chain(chain="Solana", stacked=True)
+                _safe_p = (getattr(p, "name", p.GROUP_LABEL).lower()
+                                                          .replace("-", "_")
+                                                          .replace(" ", "_"))
+                p.render_market_cap_chain(
+                    chain="Solana", stacked=True,
+                    raw_key=f"main_sol_treas_mc_{_safe_p}",
+                    chart_title=f"{p.GROUP_LABEL} — Market Cap (Solana)",
+                )
 

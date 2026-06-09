@@ -4923,6 +4923,33 @@ _TOKENIZED_COMMODITY_GROUPS: list[tuple[str, str, list]] = [
             # 4 chains in our sidebar — Sol/Eth/BSC/Base — so PGOLD is
             # silently visible there until/unless Arbitrum gets a tab).
             ("PGOLD", "0x3e76bb02286bfeaa89dd35f11253f2cbce634f91", "Arbitrum"),
+            # ── Cross-chain expansions for the per-chain volume breakdown ─
+            # XAUM (Matrixdock Gold) — 4 extra Birdeye-supported chains
+            # in addition to Solana. Solana stays the primary mint;
+            # these are bridged / wrapped versions sourced from CG's
+            # platforms field. ETH ~\$2M MC, BSC ~\$1M, Polygon ~\$500K,
+            # Sui new; Plume + HashKey + Tron exist on CG but Birdeye
+            # doesn't cover those chains so we skip.
+            ("XAUM", "0x2103e845c5e135493bb6c2a4f0b8651956ea8682", "Ethereum"),
+            ("XAUM", "0x23ae4fd8e7844cdbc97775496ebd0e8cc9b51ce9", "BinanceSmartChain"),
+            ("XAUM", "0xa7e22972a19dd924af03f2dc16c9e15f96f0a366", "Polygon"),
+            ("XAUM", "0x9d297676e7a4b771ab74e0b8cee2bee16ce14d0f0adcd1e6f7e63c92e7c5ed44", "Sui"),
+            # XAUt0 (Tether Gold LayerZero OFT) — 5 extra Birdeye chains.
+            # Avalanche/Monad/BSC/Polygon/Arbitrum mirror Ethereum XAUT
+            # via LayerZero OFT bridge. Smaller deployments
+            # (HyperEVM/Plasma/Celo/Ink/Conflux/Stable/TON/Hyperliquid)
+            # exist on CG but Birdeye doesn't cover those chains.
+            ("XAUt0", "0x2775d5105276781b4bcce21d8d1ce53d0cf03c4b", "Avalanche"),
+            ("XAUt0", "0x01bff41798a0bcf287b996046ca68b395f0c6a89", "Monad"),
+            ("XAUt0", "0x21caef8a43163eea86989be0d4a9ed9b3018fe40", "BinanceSmartChain"),
+            ("XAUt0", "0xf1815bd50389c46847f0bda824ec8da914045d14", "Polygon"),
+            ("XAUt0", "0x40461291347e1ecbb01b0c0c0b4f5d7a0e4e8a18", "Arbitrum"),
+            # VNXAU — 3 extra chains beyond Solana.
+            ("VNXAU", "0x6d57b2e05f26c26b549231c866bdd39779e4a488", "Ethereum"),
+            ("VNXAU", "0xac3fe22294beaed9d1cb2cf1c1afc6e10aa1a7f5", "Base"),
+            ("VNXAU", "0xc8bb8eda94931ca2f2c0d8e94c5ee5dca0d51d6f", "Polygon"),
+            # DGLD on Base (in addition to Ethereum).
+            ("DGLD", "0xd02f50e1017f493fff14ba31c1d28beb5b1ee47e", "Base"),
             # ── XDC-native gold (DefiLlama-only — Birdeye doesn't support XDC) ─
             # CGO: ComTech Gold (~\$5.6M MC on XDC). Lives in our cache via
             # the additive _COMMODITY_DEFILLAMA path (comtech-gold slug);
@@ -5571,7 +5598,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v57-commodities-cg-vol"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v58-gold-multichain-expansion"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────
@@ -6013,6 +6040,161 @@ if __name__ == "__main__":
                            raw_df=_raw_vol.sort_values("date", ascending=False),
                            raw_key="asset_gold_volume_cg",
                            raw_filename="tokenized_gold_volume_cg_all_chains")
+
+                # ── Per-chain DEX Volume stack (Birdeye + CEX residual) ──
+                # Per-chain DEX volume sourced from Birdeye OHLCV V3 per
+                # (token, chain). The CG cross-chain total − Birdeye DEX
+                # sum residual is dominated by CENTRALIZED EXCHANGE
+                # volume (Binance/Kraken/HTX/etc. trade ~95% of
+                # tokenized gold off-chain) so we label it 'CEX' rather
+                # than misleadingly calling it 'other chains'. A small
+                # slice of the residual is non-Birdeye-chain DEX volume
+                # (XDC/Plume/HashKey/Tron/Etherlink/Tezos/HyperEVM/Plasma/
+                # Celo/Ink/Conflux/Stable/TON/Hyperliquid/Apechain) but
+                # it's drowned out by CEX so we don't try to split it.
+                st.divider()
+                st.subheader("Tokenized Gold — Trading Volume by Chain (DEX + CEX)")
+                st.caption(
+                    "Stacked daily volume where each per-chain band = "
+                    "**on-chain DEX volume only** (Birdeye OHLCV V3 per "
+                    "(token, chain) for the 10 Birdeye-supported chains "
+                    "gold tokens live on). The **CEX** band on top is "
+                    "the residual after subtracting Birdeye DEX volume "
+                    "from CoinGecko's cross-chain total — almost entirely "
+                    "centralized-exchange volume (Binance / Kraken / HTX / "
+                    "etc.) which routes ~95% of PAXG and XAUT trading "
+                    "off-chain. Small unsupported-chain DEX volume "
+                    "(XDC / Plume / HashKey / Tron / etc.) is rolled into "
+                    "the CEX band rather than split out — drowned by "
+                    "CEX in either case."
+                )
+                for p in commodity_pullers:
+                    df_b = p.get_latest()
+                    if df_b is None or df_b.empty:
+                        continue
+                    df_b = df_b.copy()
+                    df_b["date"] = pd.to_datetime(df_b["date"], errors="coerce")
+                    df_b = df_b[df_b["date"] >= "2020-01-01"]
+                    # Group Birdeye chain-suffixed vol cols by chain.
+                    # vol_<sym>_<chain_safe>_usd → bucket by chain_safe.
+                    KNOWN_CHAINS = ("solana","ethereum","binance_smart_chain",
+                                    "base","arbitrum","avalanche","polygon",
+                                    "optimism","sui","zksync","monad","mantle",
+                                    "aptos","bsc","hyperevm","megaeth","fogo")
+                    by_chain: dict[str, list[str]] = {}
+                    for c in df_b.columns:
+                        if not (c.startswith("vol_") and c.endswith("_usd")):
+                            continue
+                        if c.endswith("_cg_usd"):
+                            continue
+                        # Find the longest matching chain suffix
+                        matched = None
+                        for ch in sorted(KNOWN_CHAINS, key=len, reverse=True):
+                            if c.endswith(f"_{ch}_usd"):
+                                matched = ch
+                                break
+                        if matched:
+                            by_chain.setdefault(matched, []).append(c)
+                    if not by_chain:
+                        st.info(
+                            "Per-chain volume data not populated yet — the "
+                            "next pull (every 4h) will write the new "
+                            "vol_<token>_<chain>_usd cols."
+                        )
+                        continue
+                    # Clip outliers per token-chain col (same factor=25
+                    # logic as the per-token chart above — catches
+                    # Birdeye OHLCV V3 glitch days).
+                    for cols in by_chain.values():
+                        for c in cols:
+                            df_b[c] = p._clip_outliers(
+                                df_b[c], factor=25.0, min_retained=0.5)
+                    # Sum per chain
+                    chain_totals: dict[str, pd.Series] = {}
+                    for chain, cols in by_chain.items():
+                        chain_totals[chain] = (
+                            df_b[cols].fillna(0).sum(axis=1))
+                    # Other-chains residual: CG cross-chain total
+                    # minus sum of Birdeye per-chain.
+                    cg_vol_cols = [c for c in df_b.columns
+                                   if c.startswith("vol_")
+                                   and c.endswith("_cg_usd")]
+                    if cg_vol_cols:
+                        # Clip the CG cols too for consistency.
+                        for c in cg_vol_cols:
+                            df_b[c] = p._clip_outliers(
+                                df_b[c], factor=25.0, min_retained=0.5)
+                        cg_total = df_b[cg_vol_cols].fillna(0).sum(axis=1)
+                        birdeye_total = sum(chain_totals.values())
+                        cex_residual = (cg_total - birdeye_total).clip(lower=0)
+                        if cex_residual.sum() > 0:
+                            chain_totals["cex"] = cex_residual
+                    # Sort chains by latest value desc
+                    def _latest_v(c):
+                        s = chain_totals[c].dropna()
+                        return float(s.iloc[-1]) if len(s) else 0.0
+                    chain_order = sorted(chain_totals, key=_latest_v, reverse=True)
+                    # Build figure
+                    CHAIN_LABEL = {
+                        "ethereum":"Ethereum","solana":"Solana",
+                        "arbitrum":"Arbitrum","avalanche":"Avalanche",
+                        "polygon":"Polygon","binance_smart_chain":"BSC",
+                        "bsc":"BSC","base":"Base","optimism":"Optimism",
+                        "sui":"Sui","monad":"Monad","mantle":"Mantle",
+                        "zksync":"zkSync","aptos":"Aptos",
+                        "cex":"CEX (Binance / Kraken / etc.)",
+                    }
+                    CHAIN_COLOR = {
+                        "ethereum":"#627EEA", "solana":"#9945FF",
+                        "arbitrum":"#28A0F0", "avalanche":"#E84142",
+                        "polygon":"#8247E5",  "binance_smart_chain":"#F3BA2F",
+                        "bsc":"#F3BA2F",      "base":"#0052FF",
+                        "optimism":"#FF0420", "sui":"#4DA2FF",
+                        "monad":"#836EF9",    "mantle":"#9CDA6B",
+                        "zksync":"#8C8DFC",   "aptos":"#00C8B4",
+                        "cex":"#FFB347",  # warm amber — CEX off-chain
+                    }
+                    fig_ch = go.Figure()
+                    for ch in chain_order:
+                        y = chain_totals[ch].fillna(0)
+                        label = CHAIN_LABEL.get(ch, ch.title())
+                        color = CHAIN_COLOR.get(ch, "#888888")
+                        fig_ch.add_trace(go.Scatter(
+                            x=df_b["date"], y=y, name=label,
+                            mode="lines",
+                            line=dict(color=color, width=0.8),
+                            stackgroup="vch",
+                            customdata=y.map(_fmt_usd),
+                            hovertemplate=f"{label}: %{{customdata}}<extra></extra>",
+                        ))
+                    grand_totals = sum(chain_totals.values())
+                    fig_ch.add_trace(go.Scatter(
+                        x=df_b["date"], y=grand_totals, name="Total",
+                        mode="lines",
+                        line=dict(width=0, color="rgba(0,0,0,0)"),
+                        showlegend=False, stackgroup=None,
+                        customdata=grand_totals.map(_fmt_usd),
+                        hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+                    ))
+                    y_max_ch = float(grand_totals.max() or 0)
+                    fig_ch.update_layout(
+                        height=420, hovermode="x unified",
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        legend=dict(orientation="h", yanchor="bottom",
+                                    y=1.02, xanchor="right", x=1),
+                        yaxis=dict(tickprefix="$", tickformat="~s",
+                                   showgrid=True, rangemode="tozero",
+                                   range=[0, y_max_ch * 1.10] if y_max_ch > 0 else None),
+                    )
+                    _raw_ch = pd.DataFrame({"date": df_b["date"]})
+                    for ch in chain_order:
+                        _raw_ch[CHAIN_LABEL.get(ch, ch.title())] = (
+                            chain_totals[ch].values)
+                    _raw_ch["total"] = grand_totals.values
+                    _chart(fig_ch, use_container_width=True,
+                           raw_df=_raw_ch.sort_values("date", ascending=False),
+                           raw_key="asset_gold_volume_by_chain",
+                           raw_filename="tokenized_gold_volume_by_chain")
             st.stop()
 
         # Other asset verticals: placeholder until specs land.

@@ -2997,14 +2997,17 @@ class TokenGroupMetricsPuller(DataPuller):
         _color_idx = {t[0]: i for i, t in enumerate(self.TOKENS)}
         fig = go.Figure()
 
-        # ── chain=None + CG cols present: project-total + hidden per-token ──
-        # When the puller has COINGECKO_PER_TOKEN_IDS configured AND the
-        # all-chain view is requested, render as ONE bold Total line
-        # (visible) + per-token traces hidden behind legendonly. This is
-        # cleaner than stacking 70-264 tokens in an unreadable mess; user
-        # clicks any legend entry to overlay that token's history.
+        # ── chain=None + CG cols present + LARGE-N tokens ─────────────────
+        # Render mode: ONE bold Total line (visible) + per-token traces
+        # hidden behind legendonly. Reserved for groups with so many
+        # tokens that a stacked area becomes unreadable (xStocks 70+,
+        # Ondo 264). For smaller groups (Commodities 10, PreStocks 7)
+        # fall through to the regular stacked-area path requested by
+        # the caller's stacked=True.
+        _CG_MODE_TOKEN_THRESHOLD = 15
         _cg_mode = (
             chain is None
+            and len(token_series) >= _CG_MODE_TOKEN_THRESHOLD
             and any(c.startswith("mc_") and c.endswith("_cg_usd")
                     for c in df.columns)
         )
@@ -5960,6 +5963,16 @@ if __name__ == "__main__":
                         t[0].lower().replace("-", "_").replace(" ", "_"): i
                         for i, t in enumerate(p.TOKENS)
                     }
+                    # Clip outlier days per token (CG's PAXG showed
+                    # spurious $10B days early Feb 2026 — 5× PAXG's
+                    # entire market cap, clearly an aggregator glitch).
+                    # Same logic as the Birdeye OHLCV outlier-clip:
+                    # factor × per-token median, with a min-retained
+                    # safety guard so the clip doesn't erase a token
+                    # with naturally-skewed volume distribution.
+                    for vc in vol_cols:
+                        df[vc] = p._clip_outliers(df[vc], factor=25.0,
+                                                  min_retained=0.5)
                     fig = go.Figure()
                     for vc in vol_cols:
                         sym_key = vc[len("vol_"):-len("_cg_usd")]

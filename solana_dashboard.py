@@ -1232,6 +1232,9 @@ def _render_stablecoins() -> None:
                 fig = _go.Figure()
                 # reversed() so largest band draws first → ends up at
                 # the BOTTOM of the stack (Plotly draws first-trace-low).
+                # Plotly's inline legend suppressed; per-series legend
+                # rendered via sd._legend_expander below the chart
+                # (project rule for new charts).
                 for proj in reversed(_psol_ordered):
                     if proj not in df_view.columns:
                         continue
@@ -1260,8 +1263,7 @@ def _render_stablecoins() -> None:
                 fig.update_layout(
                     height=400, hovermode="x unified",
                     margin=dict(t=10, b=10, l=10, r=10),
-                    legend=dict(orientation="h", yanchor="bottom",
-                                y=1.02, xanchor="right", x=1),
+                    showlegend=False,
                     yaxis=dict(tickprefix="$", tickformat="~s",
                                 showgrid=True, rangemode="tozero",
                                 range=[0, y_max * 1.10] if y_max > 0 else None),
@@ -1297,6 +1299,10 @@ def _render_stablecoins() -> None:
                 ),
                 col_aggs={c: "sum" for c in _psol_ordered},
             )
+            sd._legend_expander(
+                [(c, _SOLANA_PROJECT_COLORS.get(c, "#888888"))
+                 for c in _psol_ordered],
+                label="issuers")
 
 
 # ── Foreign L1 tokens vertical — grouped by underlying asset class ────────────

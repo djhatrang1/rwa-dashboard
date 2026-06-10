@@ -6103,6 +6103,60 @@ def _build_combined_stocks_mc_fig(df: pd.DataFrame, labels: list[str],
     return fig
 
 
+# ── Collapsible legend expander (canonical pattern, used by both dashboards) ─
+#
+# RULE for every new chart: do NOT use Plotly's inline legend. Set
+# `showlegend=False` on the figure and render the legend via this
+# helper as a collapsed expander BELOW the chart. The pattern
+# reclaims vertical space (inline legends with 10+ series stretch
+# horizontally and force the plot area to shrink) and gives users
+# a consistent UX: every chart's legend behaves the same way.
+#
+# The helper takes pre-computed (name, color) pairs because callers
+# already build that mapping when assigning trace colors. Don't try
+# to introspect the figure — Plotly stacked-area traces can have
+# colors split between `line.color` and `fillcolor`, and you'd
+# need to special-case every trace type.
+def _legend_expander(entries: list[tuple[str, str]],
+                     label: str = "series",
+                     expanded: bool = False) -> None:
+    """Render a collapsible legend below a chart.
+
+    Args:
+        entries: List of (display_name, hex_color) pairs. Order is
+            preserved — caller decides band-order (typically
+            largest-first to match the chart stack).
+        label: Singular/plural noun shown after the count in the
+            header (e.g. "series" / "tokens" / "chains" / "issuers").
+            The header always reads "Legend (N {label})".
+        expanded: Default False — collapsed so the chart gets full
+            focus. Caller passes True only when there are ≤ 3 series
+            and showing the legend by default costs nothing.
+
+    Layout: 8-column CSS grid of `[swatch] name` cells, auto-wrapping
+    to as many rows as needed. Swatches are 12px squares matching the
+    chart's trace colors exactly.
+    """
+    if not entries:
+        return
+    with st.expander(f"Legend ({len(entries)} {label})",
+                      expanded=expanded):
+        items_html = "".join(
+            f'<div style="display:flex;align-items:center;gap:5px;'
+            f'white-space:nowrap">'
+            f'<span style="display:inline-block;width:12px;height:12px;'
+            f'border-radius:2px;background:{color};flex-shrink:0"></span>'
+            f'<span style="font-size:0.8rem">{name}</span></div>'
+            for name, color in entries
+        )
+        st.markdown(
+            f'<div style="display:grid;'
+            f'grid-template-columns:repeat(8,1fr);'
+            f'gap:6px 16px;padding:4px 0">{items_html}</div>',
+            unsafe_allow_html=True,
+        )
+
+
 # ── Chartwrap / raw-button pinning CSS (used by both dashboards) ─────────────
 def inject_chartwrap_css() -> None:
     """Inject the global CSS that pins any `st-key-raw_*` button to the
@@ -7140,7 +7194,12 @@ if __name__ == "__main__":
                 """Reusable stacked-area builder for both Paymentscan
                 charts. Largest band at the bottom (most readable
                 anchor), smallest at the top — Plotly's stack draws
-                first-trace-first so we reverse the iteration."""
+                first-trace-first so we reverse the iteration.
+
+                Plotly's inline legend is suppressed (showlegend=False
+                on layout); the per-series legend is rendered via
+                _legend_expander below the chart per the project rule
+                for new charts (see _legend_expander docstring)."""
                 fig = go.Figure()
                 for col in reversed(ordered_cols):
                     if col not in pivot_df.columns:
@@ -7170,8 +7229,7 @@ if __name__ == "__main__":
                 fig.update_layout(
                     height=430, hovermode="x unified",
                     margin=dict(t=10, b=10, l=10, r=10),
-                    legend=dict(orientation="h", yanchor="bottom",
-                                y=1.02, xanchor="right", x=1),
+                    showlegend=False,
                     yaxis=dict(tickprefix="$", tickformat="~s",
                                 showgrid=True, rangemode="tozero",
                                 range=[0, y_max * 1.10] if y_max > 0 else None),
@@ -7263,6 +7321,9 @@ if __name__ == "__main__":
                     ),
                     col_aggs={c: "sum" for c in _ch_ordered},
                 )
+                _legend_expander(
+                    [(c, _ch_colors[c]) for c in _ch_ordered],
+                    label="chains")
 
             st.divider()
 
@@ -7315,6 +7376,9 @@ if __name__ == "__main__":
                     ),
                     col_aggs={c: "sum" for c in _pr_ordered},
                 )
+                _legend_expander(
+                    [(c, _pr_colors[c]) for c in _pr_ordered],
+                    label="issuers")
             st.stop()
 
         if selected_asset == "Tokenized commodities":

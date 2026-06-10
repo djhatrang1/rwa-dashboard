@@ -979,8 +979,11 @@ def _render_stablecoins() -> None:
     st.markdown("### Stablecoin Payments — Solana")
 
     # ── Daily volume + transfer count overlay ────────────────────────────
+    # revision bumped v1 → v2 after the user re-edited the Allium query;
+    # invalidates the 4h @st.cache_data so the next page-load fetches
+    # the updated query result instead of returning the stale cached one.
     _spv_df, _spv_err = _allium.fetch_allium_query_results(
-        "mE86r6b8d6RYWwvTfq2p")
+        "mE86r6b8d6RYWwvTfq2p", revision="v2")
     st.subheader("Daily Volume + Transfer Count")
     st.caption(
         "Daily Solana stablecoin payment volume (USD, left axis) and "
@@ -1047,8 +1050,9 @@ def _render_stablecoins() -> None:
 
     st.divider()
     # ── Daily volume by flow category (stacked area) ─────────────────────
+    # revision bumped v1 → v2 — see vol+xfer chart above for rationale.
     _spc_df, _spc_err = _allium.fetch_allium_query_results(
-        "mR8Xtm7pKCv1C0VVvb6E")
+        "mR8Xtm7pKCv1C0VVvb6E", revision="v2")
     st.subheader("Daily Volume by Flow Category")
     st.caption(
         "Daily Solana stablecoin payment volume split into four flow "

@@ -2415,6 +2415,13 @@ def _render_phantom_prediction_section() -> None:
 # of JSON, all cached for 4h via @st.cache_data).
 import blockworks as _blockworks
 
+# The chartwrap-button-pinning CSS lives inside stocks_dashboard.main()
+# which solana_dashboard doesn't invoke — without this call the 📋
+# raw-data button on every D/W/M chart renders as a default Streamlit
+# square button on its own row above the tabs instead of pinning to
+# the tab row's right edge.
+sd.inject_chartwrap_css()
+
 
 # Brand colors for the major Solana perp DEXs — picked from each
 # project's primary brand color where possible, otherwise distinct
@@ -2496,7 +2503,13 @@ def _render_perp_dexs() -> None:
     def _build_perp_stack(wide: _pd.DataFrame, fmt_kind: str = "currency",
                           height: int = 380):
         """Stacked area figure from a date×<DEX> wide df. fmt_kind:
-        'currency' → '$X.YB' y-axis; 'count' → bare numbers."""
+        'currency' → '$X.YB' y-axis; 'count' → bare numbers.
+
+        Plotly's inline legend is hidden — the collapsible HTML legend
+        rendered by `_perp_legend_expander` below each chart shows the
+        swatches without stealing chart real-estate (some asset-class
+        charts have 10+ symbols which would dominate the plot if
+        rendered inline)."""
         ordered = _sort_cols_by_latest(wide)
         fig = _go.Figure()
         totals = wide[ordered].ffill().fillna(0).sum(axis=1) if ordered else _pd.Series()
@@ -2528,8 +2541,7 @@ def _render_perp_dexs() -> None:
         fig.update_layout(
             height=height, hovermode="x unified",
             margin=dict(t=10, b=10, l=10, r=10),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                        xanchor="right", x=1),
+            showlegend=False,  # collapsible HTML legend handles it
             yaxis=dict(
                 tickprefix="$" if fmt_kind == "currency" else "",
                 tickformat="~s",
@@ -2538,6 +2550,35 @@ def _render_perp_dexs() -> None:
             ),
         )
         return fig
+
+    def _perp_legend_expander(wide: _pd.DataFrame) -> None:
+        """Render a collapsible HTML-grid legend below a perp chart.
+        Mirrors the pattern from render_market_cap_chain's large-N
+        chart legend (Solana-tab volume chart, xStocks/Ondo per-token
+        MC). Color = _PERP_DEX_COLORS lookup; falls back to grey for
+        anything outside the known DEX set (per-symbol breakdowns
+        like __BTC / __ETH that don't have brand colors)."""
+        ordered = _sort_cols_by_latest(wide)
+        if not ordered:
+            return
+        with st.expander(f"Legend ({len(ordered)} series)",
+                         expanded=False):
+            items_html = "".join(
+                f'<div style="display:flex;align-items:center;gap:5px;'
+                f'white-space:nowrap">'
+                f'<span style="display:inline-block;width:12px;height:12px;'
+                f'border-radius:2px;background:'
+                f'{_PERP_DEX_COLORS.get(col, "#888888")};'
+                f'flex-shrink:0"></span>'
+                f'<span style="font-size:0.8rem">{col}</span></div>'
+                for col in ordered
+            )
+            st.markdown(
+                f'<div style="display:grid;'
+                f'grid-template-columns:repeat(8,1fr);'
+                f'gap:6px 16px;padding:4px 0">{items_html}</div>',
+                unsafe_allow_html=True,
+            )
 
     # ── Headline metrics (24h, from snapshot queries) ─────────────────────
     snap = data.get(4600)
@@ -2585,6 +2626,7 @@ def _render_perp_dexs() -> None:
             ),
             col_aggs={c: "sum" for c in _ordered},
         )
+        _perp_legend_expander(vol_wide)
 
     st.divider()
     # ── Open Interest by DEX ──────────────────────────────────────────────
@@ -2606,6 +2648,7 @@ def _render_perp_dexs() -> None:
             ),
             col_aggs={c: "last" for c in _ord_oi},
         )
+        _perp_legend_expander(oi_wide)
 
     st.divider()
     # ── Fees + Revenue ─────────────────────────────────────────────────────
@@ -2632,6 +2675,7 @@ def _render_perp_dexs() -> None:
                     caption="Daily protocol fees paid per DEX.",
                     col_aggs={c: "sum" for c in _ord_f},
                 )
+                _perp_legend_expander(fees_wide)
         with col_rev:
             rev_wide = _pivot_metric(fees, "rev_usd_totals",
                                      dim_filter=lambda s: (
@@ -2656,6 +2700,7 @@ def _render_perp_dexs() -> None:
                     ),
                     col_aggs={c: "sum" for c in _ord_r},
                 )
+                _perp_legend_expander(rev_wide)
 
     st.divider()
     # ── Number of markets per DEX ─────────────────────────────────────────
@@ -2680,6 +2725,7 @@ def _render_perp_dexs() -> None:
                 col_aggs={c: "last" for c in _ord_m},
                 fmt_mode="count",
             )
+            _perp_legend_expander(mk_wide)
 
     # ── Asset-class breakdowns ────────────────────────────────────────────
     st.divider()
@@ -2726,6 +2772,7 @@ def _render_perp_dexs() -> None:
                     raw_filename=f"solana_perp_{title.lower().replace(' ','_')}",
                     col_aggs={c: "sum" for c in _ord_a},
                 )
+                _perp_legend_expander(wide)
 
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────

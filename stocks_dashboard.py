@@ -6069,6 +6069,41 @@ def _build_combined_stocks_mc_fig(df: pd.DataFrame, labels: list[str],
     return fig
 
 
+# ── Chartwrap / raw-button pinning CSS (used by both dashboards) ─────────────
+def inject_chartwrap_css() -> None:
+    """Inject the global CSS that pins any `st-key-raw_*` button to the
+    top-right of its `st-key-chartwrap_*` ancestor container. Both
+    dashboards (RWA + Solana) need this for the D/W/M tab-row 📋
+    button placement to work. Idempotent — Streamlit dedupes identical
+    st.markdown calls within a session."""
+    st.markdown(
+        """
+        <style>
+        /* Raw-data icons — pinned to each chart's tab row, far right, borderless */
+        .st-key-combined_chart,
+        [class*="st-key-chartwrap_"] { position: relative; }
+        [class*="st-key-raw_"] {
+            position: absolute; top: 8px; right: 0; z-index: 5;
+            width: auto !important; min-height: 0 !important;
+            margin: 0 !important; padding: 0 !important;
+        }
+        [class*="st-key-raw_"] button {
+            background: transparent !important; border: none !important;
+            box-shadow: none !important;
+            color: rgba(255,255,255,0.65) !important;
+            min-height: 0 !important; height: auto !important;
+            padding: 2px 4px !important; font-size: 18px; line-height: 1;
+        }
+        [class*="st-key-raw_"] button:hover {
+            color: rgba(255,255,255,0.95) !important;
+            background: transparent !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 # ── D/W/M tab frame + raw-data button pinned to tab row ──────────────────────
 from contextlib import contextmanager
 

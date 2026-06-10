@@ -4101,6 +4101,26 @@ _TOKENIZED_STOCK_GROUPS: list[tuple[str, str, list]] = [
         ],
     ),
     (
+        # Superstate Opening Bell — the company tokenization product
+        # from Superstate (the same team behind USTB tokenized
+        # treasuries). Opening Bell lets issuers mint cap-table-backed
+        # equity tokens. Started shipping mid-2025 with a handful of
+        # mid-cap names — currently Forward Industries (FORD) +
+        # Galaxy Digital (GLXY) on Solana, SharpLink Gaming (SBET)
+        # on Ethereum. Add new tickers here as Superstate onboards
+        # more issuers.
+        "superstate_opening_bell_group",
+        "Superstate Opening Bell",
+        [
+            ("FORD", "7GzQgf6DPo6ZANjnbhe9tNCpkGTv3zqHbsDx74jyQf9",
+             "Solana"),
+            ("GLXY", "2HehXG149TXuVptQhbiWAWDjbbuCsXSAtLTB5wc2aajK",
+             "Solana"),
+            ("SBET", "0x139c3d0d52c58fd1ea10b44981aaf21976f7ff51",
+             "Ethereum"),
+        ],
+    ),
+    (
         # Tagged "_FULL" so the post-registry splitter below picks it up
         # and replaces it with ondo_group_sol + ondo_group_evm. Done to
         # halve per-puller runtime — Ondo's 791-token (263 Solana + 264
@@ -6324,7 +6344,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v58-gold-multichain-expansion"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v59-superstate-opening-bell"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────

@@ -6816,14 +6816,18 @@ if __name__ == "__main__":
             col_chain, col_purpose = st.columns(2, gap="medium")
             with col_chain:
                 st.subheader("Volume by Chain (lifetime)")
+                st.caption(
+                    "Lifetime stablecoin-payment volume per chain. "
+                    "Source: Allium query "
+                    "[`aI29yTr8Zg1zkB2wCQo3`]"
+                    "(https://app.allium.so/analyze/queries/aI29yTr8Zg1zkB2wCQo3)."
+                )
                 if _chain_df.empty:
                     st.info(f"No data. Reason: `{_chain_err or 'empty'}`")
                 else:
                     # Horizontal bar — chains on y axis, volume on x.
                     # Sort largest at top (which is what the user reads
-                    # first visually in a horizontal bar). 'reversed'
-                    # at add_trace time is unnecessary since horizontal
-                    # bars auto-position rows by y value.
+                    # first visually in a horizontal bar).
                     _cdf = (_chain_df.copy()
                                      .sort_values("total_volume_usd",
                                                   ascending=True))
@@ -6841,15 +6845,15 @@ if __name__ == "__main__":
                                    showgrid=True),
                     )
                     st.plotly_chart(fig_chain, use_container_width=True)
-                    st.caption(
-                        "Lifetime stablecoin-payment volume per chain. "
-                        "Source: Allium query "
-                        "[`aI29yTr8Zg1zkB2wCQo3`]"
-                        "(https://app.allium.so/analyze/queries/aI29yTr8Zg1zkB2wCQo3)."
-                    )
 
             with col_purpose:
                 st.subheader("Volume by Payment Purpose (lifetime)")
+                st.caption(
+                    "Lifetime volume per payment purpose, colored by "
+                    "core category. Source: Allium query "
+                    "[`20l1DojZlHau8MGYSHAJ`]"
+                    "(https://app.allium.so/analyze/queries/20l1DojZlHau8MGYSHAJ)."
+                )
                 if _purpose_df.empty:
                     st.info(f"No data. Reason: `{_purp_err or 'empty'}`")
                 else:
@@ -6895,12 +6899,6 @@ if __name__ == "__main__":
                                    showgrid=True),
                     )
                     st.plotly_chart(fig_purp, use_container_width=True)
-                    st.caption(
-                        "Lifetime volume per payment purpose, colored by "
-                        "core category. Source: Allium query "
-                        "[`20l1DojZlHau8MGYSHAJ`]"
-                        "(https://app.allium.so/analyze/queries/20l1DojZlHau8MGYSHAJ)."
-                    )
 
             st.divider()
 
@@ -6921,6 +6919,12 @@ if __name__ == "__main__":
                 col_m_l, col_m_r = st.columns(2, gap="medium")
                 with col_m_l:
                     st.subheader("Daily Charges vs Refunds")
+                    st.caption(
+                        "Daily on-chain charge + refund volume across "
+                        "tracked merchants. Source: Allium query "
+                        "[`7ZYoOqdKtJMgLJQ7vlCt`]"
+                        "(https://app.allium.so/analyze/queries/7ZYoOqdKtJMgLJQ7vlCt)."
+                    )
                     fig_cr = go.Figure()
                     fig_cr.add_trace(go.Scatter(
                         x=_merch_df["date"],
@@ -6947,12 +6951,13 @@ if __name__ == "__main__":
                                    showgrid=True, rangemode="tozero"),
                     )
                     st.plotly_chart(fig_cr, use_container_width=True)
-                    st.caption(
-                        "Daily on-chain charge + refund volume across "
-                        "tracked merchants."
-                    )
                 with col_m_r:
                     st.subheader("Daily Active Merchants & Unique Buyers")
+                    st.caption(
+                        "Daily unique-merchant + unique-buyer counts. "
+                        "Source: Allium query [`7ZYoOqdKtJMgLJQ7vlCt`]"
+                        "(https://app.allium.so/analyze/queries/7ZYoOqdKtJMgLJQ7vlCt)."
+                    )
                     fig_mb = go.Figure()
                     fig_mb.add_trace(go.Scatter(
                         x=_merch_df["date"],
@@ -6981,11 +6986,6 @@ if __name__ == "__main__":
                                    rangemode="tozero"),
                     )
                     st.plotly_chart(fig_mb, use_container_width=True)
-                    st.caption(
-                        "Daily unique-merchant + unique-buyer counts. "
-                        "Source: Allium query [`7ZYoOqdKtJMgLJQ7vlCt`]"
-                        "(https://app.allium.so/analyze/queries/7ZYoOqdKtJMgLJQ7vlCt)."
-                    )
 
             st.divider()
 
@@ -6993,6 +6993,14 @@ if __name__ == "__main__":
             _tok_df, _t_err = _allium.fetch_allium_query_results(
                 "wl47VlqVenBZ4dnFdY14")
             st.subheader("Top Tokens by Transfer Count")
+            st.caption(
+                "Top 10 stablecoins by transfer count (lifetime). "
+                "Ranked by count rather than USD volume because "
+                "non-USD-pegged stables (XOF / COP / etc.) have "
+                "no USD-converted volume in the source data. "
+                "Source: Allium query [`wl47VlqVenBZ4dnFdY14`]"
+                "(https://app.allium.so/analyze/queries/wl47VlqVenBZ4dnFdY14)."
+            )
             if _tok_df.empty:
                 st.info(f"No data. Reason: `{_t_err or 'empty'}`")
             else:
@@ -7029,14 +7037,6 @@ if __name__ == "__main__":
                     xaxis=dict(tickformat="~s", showgrid=True),
                 )
                 st.plotly_chart(fig_tok, use_container_width=True)
-                st.caption(
-                    "Top 10 stablecoins by transfer count (lifetime). "
-                    "Ranked by count rather than USD volume because "
-                    "non-USD-pegged stables (XOF / COP / etc.) have "
-                    "no USD-converted volume in the source data. "
-                    "Source: Allium query [`wl47VlqVenBZ4dnFdY14`]"
-                    "(https://app.allium.so/analyze/queries/wl47VlqVenBZ4dnFdY14)."
-                )
             st.stop()
 
         if selected_asset == "Tokenized commodities":

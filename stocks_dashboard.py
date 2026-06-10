@@ -6662,16 +6662,37 @@ if __name__ == "__main__":
     # now each shows a placeholder so the navigation is clickable.
     if selected_asset:
         if selected_asset == "Stablecoin payments":
-            # ── Allium-sourced stablecoin payment flows by category ───────
-            # Query wMIF6Iy6nuhbTyu2wXKm: daily USD volume split into
-            # five flow categories (C2B retail / C2C P2P / B2B / B2C
-            # payouts / Institutional). 84 days of history at time of
-            # wiring, ~3 months — extends automatically as Allium's
-            # backing tables grow. Source dashboard:
+            # ── Allium-sourced stablecoin payments view ───────────────────
+            # Source dashboard:
             # https://app.allium.so/analyze/dashboards/vyVDjb3pD1ogjEuMrIIL
+            # Six queries wired in:
+            #   wMIF6Iy6nuhbTyu2wXKm — daily volume by category (stacked)
+            #   j66r0kNbBApvAndbgesE — 30-day headline metric snapshot
+            #   aI29yTr8Zg1zkB2wCQo3 — volume by chain (bar)
+            #   20l1DojZlHau8MGYSHAJ — volume by payment purpose (bar)
+            #   7ZYoOqdKtJMgLJQ7vlCt — daily merchant activity (91d)
+            #   wl47VlqVenBZ4dnFdY14 — top tokens by transfers (bar)
             import allium as _allium
-            _STABLE_PAYMENTS_QID = "wMIF6Iy6nuhbTyu2wXKm"
 
+            # ── 30-day headline metrics (top of section) ────────────────
+            _hdr_df, _hdr_err = _allium.fetch_allium_query_results(
+                "j66r0kNbBApvAndbgesE")
+            if not _hdr_df.empty:
+                _h = _hdr_df.iloc[0]
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("30d Payments",
+                          f"{int(_h.get('total_payments_30d') or 0):,}")
+                m2.metric("30d Volume",
+                          _fmt_usd(float(_h.get('total_volume_30d') or 0)))
+                m3.metric("Avg Payment",
+                          _fmt_usd(float(_h.get('avg_payment_size') or 0)))
+                m4.metric("Unique Senders",
+                          f"{int(_h.get('unique_senders') or 0):,}")
+                m5.metric("Unique Recipients",
+                          f"{int(_h.get('unique_recipients') or 0):,}")
+                st.divider()
+
+            _STABLE_PAYMENTS_QID = "wMIF6Iy6nuhbTyu2wXKm"
             _sp_df, _sp_err = _allium.fetch_allium_query_results(
                 _STABLE_PAYMENTS_QID)
             if _sp_df.empty:
@@ -6784,6 +6805,238 @@ if __name__ == "__main__":
                 ),
                 col_aggs={c: "sum" for c in _SP_LABELS},
             )
+            st.divider()
+
+            # ── Volume by Chain | Volume by Purpose (2-col row) ───────
+            _chain_df, _chain_err = _allium.fetch_allium_query_results(
+                "aI29yTr8Zg1zkB2wCQo3")
+            _purpose_df, _purp_err = _allium.fetch_allium_query_results(
+                "20l1DojZlHau8MGYSHAJ")
+
+            col_chain, col_purpose = st.columns(2, gap="medium")
+            with col_chain:
+                st.subheader("Volume by Chain (lifetime)")
+                if _chain_df.empty:
+                    st.info(f"No data. Reason: `{_chain_err or 'empty'}`")
+                else:
+                    # Horizontal bar — chains on y axis, volume on x.
+                    # Sort largest at top (which is what the user reads
+                    # first visually in a horizontal bar). 'reversed'
+                    # at add_trace time is unnecessary since horizontal
+                    # bars auto-position rows by y value.
+                    _cdf = (_chain_df.copy()
+                                     .sort_values("total_volume_usd",
+                                                  ascending=True))
+                    fig_chain = go.Figure()
+                    fig_chain.add_trace(go.Bar(
+                        y=_cdf["chain"], x=_cdf["total_volume_usd"],
+                        orientation="h", marker_color="#4285F4",
+                        customdata=_cdf["total_volume_usd"].map(_fmt_usd),
+                        hovertemplate="%{y}: %{customdata}<extra></extra>",
+                    ))
+                    fig_chain.update_layout(
+                        height=380, hovermode="y unified", showlegend=False,
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        xaxis=dict(tickprefix="$", tickformat="~s",
+                                   showgrid=True),
+                    )
+                    st.plotly_chart(fig_chain, use_container_width=True)
+                    st.caption(
+                        "Lifetime stablecoin-payment volume per chain. "
+                        "Source: Allium query "
+                        "[`aI29yTr8Zg1zkB2wCQo3`]"
+                        "(https://app.allium.so/analyze/queries/aI29yTr8Zg1zkB2wCQo3)."
+                    )
+
+            with col_purpose:
+                st.subheader("Volume by Payment Purpose (lifetime)")
+                if _purpose_df.empty:
+                    st.info(f"No data. Reason: `{_purp_err or 'empty'}`")
+                else:
+                    _pdf = (_purpose_df.copy()
+                                       .sort_values("total_volume_usd",
+                                                    ascending=True))
+                    fig_purp = go.Figure()
+                    # Color bars by core_payment_category so the user can
+                    # see groupings at a glance (e.g. all C2C entries
+                    # share a color).
+                    _cat_colors = {
+                        "C2B Payment":               "#4285F4",
+                        "C2C Payment":               "#10B981",
+                        "B2B Payment":               "#F97316",
+                        "B2C Payment":               "#A78BFA",
+                        "Deposit to Institutional":  "#EF4444",
+                        "Withdrawal from Institutional": "#EC4899",
+                        "Other":                     "#888888",
+                    }
+                    bar_colors = [
+                        _cat_colors.get(c, "#888888")
+                        for c in _pdf.get("core_payment_category", _pdf.get("payment_purpose"))
+                    ]
+                    fig_purp.add_trace(go.Bar(
+                        y=_pdf["payment_purpose"],
+                        x=_pdf["total_volume_usd"],
+                        orientation="h",
+                        marker_color=bar_colors,
+                        customdata=_pdf.assign(
+                            fmt_vol=_pdf["total_volume_usd"].map(_fmt_usd),
+                            fmt_cnt=_pdf["payment_count"].map(lambda v: f"{int(v):,}"),
+                        )[["fmt_vol", "fmt_cnt", "core_payment_category"]].values,
+                        hovertemplate=(
+                            "%{y}<br>Volume: %{customdata[0]}"
+                            "<br>Count: %{customdata[1]}"
+                            "<br>Category: %{customdata[2]}<extra></extra>"
+                        ),
+                    ))
+                    fig_purp.update_layout(
+                        height=380, hovermode="y unified", showlegend=False,
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        xaxis=dict(tickprefix="$", tickformat="~s",
+                                   showgrid=True),
+                    )
+                    st.plotly_chart(fig_purp, use_container_width=True)
+                    st.caption(
+                        "Lifetime volume per payment purpose, colored by "
+                        "core category. Source: Allium query "
+                        "[`20l1DojZlHau8MGYSHAJ`]"
+                        "(https://app.allium.so/analyze/queries/20l1DojZlHau8MGYSHAJ)."
+                    )
+
+            st.divider()
+
+            # ── Daily Merchant Activity (charges/refunds + accts) ────
+            _merch_df, _m_err = _allium.fetch_allium_query_results(
+                "7ZYoOqdKtJMgLJQ7vlCt")
+            if _merch_df.empty:
+                st.info(
+                    f"Merchant activity query returned no data. "
+                    f"Reason: `{_m_err or 'empty'}`")
+            else:
+                _merch_df = _merch_df.copy()
+                _merch_df["date"] = pd.to_datetime(_merch_df["date"],
+                                                   errors="coerce")
+                _merch_df = (_merch_df.sort_values("date")
+                                       .reset_index(drop=True))
+
+                col_m_l, col_m_r = st.columns(2, gap="medium")
+                with col_m_l:
+                    st.subheader("Daily Charges vs Refunds")
+                    fig_cr = go.Figure()
+                    fig_cr.add_trace(go.Scatter(
+                        x=_merch_df["date"],
+                        y=_merch_df["charge_volume_usd"],
+                        name="Charges",
+                        mode="lines", line=dict(color="#10B981", width=1.5),
+                        customdata=_merch_df["charge_volume_usd"].map(_fmt_usd),
+                        hovertemplate="Charges: %{customdata}<extra></extra>",
+                    ))
+                    fig_cr.add_trace(go.Scatter(
+                        x=_merch_df["date"],
+                        y=_merch_df["refund_volume_usd"].fillna(0),
+                        name="Refunds",
+                        mode="lines", line=dict(color="#EF4444", width=1.5),
+                        customdata=_merch_df["refund_volume_usd"].fillna(0).map(_fmt_usd),
+                        hovertemplate="Refunds: %{customdata}<extra></extra>",
+                    ))
+                    fig_cr.update_layout(
+                        height=360, hovermode="x unified",
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        legend=dict(orientation="h", yanchor="top",
+                                    y=-0.18, xanchor="center", x=0.5),
+                        yaxis=dict(tickprefix="$", tickformat="~s",
+                                   showgrid=True, rangemode="tozero"),
+                    )
+                    st.plotly_chart(fig_cr, use_container_width=True)
+                    st.caption(
+                        "Daily on-chain charge + refund volume across "
+                        "tracked merchants."
+                    )
+                with col_m_r:
+                    st.subheader("Daily Active Merchants & Unique Buyers")
+                    fig_mb = go.Figure()
+                    fig_mb.add_trace(go.Scatter(
+                        x=_merch_df["date"],
+                        y=_merch_df["active_merchants"],
+                        name="Active Merchants",
+                        mode="lines", line=dict(color="#F97316", width=1.5),
+                        customdata=_merch_df["active_merchants"].map(
+                            lambda v: f"{int(v or 0):,}"),
+                        hovertemplate="Merchants: %{customdata}<extra></extra>",
+                    ))
+                    fig_mb.add_trace(go.Scatter(
+                        x=_merch_df["date"],
+                        y=_merch_df["unique_buyers"],
+                        name="Unique Buyers",
+                        mode="lines", line=dict(color="#A78BFA", width=1.5),
+                        customdata=_merch_df["unique_buyers"].map(
+                            lambda v: f"{int(v or 0):,}"),
+                        hovertemplate="Buyers: %{customdata}<extra></extra>",
+                    ))
+                    fig_mb.update_layout(
+                        height=360, hovermode="x unified",
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        legend=dict(orientation="h", yanchor="top",
+                                    y=-0.18, xanchor="center", x=0.5),
+                        yaxis=dict(tickformat=",", showgrid=True,
+                                   rangemode="tozero"),
+                    )
+                    st.plotly_chart(fig_mb, use_container_width=True)
+                    st.caption(
+                        "Daily unique-merchant + unique-buyer counts. "
+                        "Source: Allium query [`7ZYoOqdKtJMgLJQ7vlCt`]"
+                        "(https://app.allium.so/analyze/queries/7ZYoOqdKtJMgLJQ7vlCt)."
+                    )
+
+            st.divider()
+
+            # ── Top tokens by transfer count ─────────────────────────
+            _tok_df, _t_err = _allium.fetch_allium_query_results(
+                "wl47VlqVenBZ4dnFdY14")
+            st.subheader("Top Tokens by Transfer Count")
+            if _tok_df.empty:
+                st.info(f"No data. Reason: `{_t_err or 'empty'}`")
+            else:
+                # Sort by transfer count desc — `total_volume_usd` is
+                # NaN for non-USD stablecoins (XOF / COP / EUR-pegged
+                # / etc.) so ranking by volume drops them entirely;
+                # transfer count is the most faithful "popularity"
+                # metric across all currencies.
+                _tdf = (_tok_df.copy()
+                              .sort_values("total_transfers",
+                                           ascending=True))
+                _label = (_tdf["token_symbol"].fillna(_tdf["token_name"])
+                                              .astype(str))
+                fig_tok = go.Figure()
+                fig_tok.add_trace(go.Bar(
+                    y=_label, x=_tdf["total_transfers"],
+                    orientation="h", marker_color="#10B981",
+                    customdata=_tdf.assign(
+                        fmt_xfer=_tdf["total_transfers"].map(
+                            lambda v: f"{int(v):,}"),
+                        fmt_vol=_tdf["total_volume_usd"].map(
+                            lambda v: _fmt_usd(v) if pd.notna(v) else "—"),
+                        currency=_tdf["currency"],
+                    )[["fmt_xfer", "fmt_vol", "currency"]].values,
+                    hovertemplate=(
+                        "%{y} (%{customdata[2]})<br>"
+                        "Transfers: %{customdata[0]}<br>"
+                        "Volume USD: %{customdata[1]}<extra></extra>"
+                    ),
+                ))
+                fig_tok.update_layout(
+                    height=380, hovermode="y unified", showlegend=False,
+                    margin=dict(t=10, b=10, l=10, r=10),
+                    xaxis=dict(tickformat="~s", showgrid=True),
+                )
+                st.plotly_chart(fig_tok, use_container_width=True)
+                st.caption(
+                    "Top 10 stablecoins by transfer count (lifetime). "
+                    "Ranked by count rather than USD volume because "
+                    "non-USD-pegged stables (XOF / COP / etc.) have "
+                    "no USD-converted volume in the source data. "
+                    "Source: Allium query [`wl47VlqVenBZ4dnFdY14`]"
+                    "(https://app.allium.so/analyze/queries/wl47VlqVenBZ4dnFdY14)."
+                )
             st.stop()
 
         if selected_asset == "Tokenized commodities":

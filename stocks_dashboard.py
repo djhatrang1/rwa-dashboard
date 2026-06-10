@@ -3479,19 +3479,28 @@ class TokenGroupMetricsPuller(DataPuller):
                                   % len(self._COLORS)])
                     for i, tn in enumerate(token_names_all)
                 ]
-            _legend(_legend_entries, label="tokens")
+            # "Others includes" breakdown — passed INSIDE the legend
+            # toggle via extra_html so it auto-shows when the user
+            # opens the expander, and stays hidden when collapsed.
+            # Previously rendered as a separate st.caption() below
+            # the expander, which orphaned the text (visible even
+            # when the swatches it references were collapsed away).
+            # Capped at 100 names visually to avoid a wall of text
+            # for Ondo's 250+ outside-top-10 tokens; the rest are
+            # reachable via the 📋 raw-data download.
+            _others_html: str | None = None
             if _cg_mode and _cg_others_tokens:
-                # List the tokens bucketed into "Others" so the grey
-                # band is actually inspectable. Capped at 100 names
-                # to avoid a wall of text for Ondo's 250+ outside-
-                # top-10 tokens; the rest are reachable via the 📋
-                # raw-data download.
                 _shown = _cg_others_tokens[:100]
                 _trailer = ("…" if len(_cg_others_tokens) > 100 else "")
-                st.caption(
-                    f"**Others includes ({len(_cg_others_tokens)}):** "
+                _others_html = (
+                    f'<div style="font-size:0.75rem;color:rgba(250,250,250,0.6);'
+                    f'padding-top:8px;line-height:1.5">'
+                    f'<b>Others includes ({len(_cg_others_tokens)}):</b> '
                     + ", ".join(_shown) + _trailer
+                    + '</div>'
                 )
+            _legend(_legend_entries, label="tokens",
+                    extra_html=_others_html)
 
     @staticmethod
     def _clip_isolated_spikes(series: pd.Series, factor: float = 2.0) -> pd.Series:
@@ -6100,7 +6109,8 @@ def _build_combined_stocks_mc_fig(df: pd.DataFrame, labels: list[str],
 # colors split between `line.color` and `fillcolor`, and you'd need
 # to special-case every trace type.
 def _legend(entries: list[tuple[str, str]],
-            label: str = "series") -> None:
+            label: str = "series",
+            extra_html: str | None = None) -> None:
     """Render a chart legend below the chart, auto-dispatching on
     series count (see module-level docstring above for the rule).
 
@@ -6111,6 +6121,13 @@ def _legend(entries: list[tuple[str, str]],
         label: Singular/plural noun shown after the count in the
             expander header (e.g. "series" / "tokens" / "chains" /
             "issuers"). Only used when count > 5; ignored otherwise.
+        extra_html: Optional supplementary HTML block rendered BELOW
+            the swatch grid, INSIDE the same container (the
+            expander body for the 6+ tier, or directly under the
+            inline row for the 2–5 tier). Used by render_market_cap
+            to nest the "Others includes (N): TOK1, TOK2, ..." breakdown
+            inside the legend toggle instead of orphaning it as a
+            separate `st.caption` below the expander.
     """
     n = len(entries) if entries else 0
     if n <= 1:
@@ -6122,10 +6139,14 @@ def _legend(entries: list[tuple[str, str]],
         # expander wrapper. Same swatch HTML as the expander body for
         # visual consistency across tiers.
         _legend_render_grid(entries)
+        if extra_html:
+            st.markdown(extra_html, unsafe_allow_html=True)
         return
     # 6+ series → collapsed expander, same swatch grid inside.
     with st.expander(f"Legend ({n} {label})", expanded=False):
         _legend_render_grid(entries)
+        if extra_html:
+            st.markdown(extra_html, unsafe_allow_html=True)
 
 
 def _legend_entries_from_fig(
@@ -6187,9 +6208,17 @@ def _legend_entries_from_fig(
 
 
 def _legend_render_grid(entries: list[tuple[str, str]]) -> None:
-    """Inner — renders the 8-column CSS grid of [swatch] [name] cells.
+    """Inner — renders [swatch] [name] cells as a centered flex row.
     Shared between the inline tier (2–5) and the expander tier (6+)
-    so both rendering paths look identical."""
+    so both rendering paths look identical.
+
+    Layout: `display:flex` + `justify-content:center` so the swatches
+    center horizontally. `flex-wrap:wrap` rolls onto a new (also-
+    centered) row when there are more items than fit on one line —
+    behaves like the old 8-column grid for long legends but doesn't
+    left-anchor against an empty 7th/8th cell when there are fewer
+    items (which was the bug the user flagged: a 3-item legend
+    rendered glued to the chart's left edge)."""
     items_html = "".join(
         f'<div style="display:flex;align-items:center;gap:5px;'
         f'white-space:nowrap">'
@@ -6199,9 +6228,9 @@ def _legend_render_grid(entries: list[tuple[str, str]]) -> None:
         for name, color in entries
     )
     st.markdown(
-        f'<div style="display:grid;'
-        f'grid-template-columns:repeat(8,1fr);'
-        f'gap:6px 16px;padding:4px 0">{items_html}</div>',
+        f'<div style="display:flex;flex-wrap:wrap;'
+        f'justify-content:center;align-items:center;'
+        f'gap:6px 20px;padding:4px 0">{items_html}</div>',
         unsafe_allow_html=True,
     )
 

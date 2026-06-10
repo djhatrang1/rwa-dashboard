@@ -1724,21 +1724,17 @@ def _render_all_chain_stablecoins() -> None:
 
 
 def _apply_time_controls(fig: go.Figure) -> go.Figure:
-    """Attach a date rangeslider + quick-range buttons (1M/3M/6M/YTD/1Y/All)
-    to a time-series Plotly figure so viewers can scope the visible window
-    without us baking a fixed range into the layout.
+    """Attach a date rangeslider to a time-series Plotly figure so
+    viewers can scope the visible window via drag-handles.
 
-    Applied via a tiny wrapper around every _chart() call in this
-    module — keeps every chart consistent without each builder having to
-    reimplement the same control config. Idempotent: re-calling on an
-    already-decorated fig just overwrites with the same dict.
+    Previously also attached quick-range buttons (1M/3M/6M/YTD/1Y/All)
+    at y=1.12 above the plot, but the user removed them — the slider
+    beneath every chart already provides range control, and the
+    button strip added ~30px of fixed top margin to every chart for
+    a feature the slider made redundant.
 
-    Style notes:
-      • thickness=0.05 keeps the slider strip slim (~5% of chart height)
-        so it doesn't eat into the data area on the small 300px charts.
-      • Buttons sit above the plot area (y=1.12) with a dark translucent
-        background that reads on both light and dark themes.
-      • activecolor matches the Birdeye Peak orange used elsewhere.
+    Idempotent: re-calling on an already-decorated fig just
+    overwrites with the same dict.
     """
     fig.update_xaxes(
         type="date",
@@ -1754,20 +1750,10 @@ def _apply_time_controls(fig: go.Figure) -> go.Figure:
             # instead of the full-saturation colors of the main chart.
             bgcolor="rgba(30,30,30,0.6)",
         ),
-        rangeselector=dict(
-            buttons=[
-                dict(count=1,  label="1M",  step="month", stepmode="backward"),
-                dict(count=3,  label="3M",  step="month", stepmode="backward"),
-                dict(count=6,  label="6M",  step="month", stepmode="backward"),
-                dict(count=1,  label="YTD", step="year",  stepmode="todate"),
-                dict(count=1,  label="1Y",  step="year",  stepmode="backward"),
-                dict(step="all", label="All"),
-            ],
-            bgcolor="rgba(40,40,40,0.7)",
-            activecolor="#FFA500",
-            font=dict(color="white", size=11),
-            x=0, y=1.12, xanchor="left", yanchor="top",
-        ),
+        # Explicitly clear the rangeselector in case a builder
+        # function set one on the fig before _apply_time_controls ran
+        # (otherwise Plotly silently keeps the prior config).
+        rangeselector=dict(visible=False, buttons=[]),
     )
     return fig
 
@@ -1881,6 +1867,7 @@ def _chart(fig: go.Figure, fmt_mode: str = "currency",
            raw_key: str | None = None,
            raw_fmt: dict | None = None,
            raw_filename: str | None = None,
+           skip_yaxis_format: bool = False,
            **kwargs) -> None:
     """Render a time-series Plotly fig with the standard time controls
     (rangeslider + 1M/3M/6M/YTD/1Y/All buttons) and B/M/K-formatted y-axis
@@ -1915,14 +1902,12 @@ def _chart(fig: go.Figure, fmt_mode: str = "currency",
                          help="View raw data"):
                 _raw_data_modal(raw_df, raw_fmt, raw_filename or raw_key)
         return st.plotly_chart(
-            _apply_b_format_to_yaxes(_apply_time_controls(fig),
-                                     fmt_mode=fmt_mode),
+            _format_for_chart(fig, fmt_mode, skip_yaxis_format),
             **kwargs)
     if chart_title:
         st.markdown(f"**{chart_title}**")
         return st.plotly_chart(
-            _apply_b_format_to_yaxes(_apply_time_controls(fig),
-                                     fmt_mode=fmt_mode),
+            _format_for_chart(fig, fmt_mode, skip_yaxis_format),
             **kwargs)
     if raw_df is not None and raw_key is not None:
         # No chart_title path: render chart FIRST, then the 📋 button
@@ -1940,8 +1925,7 @@ def _chart(fig: go.Figure, fmt_mode: str = "currency",
         # works identically in any column width and adds no new
         # CSS-vs-Streamlit-internals coupling.
         chart_result = st.plotly_chart(
-            _apply_b_format_to_yaxes(_apply_time_controls(fig),
-                                     fmt_mode=fmt_mode),
+            _format_for_chart(fig, fmt_mode, skip_yaxis_format),
             **kwargs)
         # Shrink + right-align the button on a normal row.
         st.markdown("""
@@ -1965,8 +1949,20 @@ def _chart(fig: go.Figure, fmt_mode: str = "currency",
         st.markdown('</div>', unsafe_allow_html=True)
         return chart_result
     return st.plotly_chart(
-        _apply_b_format_to_yaxes(_apply_time_controls(fig), fmt_mode=fmt_mode),
-        **kwargs)
+        _format_for_chart(fig, fmt_mode, skip_yaxis_format), **kwargs)
+
+
+def _format_for_chart(fig: go.Figure, fmt_mode: str,
+                       skip_yaxis_format: bool) -> go.Figure:
+    """Apply the standard time controls + (optionally) the y-axis
+    B/M/K reformatter. Skipping the y-axis pass is how dual-axis
+    charts with mixed prefixes (e.g. '$' on yaxis, bare counts on
+    yaxis2) avoid the helper overwriting every axis's tickvals with
+    one fmt_mode."""
+    fig = _apply_time_controls(fig)
+    if not skip_yaxis_format:
+        fig = _apply_b_format_to_yaxes(fig, fmt_mode=fmt_mode)
+    return fig
 
 
 def _fmt_usd(v) -> str:
@@ -6205,11 +6201,16 @@ def _chart_dwm_simple(title: str, source_df: pd.DataFrame,
                       raw_filename: str | None = None,
                       caption: str | None = None,
                       col_aggs: dict | None = None,
-                      fmt_mode: str = "currency") -> None:
+                      fmt_mode: str = "currency",
+                      skip_yaxis_format: bool = False) -> None:
     """One-shot wrapper around _chart_dwm_frame for the common pattern of
     one source DataFrame + one build_fig closure that handles Daily,
     Weekly, and Monthly. Calls build_fig(df_view) three times — once for
     daily, twice for the resampled weekly/monthly views.
+
+    `skip_yaxis_format` is forwarded to _chart so dual-axis charts
+    (left $ + right count) can preserve their per-axis tickprefix
+    instead of having every axis re-formatted with one fmt_mode.
 
     Saves callers the with-block dance for charts that don't need
     per-tab specialization.
@@ -6219,15 +6220,18 @@ def _chart_dwm_simple(title: str, source_df: pd.DataFrame,
                           caption=caption) as (tab_d, tab_w, tab_m):
         with tab_d:
             _chart(build_fig(source_df), use_container_width=True,
-                   fmt_mode=fmt_mode)
+                   fmt_mode=fmt_mode,
+                   skip_yaxis_format=skip_yaxis_format)
         with tab_w:
             _chart(build_fig(_resample_dwm(source_df, "W",
                                            col_aggs=col_aggs)),
-                   use_container_width=True, fmt_mode=fmt_mode)
+                   use_container_width=True, fmt_mode=fmt_mode,
+                   skip_yaxis_format=skip_yaxis_format)
         with tab_m:
             _chart(build_fig(_resample_dwm(source_df, "M",
                                            col_aggs=col_aggs)),
-                   use_container_width=True, fmt_mode=fmt_mode)
+                   use_container_width=True, fmt_mode=fmt_mode,
+                   skip_yaxis_format=skip_yaxis_format)
 
 
 @contextmanager

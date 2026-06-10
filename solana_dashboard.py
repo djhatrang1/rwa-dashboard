@@ -984,86 +984,89 @@ def _render_stablecoins() -> None:
     # the updated query result instead of returning the stale cached one.
     _spv_df, _spv_err = _allium.fetch_allium_query_results(
         "mE86r6b8d6RYWwvTfq2p", revision="v2")
-    st.subheader("Daily Volume + Transfer Count")
-    st.caption(
-        "Daily Solana stablecoin payment volume (USD, left axis) and "
-        "transfer count (right axis). Source: Allium query "
-        "[`mE86r6b8d6RYWwvTfq2p`]"
-        "(https://app.allium.so/analyze/queries/mE86r6b8d6RYWwvTfq2p)."
-    )
     if _spv_df.empty:
+        st.subheader("Daily Volume + Transfer Count")
+        st.caption(
+            "Source: Allium query "
+            "[`mE86r6b8d6RYWwvTfq2p`]"
+            "(https://app.allium.so/analyze/queries/mE86r6b8d6RYWwvTfq2p)."
+        )
         st.info(f"No data. Reason: `{_spv_err or 'empty'}`")
     else:
         _spv_df = _spv_df.copy()
         _spv_df["date"] = _pd.to_datetime(_spv_df["date"],
                                           errors="coerce")
         _spv_df = _spv_df.sort_values("date").reset_index(drop=True)
-        fig_spv = _go.Figure()
-        fig_spv.add_trace(_go.Bar(
-            x=_spv_df["date"], y=_spv_df["total_volume_usd"],
-            name="Volume (USD)",
-            marker_color="#9945FF", opacity=0.85,
-            customdata=_spv_df["total_volume_usd"].map(sd._fmt_usd),
-            hovertemplate="Volume: %{customdata}<extra></extra>",
-        ))
-        fig_spv.add_trace(_go.Scatter(
-            x=_spv_df["date"], y=_spv_df["transfer_count"],
-            name="Transfer Count",
-            mode="lines+markers",
-            line=dict(color="#14F195", width=1.5),
-            marker=dict(color="#14F195", size=4),
-            yaxis="y2",
-            customdata=_spv_df["transfer_count"].map(
-                lambda v: f"{int(v):,}"),
-            hovertemplate="Transfers: %{customdata}<extra></extra>",
-        ))
-        fig_spv.update_layout(
-            height=400, hovermode="x unified",
-            margin=dict(t=10, b=10, l=10, r=10),
-            legend=dict(orientation="h", yanchor="bottom",
-                        y=1.02, xanchor="right", x=1),
-            yaxis=dict(tickprefix="$", tickformat="~s",
-                       showgrid=True, rangemode="tozero"),
-            yaxis2=dict(overlaying="y", side="right",
-                        showgrid=False, tickformat="~s",
-                        rangemode="tozero"),
-        )
-        # Render via st.plotly_chart directly (NOT sd._chart) because
-        # sd._chart pipes the fig through _apply_b_format_to_yaxes
-        # which walks EVERY y-axis with one fmt_mode — for this dual-
-        # axis chart we need '$' on the left axis (volume) but bare
-        # counts on the right axis (transfer count). The helper has no
-        # per-axis fmt_mode hook, so bypassing it here is the cleanest
-        # fix without altering the helper's contract for every other
-        # caller. Raw button rendered manually below to preserve the
-        # CSV-download affordance.
-        st.plotly_chart(fig_spv, use_container_width=True)
-        _, _btn_col = st.columns([0.92, 0.08])
-        with _btn_col:
-            if st.button("📋", key="raw_sd_stable_pay_vol_xfer",
-                         help="View raw data"):
-                sd._raw_data_modal(
-                    _spv_df,
-                    {"total_volume_usd": "${:,.0f}",
+
+        # Closure builds the figure for each D/W/M view. Passed
+        # skip_yaxis_format=True through _chart_dwm_simple so
+        # _chart() preserves the per-axis tickprefix instead of
+        # rewriting yaxis2's ticktext to '$N' (transfer count is a
+        # raw integer, not USD).
+        def _build_spv_fig(df_view):
+            fig = _go.Figure()
+            fig.add_trace(_go.Bar(
+                x=df_view["date"], y=df_view["total_volume_usd"],
+                name="Volume (USD)",
+                marker_color="#9945FF", opacity=0.85,
+                customdata=df_view["total_volume_usd"].map(sd._fmt_usd),
+                hovertemplate="Volume: %{customdata}<extra></extra>",
+            ))
+            fig.add_trace(_go.Scatter(
+                x=df_view["date"], y=df_view["transfer_count"],
+                name="Transfer Count",
+                mode="lines+markers",
+                line=dict(color="#14F195", width=1.5),
+                marker=dict(color="#14F195", size=4),
+                yaxis="y2",
+                customdata=df_view["transfer_count"].map(
+                    lambda v: f"{int(v):,}"),
+                hovertemplate="Transfers: %{customdata}<extra></extra>",
+            ))
+            fig.update_layout(
+                height=400, hovermode="x unified",
+                margin=dict(t=10, b=10, l=10, r=10),
+                legend=dict(orientation="h", yanchor="bottom",
+                            y=1.02, xanchor="right", x=1),
+                yaxis=dict(tickprefix="$", tickformat="~s",
+                           showgrid=True, rangemode="tozero"),
+                yaxis2=dict(overlaying="y", side="right",
+                            showgrid=False, tickformat="~s",
+                            rangemode="tozero"),
+            )
+            return fig
+
+        sd._chart_dwm_simple(
+            "Daily Volume + Transfer Count",
+            source_df=_spv_df,
+            build_fig=_build_spv_fig,
+            raw_df=_spv_df,
+            raw_key="sd_stable_pay_vol_xfer",
+            raw_filename="sol_stable_payments_vol_transfers",
+            raw_fmt={"total_volume_usd": "${:,.0f}",
                      "transfer_count": "{:,}"},
-                    "sol_stable_payments_vol_transfers")
+            caption=(
+                "Daily Solana stablecoin payment volume (USD, left "
+                "axis) and transfer count (right axis). Source: "
+                "Allium query [`mE86r6b8d6RYWwvTfq2p`]"
+                "(https://app.allium.so/analyze/queries/mE86r6b8d6RYWwvTfq2p)."
+            ),
+            col_aggs={"total_volume_usd": "sum",
+                       "transfer_count":   "sum"},
+            skip_yaxis_format=True,
+        )
 
     st.divider()
     # ── Daily volume by flow category (stacked area) ─────────────────────
     # revision bumped v1 → v2 — see vol+xfer chart above for rationale.
     _spc_df, _spc_err = _allium.fetch_allium_query_results(
         "mR8Xtm7pKCv1C0VVvb6E", revision="v2")
-    st.subheader("Daily Volume by Flow Category")
-    st.caption(
-        "Daily Solana stablecoin payment volume split into four flow "
-        "categories: **C2C** (consumer-to-consumer), **C2B** "
-        "(consumer-to-business), **B2C** (business-to-consumer), "
-        "**B2B/I2C** (business-to-business / institutional-to-"
-        "consumer). Source: Allium query "
-        "[`mR8Xtm7pKCv1C0VVvb6E`]"
-        "(https://app.allium.so/analyze/queries/mR8Xtm7pKCv1C0VVvb6E)."
-    )
     if _spc_df.empty:
+        st.subheader("Daily Volume by Flow Category")
+        st.caption(
+            "Source: Allium query [`mR8Xtm7pKCv1C0VVvb6E`]"
+            "(https://app.allium.so/analyze/queries/mR8Xtm7pKCv1C0VVvb6E)."
+        )
         st.info(f"No data. Reason: `{_spc_err or 'empty'}`")
     else:
         _spc_df = _spc_df.copy()
@@ -1084,48 +1087,71 @@ def _render_stablecoins() -> None:
         }
         _spc_df = _spc_df.rename(columns=_CAT_LABEL)
         _cats = list(_CAT_LABEL.values())
-        # Largest band at bottom of the stack.
+        # Stack order computed off the FULL (daily) df so the D/W/M
+        # tabs don't reshuffle band order between granularities.
         _latest = _spc_df.iloc[-1].fillna(0)
         _ordered = sorted(_cats,
                           key=lambda c: float(_latest.get(c, 0) or 0),
                           reverse=True)
-        fig_spc = _go.Figure()
-        for cat in reversed(_ordered):
-            color = _CAT_COLORS.get(cat, "#888888")
-            y = _spc_df[cat].fillna(0)
-            fig_spc.add_trace(_go.Scatter(
-                x=_spc_df["date"], y=y, name=cat,
+
+        def _build_spc_fig(df_view):
+            fig = _go.Figure()
+            for cat in reversed(_ordered):
+                if cat not in df_view.columns:
+                    continue
+                color = _CAT_COLORS.get(cat, "#888888")
+                y = df_view[cat].fillna(0)
+                fig.add_trace(_go.Scatter(
+                    x=df_view["date"], y=y, name=cat,
+                    mode="lines",
+                    line=dict(color=color, width=0.9),
+                    stackgroup="spc",
+                    customdata=y.map(sd._fmt_usd),
+                    hovertemplate=f"{cat}: %{{customdata}}<extra></extra>",
+                ))
+            present = [c for c in _ordered if c in df_view.columns]
+            tot = df_view[present].fillna(0).sum(axis=1)
+            fig.add_trace(_go.Scatter(
+                x=df_view["date"], y=tot, name="Total",
                 mode="lines",
-                line=dict(color=color, width=0.9),
-                stackgroup="spc",
-                customdata=y.map(sd._fmt_usd),
-                hovertemplate=f"{cat}: %{{customdata}}<extra></extra>",
+                line=dict(width=0, color="rgba(0,0,0,0)"),
+                showlegend=False, stackgroup=None,
+                customdata=tot.map(sd._fmt_usd),
+                hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
             ))
-        totals = _spc_df[_ordered].fillna(0).sum(axis=1)
-        fig_spc.add_trace(_go.Scatter(
-            x=_spc_df["date"], y=totals, name="Total",
-            mode="lines",
-            line=dict(width=0, color="rgba(0,0,0,0)"),
-            showlegend=False, stackgroup=None,
-            customdata=totals.map(sd._fmt_usd),
-            hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
-        ))
-        y_max = float(totals.max() or 0)
-        fig_spc.update_layout(
-            height=400, hovermode="x unified",
-            margin=dict(t=10, b=10, l=10, r=10),
-            legend=dict(orientation="h", yanchor="bottom",
-                        y=1.02, xanchor="right", x=1),
-            yaxis=dict(tickprefix="$", tickformat="~s",
-                       showgrid=True, rangemode="tozero",
-                       range=[0, y_max * 1.10] if y_max > 0 else None),
-        )
+            y_max = float(tot.max() or 0)
+            fig.update_layout(
+                height=400, hovermode="x unified",
+                margin=dict(t=10, b=10, l=10, r=10),
+                legend=dict(orientation="h", yanchor="bottom",
+                            y=1.02, xanchor="right", x=1),
+                yaxis=dict(tickprefix="$", tickformat="~s",
+                           showgrid=True, rangemode="tozero",
+                           range=[0, y_max * 1.10] if y_max > 0 else None),
+            )
+            return fig
+
         _spc_raw = _spc_df.copy()
-        _spc_raw["Total"] = totals.values
-        sd._chart(fig_spc, use_container_width=True,
-                  raw_df=_spc_raw, raw_key="sd_stable_pay_by_cat",
-                  raw_filename="sol_stable_payments_by_category",
-                  raw_fmt={c: "${:,.0f}" for c in _cats + ["Total"]})
+        _spc_raw["Total"] = (_spc_df[_ordered].fillna(0).sum(axis=1).values)
+        sd._chart_dwm_simple(
+            "Daily Volume by Flow Category",
+            source_df=_spc_df,
+            build_fig=_build_spc_fig,
+            raw_df=_spc_raw,
+            raw_key="sd_stable_pay_by_cat",
+            raw_filename="sol_stable_payments_by_category",
+            raw_fmt={c: "${:,.0f}" for c in _cats + ["Total"]},
+            caption=(
+                "Daily Solana stablecoin payment volume split into "
+                "four flow categories: **C2C** (consumer-to-consumer), "
+                "**C2B** (consumer-to-business), **B2C** (business-to-"
+                "consumer), **B2B/I2C** (business-to-business / "
+                "institutional-to-consumer). Source: Allium query "
+                "[`mR8Xtm7pKCv1C0VVvb6E`]"
+                "(https://app.allium.so/analyze/queries/mR8Xtm7pKCv1C0VVvb6E)."
+            ),
+            col_aggs={c: "sum" for c in _cats},
+        )
 
 
 # ── Foreign L1 tokens vertical — grouped by underlying asset class ────────────

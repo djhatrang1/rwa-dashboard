@@ -6902,6 +6902,35 @@ if __name__ == "__main__":
 
             st.divider()
 
+            # ── Merchant snapshot metrics row (lifetime totals) ──────
+            # Query CNRtCsfgiCBdY3e957GQ: 1-row merchant-stats snapshot
+            # — total charges count / volume / avg / unique merchants /
+            # unique buyers. Frames the daily merchant time-series row
+            # below by showing the cumulative totals first.
+            _ms_df, _ms_err = _allium.fetch_allium_query_results(
+                "CNRtCsfgiCBdY3e957GQ")
+            if not _ms_df.empty:
+                _m = _ms_df.iloc[0]
+                st.subheader("Merchant Activity — Snapshot")
+                st.caption(
+                    "Cumulative totals across all tracked merchant "
+                    "charges. Source: Allium query "
+                    "[`CNRtCsfgiCBdY3e957GQ`]"
+                    "(https://app.allium.so/analyze/queries/CNRtCsfgiCBdY3e957GQ). "
+                    "Daily breakdown below."
+                )
+                mm1, mm2, mm3, mm4, mm5 = st.columns(5)
+                mm1.metric("Total Charges",
+                           f"{int(_m.get('total_charges') or 0):,}")
+                mm2.metric("Total Charge Volume",
+                           _fmt_usd(float(_m.get('total_charge_volume') or 0)))
+                mm3.metric("Avg Charge Size",
+                           _fmt_usd(float(_m.get('avg_charge_size') or 0)))
+                mm4.metric("Unique Merchants",
+                           f"{int(_m.get('unique_merchants') or 0):,}")
+                mm5.metric("Unique Buyers",
+                           f"{int(_m.get('unique_buyers') or 0):,}")
+
             # ── Daily Merchant Activity (charges/refunds + accts) ────
             _merch_df, _m_err = _allium.fetch_allium_query_results(
                 "7ZYoOqdKtJMgLJQ7vlCt")

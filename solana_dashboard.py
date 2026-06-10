@@ -725,8 +725,7 @@ def _build_lending_stack(metric: str, protocols: list[tuple[str, str]],
         fig.update_layout(
             height=460, hovermode="x unified",
             margin=dict(t=20, b=90, l=10, r=10),
-            legend=dict(orientation="h", yanchor="top", y=-0.22,
-                        xanchor="center", x=0.5),
+            showlegend=False,
             yaxis=dict(showgrid=True, rangemode="tozero",
                        range=[0, y_max * 1.10] if y_max > 0 else None),
         )
@@ -1026,8 +1025,7 @@ def _render_stablecoins() -> None:
             fig.update_layout(
                 height=400, hovermode="x unified",
                 margin=dict(t=10, b=10, l=10, r=10),
-                legend=dict(orientation="h", yanchor="bottom",
-                            y=1.02, xanchor="right", x=1),
+                showlegend=False,
                 yaxis=dict(tickprefix="$", tickformat="~s",
                            showgrid=True, rangemode="tozero"),
                 yaxis2=dict(overlaying="y", side="right",
@@ -1123,8 +1121,7 @@ def _render_stablecoins() -> None:
             fig.update_layout(
                 height=400, hovermode="x unified",
                 margin=dict(t=10, b=10, l=10, r=10),
-                legend=dict(orientation="h", yanchor="bottom",
-                            y=1.02, xanchor="right", x=1),
+                showlegend=False,
                 yaxis=dict(tickprefix="$", tickformat="~s",
                            showgrid=True, rangemode="tozero",
                            range=[0, y_max * 1.10] if y_max > 0 else None),
@@ -1415,8 +1412,7 @@ def _build_foreign_l1_group_charts(group_label: str, pullers: list) -> None:
         fig.update_layout(
             height=360, hovermode="x unified",
             margin=dict(t=10, b=10, l=10, r=10),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                        xanchor="right", x=1),
+            showlegend=False,
             yaxis=dict(showgrid=True, rangemode="tozero",
                        range=[0, y_max_mc * 1.10] if y_max_mc > 0 else None),
         )
@@ -1465,8 +1461,7 @@ def _build_foreign_l1_group_charts(group_label: str, pullers: list) -> None:
         fig.update_layout(
             height=360, hovermode="x unified", barmode="stack",
             margin=dict(t=10, b=10, l=10, r=10),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                        xanchor="right", x=1),
+            showlegend=False,
             yaxis=dict(showgrid=True, rangemode="tozero",
                        range=[0, y_max_v * 1.10] if y_max_v > 0 else None),
         )
@@ -2307,8 +2302,7 @@ def _render_dune_metric_compare_pair(
         fig.update_layout(
             height=420, hovermode="x unified",
             margin=dict(t=10, b=10, l=10, r=10),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                        xanchor="right", x=1),
+            showlegend=False,
             yaxis=dict(showgrid=True, rangemode="tozero",
                        range=[0, y_max_d * 1.10] if y_max_d > 0 else None),
         )
@@ -2354,8 +2348,7 @@ def _render_dune_metric_compare_pair(
         fig.update_layout(
             height=420, hovermode="x unified",
             margin=dict(t=10, b=10, l=10, r=10),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                        xanchor="right", x=1),
+            showlegend=False,
             yaxis=dict(showgrid=True, rangemode="tozero",
                        range=[0, y_max_c * 1.10] if y_max_c > 0 else None),
         )
@@ -2606,8 +2599,7 @@ def _render_dflow_prediction_section() -> None:
             fig.update_layout(
                 height=400, hovermode="x unified",
                 margin=dict(t=10, b=10, l=10, r=10),
-                legend=dict(orientation="h", yanchor="bottom",
-                            y=1.02, xanchor="right", x=1),
+                showlegend=False,
                 yaxis=dict(showgrid=True, rangemode="tozero",
                            range=[0, y_max_b * 1.10] if y_max_b > 0 else None),
             )

@@ -25,29 +25,58 @@ Do NOT scrape, hit undocumented endpoints, or use third-party aggregators outsid
 - Prefer NEW commits over `--amend`.
 - Commit messages: short imperative subject; body explains the "why", not the "what". Co-author line at the bottom.
 
-## Chart conventions
+## Chart conventions — cardinal rule
+
+**Every new time-series chart goes through `_chart_dwm_simple()` (single-axis) or `_chart_dwm_frame()` (multi-axis / custom resampling).** Doing so gives the chart all four required behaviors automatically:
+
+1. **Time slider** (rangeslider visible on the x-axis)
+2. **D/W/M tabs** (Daily default, Weekly / Monthly resampled)
+3. **📋 raw-data button** (pinned top-right, opens a CSV-download dialog)
+4. **3-tier legend** (auto-extracted from the daily figure's traces)
+
+Bypassing these helpers with a direct `st.plotly_chart(...)` skips all four — don't do it for time-series. Bar/categorical charts (no time axis) can use `st.plotly_chart` since the time-controls don't apply.
+
+```python
+def _build_my_fig(df_view):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df_view["date"], y=df_view["foo"], name="Foo",
+                              line=dict(color="#4285F4")))
+    fig.add_trace(go.Scatter(x=df_view["date"], y=df_view["bar"], name="Bar",
+                              line=dict(color="#10B981")))
+    fig.update_layout(showlegend=False, ...)   # <-- always suppress Plotly's
+    return fig
+
+_chart_dwm_simple(
+    "My Chart Title",
+    source_df=df,
+    build_fig=_build_my_fig,
+    raw_df=df.sort_values("date", ascending=False),
+    raw_key="unique_key",
+    raw_filename="my_chart_data",
+    caption="Data source + any non-obvious aggregation choices.",
+    col_aggs={"foo": "sum", "bar": "sum"},   # how W/M tabs aggregate cols
+    # legend_entries is OPTIONAL — auto-extracted from the daily fig if omitted
+)
+```
 
 ### Time controls
-Every time-series chart uses `_chart()` or `_chart_dwm_simple()` so it inherits `_apply_time_controls`. That helper:
-- Sets `rangeslider=dict(visible=True, ...)` — the rangeslider is the only time-range UI
+`_apply_time_controls` (called inside `_chart()` / `_chart_dwm_*`):
+- Sets `rangeslider=dict(visible=True, ...)` — the slider is the only time-range UI
 - Explicitly clears `rangeselector` (no 1M/3M/6M/YTD/1Y/All buttons)
 - Sets `type="date"` on the x-axis
 
-**Do NOT** add `rangeselector=dict(visible=True, buttons=[...])` anywhere. The user removed the buttons across the entire codebase in `v59`. The rangeslider is sufficient.
+**Do NOT** add `rangeselector=dict(visible=True, buttons=[...])` anywhere. The buttons were removed in `v59`; the slider is sufficient.
 
 ### D/W/M selector
-Time-series charts get a Daily / Weekly / Monthly tab via `_chart_dwm_simple` (single-axis) or `_chart_dwm_frame` (multi-axis). Daily is the default tab. Don't hand-roll period switches.
+Always via `_chart_dwm_simple` or `_chart_dwm_frame`. Daily is the default tab. Don't hand-roll period switches with `st.radio`.
 
-### Raw-data button
-Every chart gets a 📋 button in its top-right corner, pinned by `inject_chartwrap_css()`. Pattern: pass `raw_df` + `raw_key` + `raw_filename` into the chart helper; CSV download is generated automatically.
+### Raw-data 📋 button
+Auto-pinned to the chart's top-right by `inject_chartwrap_css()`. Pattern: pass `raw_df` + `raw_key` (unique) + `raw_filename` into the chart helper.
 
-### Legends — **MUST use `_legend`** (3-tier rule)
-Do NOT use Plotly's inline legend on new charts. Instead:
+### Legends — 3-tier `_legend()` (auto-dispatched)
+Do NOT use Plotly's inline legend. Set `showlegend=False` on `fig.update_layout(...)`. The chart helpers auto-extract entries from your daily fig's traces (trace name + `line.color` / `marker.color` / `fillcolor`) and render via `_legend()` after the tabs.
 
-1. Set `showlegend=False` on `fig.update_layout(...)`
-2. Below the chart call site, call `_legend(entries, label="...")`
-
-The helper auto-dispatches on series count — callers don't pick the tier:
+Auto-dispatched by series count:
 
 | Series count | Rendering |
 |---|---|
@@ -55,15 +84,13 @@ The helper auto-dispatches on series count — callers don't pick the tier:
 | **2–5** | Always-visible swatch row below the chart (no click required) |
 | **6+** | Collapsed `st.expander` titled "Legend (N \<label\>)" |
 
-```python
-fig.update_layout(showlegend=False, ...)
-_chart_dwm_simple("My Chart", source_df=..., build_fig=...)
-_legend(
-    [(series_name, hex_color) for series_name, hex_color in ordered],
-    label="tokens")  # plural noun appears in "Legend (N tokens)" — only shown for 6+ tier
-```
+Pass `legend_label="tokens"` (or `"chains"`, `"issuers"`, etc.) to `_chart_dwm_simple` for the expander header noun (only used at the 6+ tier).
 
-The helper lives at module level in `stocks_dashboard.py` and is reachable from `solana_dashboard.py` as `sd._legend(...)`. It renders an 8-column CSS grid of swatches; the tier picks whether that grid is bare (2–5) or wrapped in an `st.expander` (6+). `_legend_expander(...)` is a deprecated alias that routes to the same dispatcher — prefer `_legend()` in new code.
+Override the auto-extracted entries by passing `legend_entries=[(name, color), ...]` explicitly — needed when:
+- Bar trace has per-bar `marker.color` (a list, not one color)
+- You want a different order / label than the trace order
+
+For charts that DON'T route through the helpers (e.g. you have a one-off bar chart with `st.plotly_chart`): hide Plotly's legend with `showlegend=False` and call `_legend(...)` manually below. The helper lives at module level in `stocks_dashboard.py`; from `solana_dashboard.py` use `sd._legend(...)`. `_legend_expander(...)` is a deprecated alias that routes to the same dispatcher — prefer `_legend()` in new code.
 
 **Why each tier:**
 - 1 series — a "legend" of one label is pure noise; the chart title already names it.

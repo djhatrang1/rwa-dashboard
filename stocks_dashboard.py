@@ -710,7 +710,7 @@ class USDCVolumePuller(DataPuller):
         )
         fig.update_layout(
             hovermode="x unified",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            showlegend=False,
             yaxis_tickformat="$~s",
         )
         _chart(fig, use_container_width=True)
@@ -1197,7 +1197,7 @@ class SolanaTokenMetricsPuller(DataPuller):
         layout: dict = dict(
             title="",
             hovermode="x unified", height=height,
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            showlegend=False,
             margin=dict(t=10, b=10, l=10, r=10),
         )
         if show_mc:
@@ -1668,8 +1668,7 @@ def _render_all_chain_stablecoins() -> None:
         fig.update_layout(
             height=460, hovermode="x unified",
             margin=dict(t=10, b=10, l=10, r=10),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                        xanchor="right", x=1),
+            showlegend=False,
             yaxis=dict(tickprefix="$", tickformat="~s", showgrid=True,
                        range=[0, stacked_max * 1.10] if stacked_max > 0 else None,
                        rangemode="tozero"),
@@ -3396,15 +3395,10 @@ class TokenGroupMetricsPuller(DataPuller):
             fig.update_layout(
                 height=380, hovermode="x unified",
                 margin=dict(t=10, b=10, l=10, r=10),
-                # Hide Plotly's inline legend whenever the HTML
-                # legend (rendered below the chart via _legend()) is
-                # in play — every chain=None chart now uses it, so
-                # the inline legend is always suppressed for the
-                # all-chains view. Per-chain views keep Plotly's
-                # inline legend until they're migrated too.
-                showlegend=not _use_html_legend,
-                legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                            xanchor="right", x=1),
+                # Always hide Plotly's inline legend — the HTML
+                # legend below the chart (via _legend()) is the only
+                # legend UI per the project-wide convention.
+                showlegend=False,
                 yaxis=dict(tickprefix="$", tickformat="~s",
                            showgrid=True, range=y_range_v,
                            rangemode="tozero"),
@@ -3797,8 +3791,7 @@ class TokenGroupMetricsPuller(DataPuller):
         fig.update_layout(
             height=380, hovermode="x unified",
             margin=dict(t=10, b=10, l=10, r=10),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                        xanchor="right", x=1),
+            showlegend=False,
             yaxis=dict(tickprefix="$",
                        tickformat="~s", showgrid=True,
                        range=y_range, rangemode="tozero"),
@@ -5850,8 +5843,7 @@ def _build_combined_stocks_fig(df: pd.DataFrame, labels: list[str],
         hovermode="x unified",
         height=height,
         margin=dict(t=10, b=10, l=10, r=10),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                    xanchor="right", x=1),
+        showlegend=False,
         yaxis=dict(
             tickprefix="$", tickformat="~s",
             tickmode="array", tickvals=ticks, range=[0, ticks[-1]],
@@ -6076,8 +6068,7 @@ def _build_combined_stocks_mc_fig(df: pd.DataFrame, labels: list[str],
     fig.update_layout(
         height=height, hovermode="x unified",
         margin=dict(t=10, b=10, l=10, r=10),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                    xanchor="right", x=1),
+        showlegend=False,
         yaxis=dict(tickprefix="$", tickformat="~s", showgrid=True,
                    rangemode="tozero",
                    range=[0, y_max * 1.10] if y_max > 0 else None),
@@ -6135,6 +6126,64 @@ def _legend(entries: list[tuple[str, str]],
     # 6+ series → collapsed expander, same swatch grid inside.
     with st.expander(f"Legend ({n} {label})", expanded=False):
         _legend_render_grid(entries)
+
+
+def _legend_entries_from_fig(
+        fig: go.Figure) -> list[tuple[str, str]]:
+    """Auto-extract (name, color) pairs from a Plotly figure's traces
+    for use with `_legend()`. Skips traces explicitly marked
+    `showlegend=False` (typically the invisible "Total" trace used to
+    inject a bold-Total line into the unified hover tooltip).
+
+    Color resolution order per trace:
+      1. trace.marker.color (Bar)
+      2. trace.line.color    (Scatter)
+      3. trace.fillcolor     (Scatter stacked area with fill)
+
+    Returns [] when no traces qualify — caller's `_legend([])` is a
+    no-op so the chart renders without a legend.
+
+    Order matches the trace addition order, which is also the order
+    legend swatches should appear in (chart builders typically add
+    traces in the same order the user reads them visually)."""
+    entries: list[tuple[str, str]] = []
+    seen_names: set[str] = set()
+    for tr in fig.data:
+        # Plotly Trace objects use property access; missing attrs
+        # raise. Guard with getattr fallbacks to handle every trace
+        # type uniformly.
+        if getattr(tr, "showlegend", True) is False:
+            continue
+        name = getattr(tr, "name", None)
+        if not name or name in seen_names:
+            # Anonymous (default-named "trace 0/1/..") or duplicate
+            # entries don't belong in the legend.
+            continue
+        color = None
+        marker = getattr(tr, "marker", None)
+        if marker is not None:
+            mc = getattr(marker, "color", None)
+            # marker.color can be a list when it varies per-bar — in
+            # that case there isn't ONE color for the trace, so skip
+            # (caller should pass explicit legend_entries).
+            if isinstance(mc, str):
+                color = mc
+        if color is None:
+            line = getattr(tr, "line", None)
+            if line is not None:
+                lc = getattr(line, "color", None)
+                if isinstance(lc, str):
+                    color = lc
+        if color is None:
+            fc = getattr(tr, "fillcolor", None)
+            if isinstance(fc, str):
+                color = fc
+        if color is None:
+            # Couldn't infer a color — skip rather than guess.
+            continue
+        entries.append((name, color))
+        seen_names.add(name)
+    return entries
 
 
 def _legend_render_grid(entries: list[tuple[str, str]]) -> None:
@@ -6269,7 +6318,9 @@ def _chart_dwm_simple(title: str, source_df: pd.DataFrame,
                       caption: str | None = None,
                       col_aggs: dict | None = None,
                       fmt_mode: str = "currency",
-                      skip_yaxis_format: bool = False) -> None:
+                      skip_yaxis_format: bool = False,
+                      legend_entries: list[tuple[str, str]] | None = None,
+                      legend_label: str = "series") -> None:
     """One-shot wrapper around _chart_dwm_frame for the common pattern of
     one source DataFrame + one build_fig closure that handles Daily,
     Weekly, and Monthly. Calls build_fig(df_view) three times — once for
@@ -6279,14 +6330,34 @@ def _chart_dwm_simple(title: str, source_df: pd.DataFrame,
     (left $ + right count) can preserve their per-axis tickprefix
     instead of having every axis re-formatted with one fmt_mode.
 
+    `legend_entries` (optional): list of (name, hex_color) pairs.
+    When omitted, the helper auto-extracts them from the daily fig's
+    trace names + colors via `_legend_entries_from_fig` — so callers
+    only need to set `showlegend=False` on the layout and the legend
+    "just works." Pass explicit entries when auto-extraction won't
+    work (e.g. Bar trace with per-bar marker.color list, or you want
+    a different label/order than the trace order).
+
+    The legend renders AFTER the tabs via the 3-tier `_legend()`
+    dispatcher (0–1 hides, 2–5 inline, 6+ collapsed expander).
+    `legend_label` is the noun for the expander header
+    ("Legend (N <label>)") — only used when >5 entries.
+
     Saves callers the with-block dance for charts that don't need
     per-tab specialization.
     """
+    # Build daily fig ONCE so we can auto-extract legend entries from
+    # it without duplicating the build work. Reused for tab_d render.
+    daily_fig = build_fig(source_df)
+    if legend_entries is None:
+        legend_entries = _legend_entries_from_fig(daily_fig)
     with _chart_dwm_frame(title, raw_df=raw_df, raw_key=raw_key,
                           raw_fmt=raw_fmt, raw_filename=raw_filename,
-                          caption=caption) as (tab_d, tab_w, tab_m):
+                          caption=caption,
+                          legend_entries=legend_entries,
+                          legend_label=legend_label) as (tab_d, tab_w, tab_m):
         with tab_d:
-            _chart(build_fig(source_df), use_container_width=True,
+            _chart(daily_fig, use_container_width=True,
                    fmt_mode=fmt_mode,
                    skip_yaxis_format=skip_yaxis_format)
         with tab_w:
@@ -6305,7 +6376,10 @@ def _chart_dwm_simple(title: str, source_df: pd.DataFrame,
 def _chart_dwm_frame(title: str, *, raw_df: pd.DataFrame, raw_key: str,
                      raw_fmt: dict | None = None,
                      raw_filename: str | None = None,
-                     caption: str | None = None):
+                     caption: str | None = None,
+                     legend_entries: list[tuple[str, str]] | None = None,
+                     legend_label: str = "series",
+                     legend_from_fig: "go.Figure | None" = None):
     """Render `title` (subheader) + optional `caption`, then yield a tuple
     of (tab_daily, tab_weekly, tab_monthly) inside a container that
     auto-pins the 📋 raw-data button to the tab row's right edge via the
@@ -6314,17 +6388,22 @@ def _chart_dwm_frame(title: str, *, raw_df: pd.DataFrame, raw_key: str,
     Caller is responsible for resampling the data per tab — use
     `_resample_dwm(df, "W"/"M")` for the standard sum/last aggregation.
 
+    `legend_entries` (recommended): pre-computed [(name, hex_color), ...]
+    pairs for the chart. When supplied, the helper renders the legend
+    AFTER the tabs via the 3-tier `_legend()` dispatcher (0–1 hides,
+    2–5 inline, 6+ collapsed expander). The chart's `fig.update_layout`
+    must set `showlegend=False` so Plotly's inline legend doesn't
+    double-render.
+
     Usage:
         with _chart_dwm_frame("My Chart", raw_df=raw, raw_key="my_key",
-                              caption="…") as (tab_d, tab_w, tab_m):
+                              caption="…",
+                              legend_entries=[("USDC", "#2775ca"),
+                                               ("USDT", "#26a17b")],
+                              legend_label="stablecoins") as (tab_d, tab_w, tab_m):
             with tab_d:
                 _chart(build_fig(df_daily), use_container_width=True)
-            with tab_w:
-                _chart(build_fig(_resample_dwm(df_daily, "W")),
-                       use_container_width=True)
-            with tab_m:
-                _chart(build_fig(_resample_dwm(df_daily, "M")),
-                       use_container_width=True)
+            ...
     """
     st.subheader(title)
     if caption:
@@ -6339,6 +6418,16 @@ def _chart_dwm_frame(title: str, *, raw_df: pd.DataFrame, raw_key: str,
             _raw_data_modal(raw_df, raw_fmt, raw_filename or raw_key)
         tabs = st.tabs(["Daily", "Weekly", "Monthly"])
         yield tabs[0], tabs[1], tabs[2]
+    # Legend AFTER the tabs (single shared instance for all 3 D/W/M
+    # views — Plotly's per-tab legend would otherwise re-render 3×
+    # which Streamlit treats as duplicate-key DOM nodes).
+    if legend_entries is None and legend_from_fig is not None:
+        # Auto-extract from caller's figure. Same path
+        # `_chart_dwm_simple` uses internally; direct-frame callers
+        # opt in by passing legend_from_fig=daily_fig.
+        legend_entries = _legend_entries_from_fig(legend_from_fig)
+    if legend_entries:
+        _legend(legend_entries, label=legend_label)
 
 
 # ── Subheader + raw-data button on a single row ──────────────────────────────
@@ -6888,8 +6977,7 @@ if __name__ == "__main__":
                 fig.update_layout(
                     height=460, hovermode="x unified",
                     margin=dict(t=10, b=10, l=10, r=10),
-                    legend=dict(orientation="h", yanchor="bottom",
-                                y=1.02, xanchor="right", x=1),
+                    showlegend=False,
                     yaxis=dict(tickprefix="$", tickformat="~s",
                                showgrid=True, rangemode="tozero",
                                range=[0, y_max * 1.10] if y_max > 0 else None),
@@ -7062,76 +7150,106 @@ if __name__ == "__main__":
                 _merch_df = (_merch_df.sort_values("date")
                                        .reset_index(drop=True))
 
+                # Migrated to _chart_dwm_simple per project chart-render
+                # rule: every time-series chart needs slider + D/W/M tabs
+                # + 📋 download + 3-tier legend (via auto-extract from
+                # the daily fig). Two side-by-side panels, each a 2-series
+                # line chart on a half-width column.
                 col_m_l, col_m_r = st.columns(2, gap="medium")
-                with col_m_l:
-                    st.subheader("Daily Charges vs Refunds")
-                    st.caption(
-                        "Daily on-chain charge + refund volume across "
-                        "tracked merchants. Source: Allium query "
-                        "[`7ZYoOqdKtJMgLJQ7vlCt`]"
-                        "(https://app.allium.so/analyze/queries/7ZYoOqdKtJMgLJQ7vlCt)."
-                    )
-                    fig_cr = go.Figure()
-                    fig_cr.add_trace(go.Scatter(
-                        x=_merch_df["date"],
-                        y=_merch_df["charge_volume_usd"],
+
+                def _build_charges_vs_refunds(df_view):
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=df_view["date"],
+                        y=df_view["charge_volume_usd"],
                         name="Charges",
                         mode="lines", line=dict(color="#10B981", width=1.5),
-                        customdata=_merch_df["charge_volume_usd"].map(_fmt_usd),
+                        customdata=df_view["charge_volume_usd"].map(_fmt_usd),
                         hovertemplate="Charges: %{customdata}<extra></extra>",
                     ))
-                    fig_cr.add_trace(go.Scatter(
-                        x=_merch_df["date"],
-                        y=_merch_df["refund_volume_usd"].fillna(0),
+                    fig.add_trace(go.Scatter(
+                        x=df_view["date"],
+                        y=df_view["refund_volume_usd"].fillna(0),
                         name="Refunds",
                         mode="lines", line=dict(color="#EF4444", width=1.5),
-                        customdata=_merch_df["refund_volume_usd"].fillna(0).map(_fmt_usd),
+                        customdata=df_view["refund_volume_usd"].fillna(0).map(_fmt_usd),
                         hovertemplate="Refunds: %{customdata}<extra></extra>",
                     ))
-                    fig_cr.update_layout(
+                    fig.update_layout(
                         height=360, hovermode="x unified",
                         margin=dict(t=10, b=10, l=10, r=10),
-                        legend=dict(orientation="h", yanchor="top",
-                                    y=-0.18, xanchor="center", x=0.5),
+                        showlegend=False,
                         yaxis=dict(tickprefix="$", tickformat="~s",
-                                   showgrid=True, rangemode="tozero"),
+                                    showgrid=True, rangemode="tozero"),
                     )
-                    st.plotly_chart(fig_cr, use_container_width=True)
-                with col_m_r:
-                    st.subheader("Daily Active Merchants & Unique Buyers")
-                    st.caption(
-                        "Daily unique-merchant + unique-buyer counts. "
-                        "Source: Allium query [`7ZYoOqdKtJMgLJQ7vlCt`]"
-                        "(https://app.allium.so/analyze/queries/7ZYoOqdKtJMgLJQ7vlCt)."
-                    )
-                    fig_mb = go.Figure()
-                    fig_mb.add_trace(go.Scatter(
-                        x=_merch_df["date"],
-                        y=_merch_df["active_merchants"],
+                    return fig
+
+                def _build_merchants_vs_buyers(df_view):
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=df_view["date"],
+                        y=df_view["active_merchants"],
                         name="Active Merchants",
                         mode="lines", line=dict(color="#F97316", width=1.5),
-                        customdata=_merch_df["active_merchants"].map(
+                        customdata=df_view["active_merchants"].map(
                             lambda v: f"{int(v or 0):,}"),
                         hovertemplate="Merchants: %{customdata}<extra></extra>",
                     ))
-                    fig_mb.add_trace(go.Scatter(
-                        x=_merch_df["date"],
-                        y=_merch_df["unique_buyers"],
+                    fig.add_trace(go.Scatter(
+                        x=df_view["date"],
+                        y=df_view["unique_buyers"],
                         name="Unique Buyers",
                         mode="lines", line=dict(color="#A78BFA", width=1.5),
-                        customdata=_merch_df["unique_buyers"].map(
+                        customdata=df_view["unique_buyers"].map(
                             lambda v: f"{int(v or 0):,}"),
                         hovertemplate="Buyers: %{customdata}<extra></extra>",
                     ))
-                    fig_mb.update_layout(
+                    fig.update_layout(
                         height=360, hovermode="x unified",
                         margin=dict(t=10, b=10, l=10, r=10),
-                        legend=dict(orientation="h", yanchor="top",
-                                    y=-0.18, xanchor="center", x=0.5),
+                        showlegend=False,
                         yaxis=dict(tickformat=",", showgrid=True,
-                                   rangemode="tozero"),
+                                    rangemode="tozero"),
                     )
-                    st.plotly_chart(fig_mb, use_container_width=True)
+                    return fig
+
+                with col_m_l:
+                    _chart_dwm_simple(
+                        "Daily Charges vs Refunds",
+                        source_df=_merch_df,
+                        build_fig=_build_charges_vs_refunds,
+                        raw_df=_merch_df.sort_values("date", ascending=False),
+                        raw_key="asset_stable_pay_merch_cr",
+                        raw_filename="stablecoin_payments_merchant_charges_refunds",
+                        caption=(
+                            "Daily on-chain charge + refund volume across "
+                            "tracked merchants. Source: Allium query "
+                            "[`7ZYoOqdKtJMgLJQ7vlCt`]"
+                            "(https://app.allium.so/analyze/queries/7ZYoOqdKtJMgLJQ7vlCt)."
+                        ),
+                        col_aggs={"charge_volume_usd": "sum",
+                                   "refund_volume_usd": "sum"},
+                    )
+                with col_m_r:
+                    _chart_dwm_simple(
+                        "Daily Active Merchants & Unique Buyers",
+                        source_df=_merch_df,
+                        build_fig=_build_merchants_vs_buyers,
+                        raw_df=_merch_df.sort_values("date", ascending=False),
+                        raw_key="asset_stable_pay_merch_mb",
+                        raw_filename="stablecoin_payments_merchant_merchants_buyers",
+                        caption=(
+                            "Daily unique-merchant + unique-buyer counts. "
+                            "Source: Allium query [`7ZYoOqdKtJMgLJQ7vlCt`]"
+                            "(https://app.allium.so/analyze/queries/7ZYoOqdKtJMgLJQ7vlCt)."
+                        ),
+                        # 'last' aggregation for D/W/M because unique-counts
+                        # don't sum across days — a buyer active on Mon and
+                        # Tue is 1 unique buyer for the week, not 2.
+                        col_aggs={"active_merchants": "last",
+                                   "unique_buyers":   "last"},
+                        fmt_mode="count",
+                    )
 
             st.divider()
 
@@ -7509,8 +7627,7 @@ if __name__ == "__main__":
                         fig.update_layout(
                             height=420, hovermode="x unified",
                             margin=dict(t=10, b=10, l=10, r=10),
-                            legend=dict(orientation="h", yanchor="bottom",
-                                        y=1.02, xanchor="right", x=1),
+                            showlegend=False,
                             yaxis=dict(tickprefix="$", tickformat="~s",
                                        showgrid=True, rangemode="tozero",
                                        range=[0, y_max * 1.10] if y_max > 0 else None),
@@ -7543,6 +7660,9 @@ if __name__ == "__main__":
                         "chain; right splits the global total into "
                         "CEX vs DEX shares."
                     )
+                    # Build daily fig once so _chart_dwm_frame can
+                    # auto-extract legend entries from its traces.
+                    _gold_vol_daily = _build_global_vol_fig(df)
                     with _chart_dwm_frame(
                         "Tokenized Gold — Global Trading Volume "
                         "(CEX + DEX, all venues)",
@@ -7550,9 +7670,11 @@ if __name__ == "__main__":
                         raw_key="asset_gold_volume_cg",
                         raw_filename="tokenized_gold_volume_cg_all_chains",
                         caption=_caption_global,
+                        legend_from_fig=_gold_vol_daily,
+                        legend_label="tokens",
                     ) as (tab_d, tab_w, tab_m):
                         with tab_d:
-                            _chart(_build_global_vol_fig(df),
+                            _chart(_gold_vol_daily,
                                    use_container_width=True)
                         with tab_w:
                             _chart(_build_global_vol_fig(
@@ -7760,9 +7882,7 @@ if __name__ == "__main__":
                                 fig_ch_v.update_layout(
                                     height=420, hovermode="x unified",
                                     margin=dict(t=10, b=10, l=10, r=10),
-                                    legend=dict(orientation="h",
-                                                yanchor="top", y=-0.22,
-                                                xanchor="center", x=0.5),
+                                    showlegend=False,
                                     yaxis=dict(tickprefix="$",
                                                tickformat="~s",
                                                showgrid=True,
@@ -7776,6 +7896,7 @@ if __name__ == "__main__":
                                 CHAIN_LABEL.get(ch, ch.title())
                                 for ch in chain_order]
                             _raw_ch_export["total"] = grand_totals.values
+                            _dex_chain_daily = _build_dex_by_chain_fig(_ch_df)
                             with _chart_dwm_frame(
                                 "On-chain DEX Volume by Chain",
                                 raw_df=_raw_ch_export.sort_values("date", ascending=False),
@@ -7789,9 +7910,11 @@ if __name__ == "__main__":
                                     "separately in the chart to the "
                                     "right."
                                 ),
+                                legend_from_fig=_dex_chain_daily,
+                                legend_label="chains",
                             ) as (tab_d, tab_w, tab_m):
                                 with tab_d:
-                                    _chart(_build_dex_by_chain_fig(_ch_df),
+                                    _chart(_dex_chain_daily,
                                            use_container_width=True)
                                 with tab_w:
                                     _chart(_build_dex_by_chain_fig(
@@ -7863,9 +7986,7 @@ if __name__ == "__main__":
                                 fig_cv_v.update_layout(
                                     height=420, hovermode="x unified",
                                     margin=dict(t=10, b=10, l=10, r=10),
-                                    legend=dict(orientation="h",
-                                                yanchor="top", y=-0.22,
-                                                xanchor="center", x=0.5),
+                                    showlegend=False,
                                     yaxis=dict(tickprefix="$",
                                                tickformat="~s",
                                                showgrid=True,
@@ -7880,6 +8001,7 @@ if __name__ == "__main__":
                             }).copy()
                             _raw_cv_export["total"] = (
                                 _raw_cv_export["DEX"] + _raw_cv_export["CEX"])
+                            _cv_daily = _build_cex_vs_dex_fig(_cv_df)
                             with _chart_dwm_frame(
                                 "CEX vs DEX Volume",
                                 raw_df=_raw_cv_export.sort_values("date", ascending=False),
@@ -7893,9 +8015,11 @@ if __name__ == "__main__":
                                     "CoinGecko global total − on-chain "
                                     "DEX (residual, clamped to ≥0)."
                                 ),
+                                legend_from_fig=_cv_daily,
+                                legend_label="venues",
                             ) as (tab_d, tab_w, tab_m):
                                 with tab_d:
-                                    _chart(_build_cex_vs_dex_fig(_cv_df),
+                                    _chart(_cv_daily,
                                            use_container_width=True)
                                 with tab_w:
                                     _chart(_build_cex_vs_dex_fig(
@@ -7978,11 +8102,14 @@ if __name__ == "__main__":
             # collide with the rangeselector buttons at the top of
             # the chart (same pattern the gold side-by-side charts
             # use).
+            # Deprecated wrapper kept for the 3 remaining inline call
+            # sites at lines ~8210/8215/8220. New version SUPPRESSES
+            # Plotly's inline legend entirely — `_chart_dwm_simple` /
+            # `_chart_dwm_frame` will auto-extract and render the
+            # 3-tier `_legend()` helper instead. Same in/out signature
+            # so the call sites don't need to change.
             def _legend_below(fig):
-                fig.update_layout(legend=dict(
-                    orientation="h", yanchor="top", y=-0.22,
-                    xanchor="center", x=0.5,
-                ))
+                fig.update_layout(showlegend=False)
                 return fig
 
             # ── Row 1: Market Cap by Project | by Chain ──────────────
@@ -8058,9 +8185,7 @@ if __name__ == "__main__":
                         fig.update_layout(
                             height=380, hovermode="x unified",
                             margin=dict(t=10, b=10, l=10, r=10),
-                            legend=dict(orientation="h",
-                                        yanchor="top", y=-0.22,
-                                        xanchor="center", x=0.5),
+                            showlegend=False,
                             yaxis=dict(tickprefix="$", tickformat="~s",
                                        showgrid=True, rangemode="tozero",
                                        range=[0, y_max * 1.10] if y_max > 0 else None),
@@ -8100,6 +8225,9 @@ if __name__ == "__main__":
                     # _build_combined_stocks_fig does its own period
                     # resampling internally, so use _chart_dwm_frame
                     # (not _chart_dwm_simple) and pass D/W/M per tab.
+                    _proj_vol_daily = _legend_below(
+                        _build_combined_stocks_fig(
+                            _vol_combined, _vol_labels, "D", 380))
                     with _chart_dwm_frame(
                         "Trading Volume by Project (all chains)",
                         raw_df=_vol_raw.sort_values("date", ascending=False),
@@ -8111,11 +8239,11 @@ if __name__ == "__main__":
                             "BSC / Base / Arbitrum). Source: Birdeye "
                             "OHLCV V3. On-chain DEX volume only."
                         ),
+                        legend_from_fig=_proj_vol_daily,
+                        legend_label="projects",
                     ) as (tab_d, tab_w, tab_m):
                         with tab_d:
-                            _chart(_legend_below(
-                                _build_combined_stocks_fig(
-                                    _vol_combined, _vol_labels, "D", 380)),
+                            _chart(_proj_vol_daily,
                                 use_container_width=True)
                         with tab_w:
                             _chart(_legend_below(
@@ -8175,9 +8303,7 @@ if __name__ == "__main__":
                             height=380, barmode="stack",
                             hovermode="x unified",
                             margin=dict(t=10, b=10, l=10, r=10),
-                            legend=dict(orientation="h",
-                                        yanchor="top", y=-0.22,
-                                        xanchor="center", x=0.5),
+                            showlegend=False,
                             yaxis=dict(tickprefix="$", tickformat="~s",
                                        showgrid=True, rangemode="tozero",
                                        range=[0, y_max * 1.10] if y_max > 0 else None),

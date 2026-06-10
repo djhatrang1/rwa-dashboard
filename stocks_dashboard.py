@@ -5780,6 +5780,7 @@ _PER_CHAIN_LABEL = {
     "avalanche":           "Avalanche",
     "polygon":             "Polygon",
     "binance_smart_chain": "BSC",
+    "binance":             "BSC",
     "bsc":                 "BSC",
     "base":                "Base",
     "optimism":            "Optimism",
@@ -5788,6 +5789,21 @@ _PER_CHAIN_LABEL = {
     "mantle":              "Mantle",
     "zksync":              "zkSync",
     "aptos":               "Aptos",
+    # Treasury-specific chains added when the by-chain MC chart
+    # landed — BUIDL on 8 chains, OUSG+USDY+USTB+JTRSY+VBILL+USYC
+    # each spread across 3–8 chains. Labels/colors chosen for
+    # legibility on a stacked-area chart (high contrast vs the
+    # 9 chains above).
+    "celo":                "Celo",
+    "near":                "NEAR",
+    "noble":               "Noble",
+    "plume_mainnet":       "Plume",
+    "ripple":              "Ripple",
+    "stellar":             "Stellar",
+    "glue":                "Glue",
+    "sei":                 "Sei",
+    "ink":                 "Ink",
+    "scroll":              "Scroll",
 }
 _PER_CHAIN_COLOR = {
     "solana":              "#9945FF",  # Solana brand purple
@@ -5796,6 +5812,7 @@ _PER_CHAIN_COLOR = {
     "avalanche":           "#EF4444",  # red
     "polygon":             "#EC4899",  # magenta/pink
     "binance_smart_chain": "#FBBF24",  # yellow
+    "binance":             "#FBBF24",
     "bsc":                 "#FBBF24",
     "base":                "#1E40AF",  # navy
     "optimism":            "#FB7185",  # coral
@@ -5804,6 +5821,17 @@ _PER_CHAIN_COLOR = {
     "mantle":              "#84CC16",  # lime
     "zksync":              "#A78BFA",  # lavender
     "aptos":               "#10B981",  # emerald
+    # Treasury-specific
+    "celo":                "#FCFF52",  # Celo brand yellow-green
+    "near":                "#00C08B",  # NEAR green
+    "noble":               "#94A3B8",  # slate (Noble = Cosmos stable hub)
+    "plume_mainnet":       "#F472B6",  # pink
+    "ripple":              "#23292F",  # XRP dark grey (will be ~grey on dark theme)
+    "stellar":             "#7D00FF",  # Stellar purple
+    "glue":                "#A78BFA",  # lavender alt
+    "sei":                 "#9B1C1C",  # crimson
+    "ink":                 "#4F46E5",  # indigo
+    "scroll":              "#D97706",  # amber
 }
 
 
@@ -5852,6 +5880,59 @@ def _stocks_mc_by_chain_df(pullers: list) -> pd.DataFrame | None:
             col_name: total_for_chain.values,
         })
         out = sub if out is None else out.merge(sub, on="date", how="outer")
+    if out is None or out.empty:
+        return None
+    out = out[out["date"] >= "2020-01-01"]
+    return out.sort_values("date").reset_index(drop=True)
+
+
+@st.cache_data(ttl=14_400, show_spinner=False,
+               hash_funcs=_STOCKS_PULLER_HASH_FUNCS)
+def _treasury_mc_by_chain_df(pullers: list) -> pd.DataFrame | None:
+    """Total tokenized-treasury market cap per chain, per day. Same
+    shape as _stocks_mc_by_chain_df but with a wider chain list to
+    cover the treasury catalogue's deployments (BUIDL on 8 chains,
+    USYC on 4, OUSG/USDY on 6+, etc.). Sums every token's per-chain
+    MC contribution into one column per chain.
+
+    Result columns: date | mc_<safe_chain>_usd …  (one per chain
+    that actually has data; chains with all-zero columns are
+    dropped). Returns None if no chain produced data.
+
+    Cached for the same reason as _stocks_mc_by_chain_df — calls
+    _combined_stocks_mc_chain_df once per chain, which is expensive
+    when a treasury puller carries 111 mc cols × ~1200 days."""
+    KNOWN_CHAINS = (
+        "Solana", "Ethereum", "Arbitrum", "Avalanche", "Polygon",
+        "Binance", "Base", "Optimism", "Aptos", "Celo", "Near",
+        "Noble", "Plume Mainnet", "Mantle", "Glue", "Ripple",
+        "Stellar", "Sui", "Sei", "Ink", "Scroll",
+    )
+    out: pd.DataFrame | None = None
+    for ch in KNOWN_CHAINS:
+        df_ch = _combined_stocks_mc_chain_df(pullers, chain=ch)
+        if df_ch is None or df_ch.empty:
+            continue
+        proj_cols = [c for c in df_ch.columns if c != "date"]
+        if not proj_cols:
+            continue
+        total_for_chain = (df_ch[proj_cols].ffill().fillna(0)
+                                           .sum(axis=1))
+        # Skip the chain entirely if every value is zero — avoids
+        # a wall of empty bands on the chart for chains that exist
+        # in the registry but have no MC data yet (e.g. Sui).
+        if float(total_for_chain.max() or 0) <= 0:
+            continue
+        safe = ch.lower().replace(" ", "_")
+        if safe == "binance":
+            safe = "binance_smart_chain"
+        col_name = f"mc_{safe}_usd"
+        sub = pd.DataFrame({
+            "date": df_ch["date"],
+            col_name: total_for_chain.values,
+        })
+        out = sub if out is None else out.merge(sub, on="date",
+                                                  how="outer")
     if out is None or out.empty:
         return None
     out = out[out["date"] >= "2020-01-01"]
@@ -5995,6 +6076,13 @@ def _combined_stocks_mc_chain_df(pullers: list,
         "_solana_usd", "_ethereum_usd", "_binance_usd",
         "_binance_smart_chain_usd", "_base_usd", "_arbitrum_usd",
         "_polygon_usd", "_avalanche_usd", "_optimism_usd",
+        # Treasury-specific chains added with the by-chain MC chart —
+        # BUIDL/OUSG/USDY/USTB/JTRSY/VBILL/USYC together hit every
+        # entry below. Ordering doesn't matter for `endswith`.
+        "_aptos_usd", "_celo_usd", "_near_usd", "_noble_usd",
+        "_plume_mainnet_usd", "_mantle_usd", "_glue_usd",
+        "_ripple_usd", "_stellar_usd", "_sui_usd", "_sei_usd",
+        "_ink_usd", "_scroll_usd",
     )
 
     def _is_chain_col(col: str) -> bool:
@@ -8520,11 +8608,11 @@ if __name__ == "__main__":
             st.stop()
 
         if selected_asset == "Tokenized treasuries":
-            # All-chain per-token MC (DefiLlama-sourced). Treasuries
-            # have no on-chain trading activity tracked by Birdeye —
-            # MC is the only meaningful metric, so this vertical
-            # shows just one chart per puller (no volume sibling
-            # like commodities/equities have).
+            # All-chain per-token MC (DefiLlama-sourced, CG-sourced for
+            # the 7 tokens in _TREASURY_COINGECKO). Treasuries have no
+            # on-chain trading activity tracked by Birdeye — MC is the
+            # only meaningful metric, so this vertical shows MC charts
+            # only (no volume sibling like commodities/equities have).
             if not treasury_pullers:
                 st.info("No tokenized treasury pullers registered.")
                 st.stop()
@@ -8532,6 +8620,7 @@ if __name__ == "__main__":
                 _safe_p = (getattr(p, "name", p.GROUP_LABEL).lower()
                                                           .replace("-", "_")
                                                           .replace(" ", "_"))
+                # ── Chart 1: by token (one band per token) ────────────
                 p.render_market_cap_chain(
                     chain=None, stacked=True,
                     raw_key=f"asset_treas_mc_{_safe_p}",
@@ -8539,12 +8628,100 @@ if __name__ == "__main__":
                 )
                 st.caption(
                     "Per-token market cap stacked across every chain. "
-                    "Source: DefiLlama free API (daily history). "
-                    "These tokens (BlackRock BUIDL, Ondo USDY, "
-                    "Franklin BENJI, etc.) have no Birdeye-tracked "
-                    "on-chain trading volume — MC is the only metric "
-                    "available. Hover tooltip shows per-token + Total "
+                    "Source: DefiLlama (free API daily history) for "
+                    "most tokens; CoinGecko for BUIDL / JTRSY / VBILL / "
+                    "USYC / USTB / OUSG / USDY (cross-checked + "
+                    "user-selected); Birdeye Token Overview + seed "
+                    "for ULTRA. Hover tooltip shows per-token + Total "
                     "at each date."
+                )
+
+            # ── Chart 2: by chain (one band per settlement chain) ───
+            # Same underlying per-chain MC cols the by-token chart
+            # rolls up, but pivoted differently: each band is one
+            # chain summing every token deployed on it. Lets you see
+            # the chain-share distribution shift over time as new
+            # treasuries launch on emerging chains (Plume, Glue, etc.).
+            st.divider()
+            _treas_mc_by_chain = _treasury_mc_by_chain_df(treasury_pullers)
+            if _treas_mc_by_chain is None or _treas_mc_by_chain.empty:
+                st.info(
+                    "No per-chain MC data yet — next pull (every 4h) "
+                    "will populate this view."
+                )
+            else:
+                _treas_chain_cols = [
+                    c for c in _treas_mc_by_chain.columns
+                    if c.startswith("mc_") and c.endswith("_usd")
+                ]
+                # Largest chain at the bottom of the stack (most-
+                # readable anchor) — sort by latest non-NaN value.
+                def _latest_treas_mc(col, _df=_treas_mc_by_chain):
+                    s = _df[col].dropna()
+                    return float(s.iloc[-1]) if len(s) else 0.0
+                _treas_chain_cols.sort(key=_latest_treas_mc, reverse=True)
+
+                def _build_treas_mc_by_chain_fig(df_view):
+                    fig = go.Figure()
+                    present = [c for c in _treas_chain_cols
+                                if c in df_view.columns]
+                    for col in present:
+                        ch_safe = col[len("mc_"):-len("_usd")]
+                        label = _PER_CHAIN_LABEL.get(
+                            ch_safe, ch_safe.replace("_", " ").title())
+                        color = _PER_CHAIN_COLOR.get(ch_safe, "#888888")
+                        y = df_view[col].ffill().fillna(0.0)
+                        fig.add_trace(go.Scatter(
+                            x=df_view["date"], y=y, name=label,
+                            mode="lines",
+                            line=dict(color=color, width=0.8),
+                            stackgroup="treas_mc_chain",
+                            customdata=y.map(_fmt_usd),
+                            hovertemplate=f"{label}: %{{customdata}}<extra></extra>",
+                        ))
+                    totals_v = (df_view[present].ffill().fillna(0)
+                                                 .sum(axis=1))
+                    fig.add_trace(go.Scatter(
+                        x=df_view["date"], y=totals_v, name="Total",
+                        mode="lines",
+                        line=dict(width=0, color="rgba(0,0,0,0)"),
+                        showlegend=False, stackgroup=None,
+                        customdata=totals_v.map(_fmt_usd),
+                        hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+                    ))
+                    y_max = float(totals_v.max() or 0)
+                    fig.update_layout(
+                        height=420, hovermode="x unified",
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        showlegend=False,
+                        yaxis=dict(tickprefix="$", tickformat="~s",
+                                    showgrid=True, rangemode="tozero",
+                                    range=[0, y_max * 1.10] if y_max > 0 else None),
+                    )
+                    return fig
+
+                _treas_chain_raw = _treas_mc_by_chain.copy()
+                _treas_chain_raw["total"] = (
+                    _treas_mc_by_chain[_treas_chain_cols].ffill().fillna(0)
+                                                          .sum(axis=1).values)
+                _chart_dwm_simple(
+                    "Market Cap by Chain (all treasuries)",
+                    source_df=_treas_mc_by_chain,
+                    build_fig=_build_treas_mc_by_chain_fig,
+                    raw_df=_treas_chain_raw.sort_values("date", ascending=False),
+                    raw_key="asset_treas_mc_by_chain",
+                    raw_filename="tokenized_treasuries_mc_by_chain",
+                    caption=(
+                        "Per-chain MC summed across every treasury "
+                        "token deployed on that chain. Same sources "
+                        "as the by-token view above. Ethereum + "
+                        "Aptos typically dominate BUIDL / OUSG / "
+                        "USDY's footprint; smaller-tail chains "
+                        "(Plume / Glue / Noble / etc.) reveal which "
+                        "emerging L1s issuers prioritize."
+                    ),
+                    col_aggs={c: "last" for c in _treas_chain_cols},
+                    legend_label="chains",
                 )
             st.stop()
 

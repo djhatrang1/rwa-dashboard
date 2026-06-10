@@ -2785,78 +2785,108 @@ def _render_perp_dexs() -> None:
             st.divider()
 
     # ── Asset-class breakdowns ────────────────────────────────────────────
-    st.subheader("Volume by asset class")
-    st.caption(
-        "Each chart breaks down perp volume on one asset class across "
-        "the symbols traded on Solana DEXs."
-    )
-
     # Filter for the per-asset-class charts: their `symbol` column
     # uses a SINGLE underscore prefix (_XAU / _WTI / _PAXG / _TSLA /
     # _SP500 / _EUR / etc.) to namespace the asset-class symbols away
     # from grand totals ("Total") and DEX names. The default
-    # _pivot_metric filter rejects every `_*` string, which dropped
-    # every symbol in these 4 queries — hence "pivoted result is
-    # empty". This filter keeps single-underscore names but excludes
-    # double-underscore (sub-categories / synthetics) and bare totals.
+    # _pivot_metric filter rejects every `_*` string, so we have to
+    # supply one that keeps single-underscore names + drops double-
+    # underscore (sub-categories) + "Total".
     def _asset_class_filter(s):
         return (isinstance(s, str)
                 and s.startswith("_")
                 and not s.startswith("__")
                 and s != "Total")
 
-    # `vol_category` carries the asset-class GRAND TOTALS only
-    # (Commodity / FX / Equity / Index rows where symbol==category).
-    # The per-symbol breakdown rows (one per ticker — XAU / WTI /
-    # TSLA / EUR / SP500 etc.) populate `vol_market_symbol` instead,
-    # tagged with a single-underscore `_<ticker>` symbol name. So
-    # for the per-symbol stacks we pivot on vol_market_symbol +
-    # filter to single-underscore symbols.
-    asset_charts = [
-        ("Crypto perps",      4594, "vol_market_symbol",
-         lambda s: isinstance(s, str) and s.startswith("__") and s[2:] in
-            ("BTC","ETH","SOL","BNB","XRP","HYPE","OTHER","ZEC")),
-        ("Commodity perps",   4625, "vol_market_symbol", _asset_class_filter),
-        ("Equity perps",      4626, "vol_market_symbol", _asset_class_filter),
-        ("Index perps",       4627, "vol_market_symbol", _asset_class_filter),
-        ("FX perps",          4628, "vol_market_symbol", _asset_class_filter),
-    ]
-    for row_start in range(0, len(asset_charts), 2):
-        cols = st.columns(2, gap="medium")
-        for col, spec in zip(cols, asset_charts[row_start: row_start + 2]):
-            title, qid, metric_col, dim_filter = spec
-            df_q = data.get(qid)
-            if df_q is None or df_q.empty:
+    def _render_asset_class_section(
+        metric_prefix: str,
+        section_title: str,
+        caption: str,
+        agg_rule: str,
+        key_suffix: str,
+    ) -> None:
+        """Render one 2-col grid of 5 asset-class charts for a given
+        metric. `metric_prefix` is 'vol' or 'oi' — appended to '_market_symbol'
+        to find the right column on the source df. `agg_rule` controls
+        the D/W/M resample: 'sum' for flows (volume), 'last' for stocks
+        (open interest). `key_suffix` namespaces the raw-data button
+        + CSV filename so the two sections don't collide."""
+        st.subheader(section_title)
+        st.caption(caption)
+
+        # The per-symbol rows on qid=4594 use a DOUBLE underscore
+        # prefix (__BTC / __ETH / …) while qid=4625-4628 use SINGLE
+        # underscore (_XAU / _TSLA / …). Filter accordingly.
+        crypto_filter = lambda s: (
+            isinstance(s, str) and s.startswith("__") and s[2:] in
+            ("BTC","ETH","SOL","BNB","XRP","HYPE","OTHER","ZEC"))
+        metric_col = f"{metric_prefix}_market_symbol"
+        asset_charts = [
+            ("Crypto perps",    4594, metric_col, crypto_filter),
+            ("Commodity perps", 4625, metric_col, _asset_class_filter),
+            ("Equity perps",    4626, metric_col, _asset_class_filter),
+            ("Index perps",     4627, metric_col, _asset_class_filter),
+            ("FX perps",        4628, metric_col, _asset_class_filter),
+        ]
+        for row_start in range(0, len(asset_charts), 2):
+            cols = st.columns(2, gap="medium")
+            for col, spec in zip(cols, asset_charts[row_start: row_start + 2]):
+                title, qid, mcol, dim_filter = spec
+                df_q = data.get(qid)
+                if df_q is None or df_q.empty:
+                    with col:
+                        st.info(f"{title}: no data for query {qid}.")
+                    continue
+                wide = _pivot_metric(df_q, mcol, dim_filter=dim_filter)
+                if wide.empty:
+                    with col:
+                        st.info(f"{title}: pivoted result is empty.")
+                    continue
+                # Strip leading "_" from per-symbol col names so legend
+                # reads "XAU / WTI / TSLA / EUR" not "_XAU / _WTI / ...".
+                wide = wide.rename(columns={
+                    c: c.lstrip("_") for c in wide.columns if c != "date"
+                })
+                _raw_a = wide.copy()
+                _ord_a = _sort_cols_by_latest(wide)
+                _raw_a["Total"] = wide[_ord_a].fillna(0).sum(axis=1)
                 with col:
-                    st.info(f"{title}: no data for query {qid}.")
-                continue
-            wide = _pivot_metric(df_q, metric_col, dim_filter=dim_filter)
-            if wide.empty:
-                with col:
-                    st.info(f"{title}: pivoted result is empty.")
-                continue
-            # Strip leading "_" from per-symbol col names so legend
-            # reads "XAU / WTI / TSLA / EUR" not "_XAU / _WTI / ...".
-            # Doesn't affect the Crypto chart (uses "__" prefix);
-            # those names are stripped via lstrip("_") below.
-            wide = wide.rename(columns={
-                c: c.lstrip("_") for c in wide.columns if c != "date"
-            })
-            _raw_a = wide.copy()
-            _ord_a = _sort_cols_by_latest(wide)
-            _raw_a["Total"] = wide[_ord_a].fillna(0).sum(axis=1)
-            with col:
-                sd._chart_dwm_simple(
-                    title,
-                    source_df=wide,
-                    build_fig=lambda df_view: _build_perp_stack(
-                        df_view, height=360),
-                    raw_df=_raw_a.sort_values("date", ascending=False),
-                    raw_key=f"perp_assetclass_{qid}",
-                    raw_filename=f"solana_perp_{title.lower().replace(' ','_')}",
-                    col_aggs={c: "sum" for c in _ord_a},
-                )
-                _perp_legend_expander(wide)
+                    sd._chart_dwm_simple(
+                        title,
+                        source_df=wide,
+                        build_fig=lambda df_view: _build_perp_stack(
+                            df_view, height=360),
+                        raw_df=_raw_a.sort_values("date", ascending=False),
+                        raw_key=f"perp_assetclass_{qid}_{key_suffix}",
+                        raw_filename=f"solana_perp_{title.lower().replace(' ','_')}_{key_suffix}",
+                        col_aggs={c: agg_rule for c in _ord_a},
+                    )
+                    _perp_legend_expander(wide)
+
+    # Volume by asset class — flow metric, sum across periods.
+    _render_asset_class_section(
+        metric_prefix="vol",
+        section_title="Volume by asset class",
+        caption=(
+            "Each chart breaks down perp volume on one asset class "
+            "across the symbols traded on Solana DEXs."
+        ),
+        agg_rule="sum",
+        key_suffix="vol",
+    )
+    st.divider()
+    # Open Interest by asset class — stock metric, last across periods.
+    _render_asset_class_section(
+        metric_prefix="oi",
+        section_title="Open Interest by asset class",
+        caption=(
+            "Per-symbol open interest on each asset class. OI is a "
+            "stock not a flow → Weekly/Monthly = period-end (last) "
+            "value."
+        ),
+        agg_rule="last",
+        key_suffix="oi",
+    )
 
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────

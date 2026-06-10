@@ -4101,6 +4101,24 @@ _TOKENIZED_STOCK_GROUPS: list[tuple[str, str, list]] = [
         ],
     ),
     (
+        # Securitize — long-running tokenization platform (USTB tokenized
+        # treasuries, multi-chain cap-table issuance). Equity tokens
+        # currently include CURRENC Group (Nasdaq: CURR) on Solana +
+        # Ethereum, and Exodus Movement (EXOD) on Algorand + Arbitrum.
+        # We list the address per primary chain; CoinGecko per-token
+        # IDs (see coingecko_stock_ids.json "Securitize" section)
+        # provide the cross-chain global MC since Birdeye doesn't
+        # cover Algorand at all — EXOD's MC would be missing without
+        # the CG fallback.
+        "securitize_group",
+        "Securitize",
+        [
+            ("CURR", "Db7QEHL5keqhukiPFXo2zw6LXnkkyvToTBazge4aUZbG",
+             "Solana"),
+            ("EXOD", "213345970", "Algorand"),
+        ],
+    ),
+    (
         # Superstate Opening Bell — the company tokenization product
         # from Superstate (the same team behind USTB tokenized
         # treasuries). Opening Bell lets issuers mint cap-table-backed
@@ -6344,7 +6362,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v59-superstate-opening-bell"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v60-securitize"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────

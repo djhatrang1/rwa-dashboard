@@ -9,6 +9,10 @@
     "DGLD": "gold-token-sa-dgld-tokenized-gold",
     "PGOLD": "pleasing-gold"
   },
+  "Securitize": {
+    "CURR": "currenc-group-inc",
+    "EXOD": "exod"
+  },
   "PreStocks": {
     "ANTHROPIC": "anthropic-prestocks-2",
     "ANDURIL": "anduril-prestocks-2",

@@ -8203,6 +8203,43 @@ if __name__ == "__main__":
             # puller since it owns the DL aggregate + CG cross-chain
             # cols needed for the all-chain view.
             _per_proj = _dedupe_pullers_for_chain(stocks_pullers, "solana")
+
+            # Hide pullers whose MC chart would render empty (e.g.
+            # Superstate Opening Bell while FORD/GLXY/SBET have no
+            # on-chain volume and CG MC fetches haven't accumulated
+            # history yet). The card auto-reappears once the puller
+            # writes its first non-zero MC row, so this is a "until
+            # data is available" gate, not a hardcoded exclusion.
+            # Critical side effect: removing the empty entry lets
+            # the 2-col pairing land Securitize next to Ondo instead
+            # of Securitize | Superstate(empty) | Ondo(alone).
+            def _has_renderable_mc(puller) -> bool:
+                """True iff this puller has at least one mc_ column
+                with at least one non-zero value across its full
+                history. Conservative — keeps the card visible the
+                moment any MC data lands, even if most days are
+                still zero."""
+                df = puller.get_latest()
+                if df is None or df.empty:
+                    return False
+                mc_cols = [c for c in df.columns
+                            if c.startswith("mc_") and c.endswith("_usd")]
+                if not mc_cols:
+                    return False
+                for c in mc_cols:
+                    s = pd.to_numeric(df[c], errors="coerce")
+                    if s.fillna(0).gt(0).any():
+                        return True
+                return False
+
+            _per_proj = [p for p in _per_proj if _has_renderable_mc(p)]
+            if not _per_proj:
+                st.info(
+                    "No tokenized-equities project has MC data yet. "
+                    "The next pull (every 4h) will populate this view."
+                )
+                st.stop()
+
             for row_start in range(0, len(_per_proj), 2):
                 col_a, col_b = st.columns(2, gap="medium")
                 for col, p in zip(

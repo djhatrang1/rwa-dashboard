@@ -6362,7 +6362,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v60-securitize"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v61-clear-data-cache-on-version-bump"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────
@@ -6567,6 +6567,14 @@ if __name__ == "__main__":
                 _old_sched.shutdown()
             except Exception:
                 pass
+        # Bust the 4h `_cached_latest_payload` data cache whenever the
+        # pullers list is rebuilt (version bump or first load). Without
+        # this, when a new puller (e.g. Securitize) gets its first
+        # cron-pull data written to Postgres AFTER Streamlit Cloud's
+        # very first get_latest() returned None, the None stays cached
+        # for 4h and the new puller's card shows "Waiting for first
+        # pull…" indefinitely even though Postgres has the rows.
+        _cached_latest_payload.clear()
         _pullers = init_pullers(settings, cache_db)
         # On Streamlit Cloud the GitHub Actions cron pulls every 6h, so an
         # in-process APScheduler is duplicate work AND a big memory hog

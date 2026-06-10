@@ -13,6 +13,11 @@
     "CURR": "currenc-group-inc",
     "EXOD": "exod"
   },
+  "Superstate Opening Bell": {
+    "FORD": "forward-industries-inc",
+    "GLXY": "galaxy-digital-inc-class-a-common-stock",
+    "SBET": "sharplink-gaming-inc"
+  },
   "PreStocks": {
     "ANTHROPIC": "anthropic-prestocks-2",
     "ANDURIL": "anduril-prestocks-2",

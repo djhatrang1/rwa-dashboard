@@ -97,6 +97,20 @@ For charts that DON'T route through the helpers (e.g. you have a one-off bar cha
 - 2–5 series — short enough that the legend fits below the chart without crowding; hiding it behind a click would cost more than it saves.
 - 6+ series — inline Plotly legends with this many series stretch horizontally, shrink the plot area, and crowd the page. Collapsing reclaims that vertical space.
 
+### Y-axis tick formatting
+`_apply_b_format_to_yaxes` (called by `_chart`) renders all y-axis ticks per these rules:
+
+- **Integer values** drop the trailing `.0` — `300M` not `300.0M`, `1B` not `1.0B`.
+- **Decimal values** show ONE digit after the decimal — `1.2M` not `1.25M`.
+- **Currency mode** (default) prefixes `$`; **count mode** never does.
+
+Use `fmt_mode="count"` when the y-axis is a non-USD integer (holder counts, # of transactions, # of merchants, # of users). Default is `"currency"`.
+
+```python
+# Hover-tooltip formatting (via _fmt_usd) keeps 2 decimals for precision
+# at a specific hovered point — only AXIS ticks follow the integer-drops-.0 rule.
+```
+
 ### Captions
 Standard order: subheader → caption → chart. Caption explains the data source (with link) and any non-obvious aggregation choice. Don't put data-source links in the chart title.
 

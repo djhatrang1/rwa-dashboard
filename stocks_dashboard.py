@@ -1769,14 +1769,31 @@ def _apply_b_format_to_yaxes(fig: go.Figure, fmt_mode: str = "currency") -> go.F
     fall back to scanning trace y values when no range was set.
 
     `fmt_mode` controls the prefix on each label:
-      • "currency" (default) — '$1.5B', '$45.0M' etc. for USD values
-      • "count"              — '1.5B', '45.0M' etc. for integer counts
+      • "currency" (default) — '$1.5B', '$45M' etc. for USD values
+      • "count"              — '1.5B', '45M' etc. for integer counts
                                 (holder counts, # of transactions, etc.) —
-                                no '$' prefix and no decimal places under 10
+                                no '$' prefix
+
+    Number-format rules (project convention):
+      • Integer-valued ticks render WITHOUT the trailing '.0' — so
+        300M not '300.0M', 1B not '1.0B'. Plotly's `tickformat='~s'`
+        used to leave the '.0' in place, which the user flagged as
+        noise.
+      • Decimal-valued ticks render to ONE decimal place — '1.2M'
+        not '1.25M'. Banker's rounding via Python's `:.1f`.
+      • Currency mode prefixes '$'; count mode never does.
 
     Safe to no-op when there's no data and idempotent — re-calling on an
     already-decorated fig overwrites with the same tickvals/ticktext."""
     import math
+
+    def _scale_fmt(scaled: float) -> str:
+        """Render a scaled magnitude (1.0–999.999...) per the rules:
+        integer values drop '.0'; decimals show one digit."""
+        rounded = round(scaled, 1)
+        if rounded == int(rounded):
+            return str(int(rounded))
+        return f"{rounded:.1f}"
 
     def fmt(v) -> str:
         try:
@@ -1787,13 +1804,19 @@ def _apply_b_format_to_yaxes(fig: go.Figure, fmt_mode: str = "currency") -> go.F
         if v == 0:
             return f"{prefix}0"
         a = abs(v); sign = "-" if v < 0 else ""
-        if a >= 1e12: return f"{sign}{prefix}{a/1e12:.1f}T"
-        if a >= 1e9:  return f"{sign}{prefix}{a/1e9:.1f}B"
-        if a >= 1e6:  return f"{sign}{prefix}{a/1e6:.1f}M"
-        if a >= 1e3:  return f"{sign}{prefix}{a/1e3:.1f}K"
+        for divisor, suffix in (
+            (1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K"),
+        ):
+            if a >= divisor:
+                return f"{sign}{prefix}{_scale_fmt(a / divisor)}{suffix}"
+        # Sub-thousand: integer counts render as-is; currency keeps two
+        # decimals under $10 (price-like granularity) and rounds to
+        # integer otherwise — both per the integer-drops-.0 rule.
         if fmt_mode == "count":
-            return f"{sign}{prefix}{a:,.0f}"
-        return f"{sign}{prefix}{a:.2f}" if a < 10 else f"{sign}{prefix}{a:.0f}"
+            return f"{sign}{int(round(a))}"
+        if a < 10:
+            return f"{sign}{prefix}{_scale_fmt(a)}"
+        return f"{sign}{prefix}{int(round(a))}"
 
     def nice_ticks(lo: float, hi: float, target: int = 6) -> list[float]:
         if hi <= lo:

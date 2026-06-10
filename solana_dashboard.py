@@ -2741,14 +2741,35 @@ def _render_perp_dexs() -> None:
         "the symbols traded on Solana DEXs."
     )
 
+    # Filter for the per-asset-class charts: their `symbol` column
+    # uses a SINGLE underscore prefix (_XAU / _WTI / _PAXG / _TSLA /
+    # _SP500 / _EUR / etc.) to namespace the asset-class symbols away
+    # from grand totals ("Total") and DEX names. The default
+    # _pivot_metric filter rejects every `_*` string, which dropped
+    # every symbol in these 4 queries — hence "pivoted result is
+    # empty". This filter keeps single-underscore names but excludes
+    # double-underscore (sub-categories / synthetics) and bare totals.
+    def _asset_class_filter(s):
+        return (isinstance(s, str)
+                and s.startswith("_")
+                and not s.startswith("__")
+                and s != "Total")
+
+    # `vol_category` carries the asset-class GRAND TOTALS only
+    # (Commodity / FX / Equity / Index rows where symbol==category).
+    # The per-symbol breakdown rows (one per ticker — XAU / WTI /
+    # TSLA / EUR / SP500 etc.) populate `vol_market_symbol` instead,
+    # tagged with a single-underscore `_<ticker>` symbol name. So
+    # for the per-symbol stacks we pivot on vol_market_symbol +
+    # filter to single-underscore symbols.
     asset_charts = [
         ("Crypto perps",      4594, "vol_market_symbol",
          lambda s: isinstance(s, str) and s.startswith("__") and s[2:] in
             ("BTC","ETH","SOL","BNB","XRP","HYPE","OTHER","ZEC")),
-        ("Commodity perps",   4625, "vol_category", None),
-        ("Equity perps",      4626, "vol_category", None),
-        ("Index perps",       4627, "vol_category", None),
-        ("FX perps",          4628, "vol_category", None),
+        ("Commodity perps",   4625, "vol_market_symbol", _asset_class_filter),
+        ("Equity perps",      4626, "vol_market_symbol", _asset_class_filter),
+        ("Index perps",       4627, "vol_market_symbol", _asset_class_filter),
+        ("FX perps",          4628, "vol_market_symbol", _asset_class_filter),
     ]
     for row_start in range(0, len(asset_charts), 2):
         cols = st.columns(2, gap="medium")
@@ -2764,6 +2785,13 @@ def _render_perp_dexs() -> None:
                 with col:
                     st.info(f"{title}: pivoted result is empty.")
                 continue
+            # Strip leading "_" from per-symbol col names so legend
+            # reads "XAU / WTI / TSLA / EUR" not "_XAU / _WTI / ...".
+            # Doesn't affect the Crypto chart (uses "__" prefix);
+            # those names are stripped via lstrip("_") below.
+            wide = wide.rename(columns={
+                c: c.lstrip("_") for c in wide.columns if c != "date"
+            })
             _raw_a = wide.copy()
             _ord_a = _sort_cols_by_latest(wide)
             _raw_a["Total"] = wide[_ord_a].fillna(0).sum(axis=1)

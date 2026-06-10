@@ -7233,8 +7233,16 @@ if __name__ == "__main__":
                 _ch_wide, _ch_ordered = _pivot_top_n(
                     _ps_chain_df, key_col="chain", value_col="volumes",
                     top_n=12)
-                _ch_colors = {c: (_PS_PALETTE[i] if c != "Others" else "#888888")
-                                for i, c in enumerate(_ch_ordered)}
+                # _ordered sorts by latest value so "Others" may land
+                # anywhere — count non-Others positions separately so
+                # we don't index past _PS_PALETTE (12 hues, 13 cols).
+                _ch_colors, _ci = {}, 0
+                for c in _ch_ordered:
+                    if c == "Others":
+                        _ch_colors[c] = "#888888"
+                    else:
+                        _ch_colors[c] = _PS_PALETTE[_ci % len(_PS_PALETTE)]
+                        _ci += 1
                 _ch_raw = _ch_wide.copy()
                 _ch_raw["Total"] = (_ch_wide[_ch_ordered].fillna(0)
                                                           .sum(axis=1).values)
@@ -7276,8 +7284,13 @@ if __name__ == "__main__":
                 _pr_wide, _pr_ordered = _pivot_top_n(
                     _ps_proj_df, key_col="project", value_col="volumes",
                     top_n=12)
-                _pr_colors = {c: (_PS_PALETTE[i] if c != "Others" else "#888888")
-                                for i, c in enumerate(_pr_ordered)}
+                _pr_colors, _ci = {}, 0
+                for c in _pr_ordered:
+                    if c == "Others":
+                        _pr_colors[c] = "#888888"
+                    else:
+                        _pr_colors[c] = _PS_PALETTE[_ci % len(_PS_PALETTE)]
+                        _ci += 1
                 _pr_raw = _pr_wide.copy()
                 _pr_raw["Total"] = (_pr_wide[_pr_ordered].fillna(0)
                                                           .sum(axis=1).values)

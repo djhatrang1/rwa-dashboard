@@ -1022,14 +1022,28 @@ def _render_stablecoins() -> None:
             yaxis=dict(tickprefix="$", tickformat="~s",
                        showgrid=True, rangemode="tozero"),
             yaxis2=dict(overlaying="y", side="right",
-                        showgrid=False, tickformat=",",
+                        showgrid=False, tickformat="~s",
                         rangemode="tozero"),
         )
-        sd._chart(fig_spv, use_container_width=True,
-                  raw_df=_spv_df, raw_key="sd_stable_pay_vol_xfer",
-                  raw_filename="sol_stable_payments_vol_transfers",
-                  raw_fmt={"total_volume_usd": "${:,.0f}",
-                           "transfer_count": "{:,}"})
+        # Render via st.plotly_chart directly (NOT sd._chart) because
+        # sd._chart pipes the fig through _apply_b_format_to_yaxes
+        # which walks EVERY y-axis with one fmt_mode — for this dual-
+        # axis chart we need '$' on the left axis (volume) but bare
+        # counts on the right axis (transfer count). The helper has no
+        # per-axis fmt_mode hook, so bypassing it here is the cleanest
+        # fix without altering the helper's contract for every other
+        # caller. Raw button rendered manually below to preserve the
+        # CSV-download affordance.
+        st.plotly_chart(fig_spv, use_container_width=True)
+        _, _btn_col = st.columns([0.92, 0.08])
+        with _btn_col:
+            if st.button("📋", key="raw_sd_stable_pay_vol_xfer",
+                         help="View raw data"):
+                sd._raw_data_modal(
+                    _spv_df,
+                    {"total_volume_usd": "${:,.0f}",
+                     "transfer_count": "{:,}"},
+                    "sol_stable_payments_vol_transfers")
 
     st.divider()
     # ── Daily volume by flow category (stacked area) ─────────────────────

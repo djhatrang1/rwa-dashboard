@@ -5269,6 +5269,7 @@ def init_pullers(settings: Settings, db: CacheDB) -> List[DataPuller]:
         _make_stock_group_puller(pname, label, tokens,
                                  group="treasuries",
                                  defillama_tokens=_TREASURY_DEFILLAMA,
+                                 coingecko_per_token_ids=_TREASURY_COINGECKO,
                                  skip_volume=True)(settings, db)
         for pname, label, tokens in _TREASURY_GROUPS
     ]
@@ -5550,6 +5551,50 @@ _TREASURY_DEFILLAMA: dict = {
     #   iBENJI, BENJI, CUMIU, BELIF, MONY, FILQ, CUMBU, UMINT,
     #   CUMFU, usfr.d, deJTRSY, CMBMINT, nTBILL, FLTTX, TIPSX, WTLGX,
     #   WTSTX, WTTSX, WTSYX, USTRY
+}
+
+
+# CoinGecko per-token IDs for treasuries where the puller should prefer
+# CG's market_cap over DefiLlama's per-chain TVL sum. The puller writes
+# `mc_<symbol>_cg_usd` columns from these IDs; `render_market_cap_chain
+# (chain=None)` prefers the `_cg_usd` col over the summed per-chain DL
+# cols when both exist (see line ~3192). Per-chain views (chain="Solana",
+# "Ethereum", etc.) continue to use DL because that's where the per-
+# chain breakdown actually exists.
+#
+# Per the cross-check on 2026-06-10, the user assigned these tokens
+# explicitly to one source or the other (the row marked CG below
+# becomes CG-authoritative for the all-chain view):
+#
+#   TOKEN   Source  Reason
+#   ─────   ──────  ─────────────────────────────────────────────────
+#   BUIDL   CG      DL $2.988B vs CG $2.445B (22% gap); CG matches
+#                   BlackRock's published AUM more closely.
+#   JTRSY   CG      Both match within 0.02% — picking CG for
+#                   consistency with the other Anemoy-tracked tokens.
+#   VBILL   CG      Both match within 0.0% — either works.
+#   USYC    CG      DL-only previously (no CG match via contract);
+#                   slug hashnote-usyc now wires CG.
+#   USTB    CG      DL had a 22% lag vs CG; CG slug
+#                   superstate-short-duration-us-government-securities
+#                   -fund-ustb is authoritative.
+#   OUSG    CG      DL slug 'ondo-yield-assets' is umbrella (includes
+#                   USDY + others); CG slug 'ousg' reads only the OUSG
+#                   token contract — that's the right number.
+#   USDY    CG      Same Ondo umbrella issue as OUSG; CG slug
+#                   ondo-us-dollar-yield reads only the USDY token.
+#
+# Kept on DefiLlama (NOT in this dict):
+#   TBILL  — openeden-tbill DL slug; CG has the token but no MC field.
+#   ULTRA  — ondo-global-markets DL slug; not listed on CG.
+_TREASURY_COINGECKO: dict = {
+    "BUIDL": "blackrock-usd-institutional-digital-liquidity-fund",
+    "JTRSY": "janus-henderson-anemoy-treasury-fund",
+    "VBILL": "vaneck-treasury-fund",
+    "USYC":  "hashnote-usyc",
+    "USTB":  "superstate-short-duration-us-government-securities-fund-ustb",
+    "OUSG":  "ousg",
+    "USDY":  "ondo-us-dollar-yield",
 }
 
 
@@ -6584,7 +6629,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v62-jtrsy-defillama-mapping"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v63-buidl-coingecko-source"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────

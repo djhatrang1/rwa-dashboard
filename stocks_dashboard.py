@@ -5493,7 +5493,15 @@ _TREASURY_GROUPS: list[tuple[str, str, list]] = [
             ("CUMIU", "0x85d38585c3ac08268f598282a84b7c0ddfc0d04f", "Ethereum"),
             ("USTBL", "0xe4880249745eac5f1ed9d8f7df844792d560e750", "Ethereum"),
             ("FDIT", "0x48ab4e39ac59f4e88974804b04a991b3a402717f", "Ethereum"),
+            # ULTRA = Delta Wellington Ultra Short Treasury On-Chain
+            # Fund (issued by Libeara). Lives on 4 chains; Solana entry
+            # already added above. Birdeye Token Overview MC fetched
+            # per-chain by the puller and summed in the all-chains view.
+            # Historical backfill via the 4 mc_seed_<addr>.json files
+            # parsed from rwa.xyz CSV (2025-02 → 2026-06).
             ("ULTRA", "0x50293dd8889b931eb3441d2664dce8396640b419", "Ethereum"),
+            ("ULTRA", "0xc26af85ede9cc25d449bcebef866bb85afd5d346", "Arbitrum"),
+            ("ULTRA", "0x51626db85482b2fa9901271c18627ebefa8875ac", "Avalanche"),
             ("THBILL", "0x5fa487bca6158c64046b2813623e20755091da0b", "Ethereum"),
             ("BELIF", "0x237c717df1b60501f8d029d3fe7385fd090df180", "Ethereum"),
             ("MONY", "0x6a7c6aa2b8b8a6a891de552bdeffa87c3f53bd46", "Ethereum"),
@@ -5523,7 +5531,14 @@ _TREASURY_DEFILLAMA: dict = {
     "OUSG":   {"type": "protocol",   "slug": "ondo-yield-assets"},
     "USDY":   {"type": "stablecoin", "id":   129},
     "VBILL":  {"type": "protocol",   "slug": "vaneck-treasury-fund"},
-    "ULTRA":  {"type": "protocol",   "slug": "ondo-global-markets"},
+    # ULTRA was incorrectly mapped to `ondo-global-markets` (which is
+    # actually Ondo's tokenized-stocks platform, NOT the Wellington
+    # Ultra Short Treasury On-Chain Fund). ULTRA isn't on DefiLlama's
+    # /protocol/ API at all — only the /rwa/asset/ULTRA UI page exists,
+    # and that's not exposed as a public REST endpoint. Source for
+    # ULTRA is now seed file (historical) + Birdeye per-chain snapshot
+    # (live); no DL slug here. Removed mapping entirely so the puller
+    # falls back to Birdeye-snapshot + mc_seed_<addr>.json.
     "USTB":   {"type": "protocol",   "slug": "superstate-ustb"},
     "TBILL":  {"type": "protocol",   "slug": "openeden-tbill"},
     "USDM1":  {"type": "stablecoin", "id":   342},
@@ -6629,7 +6644,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v63-buidl-coingecko-source"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v64-ultra-birdeye-multichain-seeded"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────

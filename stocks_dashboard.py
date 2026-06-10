@@ -5622,6 +5622,8 @@ def _combined_stocks_df(pullers: list,
     return result.sort_values("date").reset_index(drop=True)
 
 
+@st.cache_data(ttl=14_400, show_spinner=False,
+               hash_funcs={list: lambda _: "stocks_pullers_registry"})
 def _combined_stocks_df_all_chains(pullers: list) -> pd.DataFrame | None:
     """All-chain volume by project — sums each chain's suffixed
     `vol_*_<chain>_usd` cols per project so the result has one col per
@@ -5694,11 +5696,28 @@ _PER_CHAIN_COLOR = {
 }
 
 
+# Hash-collapse the unhashable pullers list to a stable singleton so
+# @st.cache_data can memoize the heavy per-chain aggregators. We always
+# call them with the SAME `stocks_pullers` registry list within a
+# session, so a singleton key is correct here; the TTL still rotates
+# the cache every 4h to pick up fresh payloads from the cron pull.
+_STOCKS_PULLER_HASH_FUNCS = {list: lambda _: "stocks_pullers_registry"}
+
+
+@st.cache_data(ttl=14_400, show_spinner=False,
+               hash_funcs=_STOCKS_PULLER_HASH_FUNCS)
 def _stocks_mc_by_chain_df(pullers: list) -> pd.DataFrame | None:
     """Total tokenized-equity market cap per chain, per day. For each
     chain known to carry stocks, sums every project's MC contribution
     on that chain into a single column. Result columns: date | mc_<safe_chain>_usd …
-    Returns None if no chain produced data."""
+    Returns None if no chain produced data.
+
+    Cached: this internally calls _combined_stocks_mc_chain_df 7 times
+    (once per chain), each iterating every puller's get_latest(). The
+    equities vertical was triggering 22+ such cascading calls per page
+    render, which compounded with Ondo's 264-token payload deserialize
+    cost to hang Streamlit Cloud. Memoizing here amortizes the cost
+    across all chart redraws in the 4h cache window."""
     KNOWN_CHAINS = ("Solana", "Ethereum", "Binance", "Base",
                     "Arbitrum", "Polygon", "Avalanche")
     out: pd.DataFrame | None = None
@@ -5728,11 +5747,14 @@ def _stocks_mc_by_chain_df(pullers: list) -> pd.DataFrame | None:
     return out.sort_values("date").reset_index(drop=True)
 
 
+@st.cache_data(ttl=14_400, show_spinner=False,
+               hash_funcs=_STOCKS_PULLER_HASH_FUNCS)
 def _stocks_vol_by_chain_df(pullers: list) -> pd.DataFrame | None:
     """Total tokenized-equity trading volume per chain, per day. For each
     chain, sums every project's volume contribution on that chain into a
     single column. Result columns: date | vol_<safe_chain>_usd …
-    Returns None if no chain produced data."""
+    Returns None if no chain produced data. Memoized — see
+    _stocks_mc_by_chain_df for the rationale."""
     KNOWN_CHAINS = ("Solana", "Ethereum", "Binance", "Base",
                     "Arbitrum", "Polygon", "Avalanche")
     out: pd.DataFrame | None = None

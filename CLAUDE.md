@@ -41,23 +41,34 @@ Time-series charts get a Daily / Weekly / Monthly tab via `_chart_dwm_simple` (s
 ### Raw-data button
 Every chart gets a 📋 button in its top-right corner, pinned by `inject_chartwrap_css()`. Pattern: pass `raw_df` + `raw_key` + `raw_filename` into the chart helper; CSV download is generated automatically.
 
-### Legends — **MUST use `_legend_expander`**
+### Legends — **MUST use `_legend`** (3-tier rule)
 Do NOT use Plotly's inline legend on new charts. Instead:
 
 1. Set `showlegend=False` on `fig.update_layout(...)`
-2. Below the chart call site, render the legend via `_legend_expander(entries, label="...")`
+2. Below the chart call site, call `_legend(entries, label="...")`
+
+The helper auto-dispatches on series count — callers don't pick the tier:
+
+| Series count | Rendering |
+|---|---|
+| **0–1** | Nothing — header / chart title already carries the meaning |
+| **2–5** | Always-visible swatch row below the chart (no click required) |
+| **6+** | Collapsed `st.expander` titled "Legend (N \<label\>)" |
 
 ```python
 fig.update_layout(showlegend=False, ...)
 _chart_dwm_simple("My Chart", source_df=..., build_fig=...)
-_legend_expander(
+_legend(
     [(series_name, hex_color) for series_name, hex_color in ordered],
-    label="tokens")  # singular noun appears in "Legend (N tokens)"
+    label="tokens")  # plural noun appears in "Legend (N tokens)" — only shown for 6+ tier
 ```
 
-The helper lives at module level in `stocks_dashboard.py` and is reachable from `solana_dashboard.py` as `sd._legend_expander(...)`. It renders an 8-column CSS grid of swatches inside a collapsed `st.expander`.
+The helper lives at module level in `stocks_dashboard.py` and is reachable from `solana_dashboard.py` as `sd._legend(...)`. It renders an 8-column CSS grid of swatches; the tier picks whether that grid is bare (2–5) or wrapped in an `st.expander` (6+). `_legend_expander(...)` is a deprecated alias that routes to the same dispatcher — prefer `_legend()` in new code.
 
-**Why:** inline Plotly legends with 10+ series stretch horizontally, shrink the plot area, and crowd the page. Collapsible expander reclaims that space and gives a consistent UX across every chart.
+**Why each tier:**
+- 1 series — a "legend" of one label is pure noise; the chart title already names it.
+- 2–5 series — short enough that the legend fits below the chart without crowding; hiding it behind a click would cost more than it saves.
+- 6+ series — inline Plotly legends with this many series stretch horizontally, shrink the plot area, and crowd the page. Collapsing reclaims that vertical space.
 
 ### Captions
 Standard order: subheader → caption → chart. Caption explains the data source (with link) and any non-obvious aggregation choice. Don't put data-source links in the chart title.

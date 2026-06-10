@@ -3262,17 +3262,20 @@ class TokenGroupMetricsPuller(DataPuller):
         )
         _CG_MODE_TOP_N = 10
 
-        # Use the collapsible HTML legend (below the chart) whenever
-        # the inline Plotly legend would overlap with the rangeselector
-        # buttons. Triggers for ALL chain=None MC charts with ≥ 6
-        # tokens — catches PreStocks (7 tokens with long names like
-        # POLYMARKET/ANTHROPIC that wrap the inline legend to 2 rows
-        # over the 1M/3M/6M buttons), commodities (10), xStocks (77),
-        # Ondo (264). Per-chain views and small groups keep the inline
-        # legend since space isn't an issue there.
-        _use_collapsible_legend = (
-            chain is None and len(token_series) >= 6
-        )
+        # Use the HTML legend helper (below the chart) for every
+        # chain=None MC chart, regardless of token count. The helper
+        # itself implements the 3-tier rule:
+        #   1 token  → no legend (chart title already names it)
+        #   2-5      → always-visible swatch row below the chart
+        #   6+       → collapsed `st.expander`
+        # Previously this was gated to ≥6 tokens, which left small
+        # all-chain groups (Securitize CURR+EXOD = 2; Superstate 3)
+        # showing Plotly's inline legend at the chart's TOP. The new
+        # gate routes them through `_legend()` so they appear at the
+        # BOTTOM, consistent with every other chart.
+        _use_html_legend = chain is None
+        # Back-compat alias — older code paths still read this name.
+        _use_collapsible_legend = _use_html_legend
 
         # Top-N + Others split for _cg_mode charts. token_series is
         # pre-sorted by latest MC desc (line ~3217) so first N are the
@@ -3393,14 +3396,13 @@ class TokenGroupMetricsPuller(DataPuller):
             fig.update_layout(
                 height=380, hovermode="x unified",
                 margin=dict(t=10, b=10, l=10, r=10),
-                # Hide Plotly's inline legend whenever the collapsible
-                # HTML legend (rendered below the chart) is in play —
-                # avoids the inline legend overlapping with the
-                # rangeselector buttons on any chain=None MC chart
-                # with ≥6 tokens (xStocks/Ondo/Commodities/PreStocks).
-                # The HTML expander shows the swatches without
-                # stealing chart real-estate.
-                showlegend=not _use_collapsible_legend,
+                # Hide Plotly's inline legend whenever the HTML
+                # legend (rendered below the chart via _legend()) is
+                # in play — every chain=None chart now uses it, so
+                # the inline legend is always suppressed for the
+                # all-chains view. Per-chain views keep Plotly's
+                # inline legend until they're migrated too.
+                showlegend=not _use_html_legend,
                 legend=dict(orientation="h", yanchor="bottom", y=1.02,
                             xanchor="right", x=1),
                 yaxis=dict(tickprefix="$", tickformat="~s",
@@ -3452,70 +3454,50 @@ class TokenGroupMetricsPuller(DataPuller):
             _chart(_build_mc_fig(mdf), use_container_width=True,
                    **raw_kwargs)
 
-        # Collapsible HTML legend for any chain=None MC chart with ≥ 6
-        # tokens (xStocks/Ondo/Commodities/PreStocks). Plotly's inline
-        # legend is hidden in _build_mc_fig (showlegend=False) to
-        # avoid overlapping the rangeselector buttons. This expander
-        # surfaces the swatches without stealing chart real-estate.
-        # Colors mirror _build_mc_fig's _color_idx logic so swatch next
-        # to each token name matches the trace color in the chart.
-        if _use_collapsible_legend:
-            with st.expander(f"Legend ({len(token_names_all)} tokens)",
-                             expanded=False):
-                if _cg_mode:
-                    # Top-N + Others view — 11 swatches in the main
-                    # grid (matches the bands rendered on the chart),
-                    # then a small-text list of the tokens bucketed
-                    # into Others so the user can drill in.
-                    _legend_entries = []
-                    for i, tn in enumerate(_cg_top_tokens):
-                        color = self._COLORS[
-                            _color_idx.get(tn, i) % len(self._COLORS)]
-                        _legend_entries.append((tn, color))
-                    if _cg_others_tokens:
-                        _legend_entries.append(
-                            (f"Others ({len(_cg_others_tokens)})",
-                             "#888888"))
-                else:
-                    # Token order = MC-rank descending (largest first),
-                    # so the legend reads top-down by latest size — the
-                    # same order the user would scan visually on the
-                    # chart.
-                    _legend_entries = [
-                        (tn,
-                         self._COLORS[_color_idx.get(tn, i)
-                                      % len(self._COLORS)])
-                        for i, tn in enumerate(token_names_all)
-                    ]
-                items_html = "".join(
-                    f'<div style="display:flex;align-items:center;'
-                    f'gap:5px;white-space:nowrap">'
-                    f'<span style="display:inline-block;width:12px;'
-                    f'height:12px;border-radius:2px;'
-                    f'background:{color};flex-shrink:0"></span>'
-                    f'<span style="font-size:0.8rem">{tn}</span>'
-                    f'</div>'
-                    for tn, color in _legend_entries
+        # HTML legend below every chain=None MC chart. Routes through
+        # the smart _legend() dispatcher: 1 token → nothing, 2–5 →
+        # inline swatch row, 6+ → collapsed expander. Plotly's inline
+        # legend is suppressed in _build_mc_fig (showlegend=False) so
+        # this is the only legend that renders. Colors mirror
+        # _build_mc_fig's _color_idx logic so swatch beside each
+        # token name matches the trace color in the chart exactly.
+        if _use_html_legend:
+            if _cg_mode:
+                # Top-N + Others view — N swatches matching the bands
+                # drawn on the chart, plus a grey Others swatch when
+                # the long tail was bucketed.
+                _legend_entries = []
+                for i, tn in enumerate(_cg_top_tokens):
+                    color = self._COLORS[
+                        _color_idx.get(tn, i) % len(self._COLORS)]
+                    _legend_entries.append((tn, color))
+                if _cg_others_tokens:
+                    _legend_entries.append(
+                        (f"Others ({len(_cg_others_tokens)})",
+                         "#888888"))
+            else:
+                # Token order = MC-rank descending (largest first), so
+                # the legend reads top-down by latest size — the same
+                # order the user scans visually on the chart.
+                _legend_entries = [
+                    (tn,
+                     self._COLORS[_color_idx.get(tn, i)
+                                  % len(self._COLORS)])
+                    for i, tn in enumerate(token_names_all)
+                ]
+            _legend(_legend_entries, label="tokens")
+            if _cg_mode and _cg_others_tokens:
+                # List the tokens bucketed into "Others" so the grey
+                # band is actually inspectable. Capped at 100 names
+                # to avoid a wall of text for Ondo's 250+ outside-
+                # top-10 tokens; the rest are reachable via the 📋
+                # raw-data download.
+                _shown = _cg_others_tokens[:100]
+                _trailer = ("…" if len(_cg_others_tokens) > 100 else "")
+                st.caption(
+                    f"**Others includes ({len(_cg_others_tokens)}):** "
+                    + ", ".join(_shown) + _trailer
                 )
-                st.markdown(
-                    f'<div style="display:grid;'
-                    f'grid-template-columns:repeat(8,1fr);'
-                    f'gap:6px 16px;padding:4px 0">{items_html}</div>',
-                    unsafe_allow_html=True,
-                )
-                if _cg_mode and _cg_others_tokens:
-                    # List the tokens bucketed into "Others" so the
-                    # grey band is actually inspectable. Capped at 100
-                    # names visually to avoid a wall of text for Ondo's
-                    # 250+ outside-top-10 tokens; the rest are reachable
-                    # via the 📋 raw-data download.
-                    _shown = _cg_others_tokens[:100]
-                    _trailer = ("…" if len(_cg_others_tokens) > 100
-                                else "")
-                    st.caption(
-                        f"**Others includes ({len(_cg_others_tokens)}):** "
-                        + ", ".join(_shown) + _trailer
-                    )
 
     @staticmethod
     def _clip_isolated_spikes(series: pd.Series, factor: float = 2.0) -> pd.Series:
@@ -6103,58 +6085,89 @@ def _build_combined_stocks_mc_fig(df: pd.DataFrame, labels: list[str],
     return fig
 
 
-# ── Collapsible legend expander (canonical pattern, used by both dashboards) ─
+# ── Legend helper (canonical pattern, used by both dashboards) ───────────────
 #
 # RULE for every new chart: do NOT use Plotly's inline legend. Set
-# `showlegend=False` on the figure and render the legend via this
-# helper as a collapsed expander BELOW the chart. The pattern
-# reclaims vertical space (inline legends with 10+ series stretch
-# horizontally and force the plot area to shrink) and gives users
-# a consistent UX: every chart's legend behaves the same way.
+# `showlegend=False` on the figure and call this helper below the
+# chart with the (name, color) entries. The helper picks the right
+# rendering based on count:
+#
+#   0–1 entries  → no legend at all (chart title carries the meaning)
+#   2–5 entries  → always-visible swatch row BELOW the chart, in the
+#                  same slot the expander would occupy. The chart
+#                  legend is short enough that hiding it behind a
+#                  click would cost more than it saves.
+#   6+ entries   → collapsed `st.expander` titled "Legend (N <label>)".
+#                  Reclaims vertical space when the legend is long.
+#
+# Callers don't decide which tier applies — the helper does. That way
+# the rule lives in one place and every chart obeys it automatically.
 #
 # The helper takes pre-computed (name, color) pairs because callers
 # already build that mapping when assigning trace colors. Don't try
 # to introspect the figure — Plotly stacked-area traces can have
-# colors split between `line.color` and `fillcolor`, and you'd
-# need to special-case every trace type.
-def _legend_expander(entries: list[tuple[str, str]],
-                     label: str = "series",
-                     expanded: bool = False) -> None:
-    """Render a collapsible legend below a chart.
+# colors split between `line.color` and `fillcolor`, and you'd need
+# to special-case every trace type.
+def _legend(entries: list[tuple[str, str]],
+            label: str = "series") -> None:
+    """Render a chart legend below the chart, auto-dispatching on
+    series count (see module-level docstring above for the rule).
 
     Args:
         entries: List of (display_name, hex_color) pairs. Order is
             preserved — caller decides band-order (typically
             largest-first to match the chart stack).
         label: Singular/plural noun shown after the count in the
-            header (e.g. "series" / "tokens" / "chains" / "issuers").
-            The header always reads "Legend (N {label})".
-        expanded: Default False — collapsed so the chart gets full
-            focus. Caller passes True only when there are ≤ 3 series
-            and showing the legend by default costs nothing.
-
-    Layout: 8-column CSS grid of `[swatch] name` cells, auto-wrapping
-    to as many rows as needed. Swatches are 12px squares matching the
-    chart's trace colors exactly.
+            expander header (e.g. "series" / "tokens" / "chains" /
+            "issuers"). Only used when count > 5; ignored otherwise.
     """
-    if not entries:
+    n = len(entries) if entries else 0
+    if n <= 1:
+        # 0 or 1 series → header / chart title already conveys the
+        # meaning. A "legend" of a single label is pure noise.
         return
-    with st.expander(f"Legend ({len(entries)} {label})",
-                      expanded=expanded):
-        items_html = "".join(
-            f'<div style="display:flex;align-items:center;gap:5px;'
-            f'white-space:nowrap">'
-            f'<span style="display:inline-block;width:12px;height:12px;'
-            f'border-radius:2px;background:{color};flex-shrink:0"></span>'
-            f'<span style="font-size:0.8rem">{name}</span></div>'
-            for name, color in entries
-        )
-        st.markdown(
-            f'<div style="display:grid;'
-            f'grid-template-columns:repeat(8,1fr);'
-            f'gap:6px 16px;padding:4px 0">{items_html}</div>',
-            unsafe_allow_html=True,
-        )
+    if n <= 5:
+        # 2–5 series → inline swatch row right below the chart, no
+        # expander wrapper. Same swatch HTML as the expander body for
+        # visual consistency across tiers.
+        _legend_render_grid(entries)
+        return
+    # 6+ series → collapsed expander, same swatch grid inside.
+    with st.expander(f"Legend ({n} {label})", expanded=False):
+        _legend_render_grid(entries)
+
+
+def _legend_render_grid(entries: list[tuple[str, str]]) -> None:
+    """Inner — renders the 8-column CSS grid of [swatch] [name] cells.
+    Shared between the inline tier (2–5) and the expander tier (6+)
+    so both rendering paths look identical."""
+    items_html = "".join(
+        f'<div style="display:flex;align-items:center;gap:5px;'
+        f'white-space:nowrap">'
+        f'<span style="display:inline-block;width:12px;height:12px;'
+        f'border-radius:2px;background:{color};flex-shrink:0"></span>'
+        f'<span style="font-size:0.8rem">{name}</span></div>'
+        for name, color in entries
+    )
+    st.markdown(
+        f'<div style="display:grid;'
+        f'grid-template-columns:repeat(8,1fr);'
+        f'gap:6px 16px;padding:4px 0">{items_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+# Back-compat alias: `_legend_expander` was the original name (before the
+# tiered rule landed) and is referenced from a few existing call sites.
+# It delegates to `_legend` so all callers obey the new dispatching rule
+# without each site needing to be rewritten.
+def _legend_expander(entries: list[tuple[str, str]],
+                     label: str = "series",
+                     expanded: bool = False) -> None:
+    """Deprecated alias for `_legend`. Routes through the smart
+    dispatcher; the `expanded` kwarg is ignored (the tier rule
+    decides visibility). Prefer `_legend(...)` in new code."""
+    _legend(entries, label=label)
 
 
 # ── Chartwrap / raw-button pinning CSS (used by both dashboards) ─────────────

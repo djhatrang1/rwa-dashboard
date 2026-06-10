@@ -7185,231 +7185,255 @@ if __name__ == "__main__":
             _mc_raw["Total"] = (_mc_raw[_mc_present].ffill()
                                                     .fillna(0)
                                                     .sum(axis=1))
-            _chart_dwm_simple(
-                "All Tokenized Equities — Market Cap by Project (all chains)",
-                source_df=_mc_combined,
-                build_fig=lambda df_view: _build_combined_stocks_mc_fig(
-                    df_view, _mc_labels, height=460),
-                raw_df=_mc_raw.sort_values("date", ascending=False),
-                raw_key="asset_equities_combined_mc_all",
-                raw_filename="tokenized_equities_combined_mc_all_chains",
-                caption=(
-                    "Per-project tokenized-equity market cap stacked "
-                    "across every chain. Sources: DefiLlama aggregate "
-                    "(xStocks, Ondo); CoinGecko cross-chain MC for "
-                    "PreStocks (Solana-only) + per-token fallbacks. "
-                    "Total band = aggregate tokenized-equity MC. Hover "
-                    "shows per-project + Total at each date."
-                ),
-                col_aggs={l: "last" for l in _mc_labels},
-            )
 
-            # ── All Tokenized Equities — Volume by Project (all chains) ──
-            # Uses _combined_stocks_df_all_chains which sums each
-            # chain's suffixed cols per project — no double-count of
-            # Solana tokens (which carry both legacy + chain-suffixed
-            # cols).
-            st.divider()
+            # ── Compute all 4 aggregations once (memoized helpers
+            # return cached results within the 4h TTL) so each chart
+            # below is a pure render-from-df.
             _vol_combined = _combined_stocks_df_all_chains(stocks_pullers)
-            if _vol_combined is None or _vol_combined.empty:
-                st.info(
-                    "No tokenized-stocks volume data on any tracked "
-                    "chain yet. The next pull (every 4h) will populate "
-                    "this view."
+            _vol_labels = list(dict.fromkeys(
+                p.GROUP_LABEL for p in stocks_pullers))
+            _vol_present = ([l for l in _vol_labels
+                             if _vol_combined is not None
+                             and l in _vol_combined.columns]
+                            if _vol_combined is not None else [])
+            _vol_raw = None
+            if _vol_combined is not None and _vol_present:
+                _vol_raw = _vol_combined.copy()
+                _vol_raw["Total"] = (_vol_raw[_vol_present].fillna(0)
+                                                          .sum(axis=1))
+
+            _mc_by_chain = _stocks_mc_by_chain_df(stocks_pullers)
+            _vol_by_chain = _stocks_vol_by_chain_df(stocks_pullers)
+
+            # Half-width column helper — moves the legend BELOW the
+            # plot so the multi-entry chain/project legend doesn't
+            # collide with the rangeselector buttons at the top of
+            # the chart (same pattern the gold side-by-side charts
+            # use).
+            def _legend_below(fig):
+                fig.update_layout(legend=dict(
+                    orientation="h", yanchor="top", y=-0.22,
+                    xanchor="center", x=0.5,
+                ))
+                return fig
+
+            # ── Row 1: Market Cap by Project | by Chain ──────────────
+            col_mc_p, col_mc_c = st.columns(2, gap="medium")
+
+            with col_mc_p:
+                _chart_dwm_simple(
+                    "Market Cap by Project (all chains)",
+                    source_df=_mc_combined,
+                    build_fig=lambda df_view: _legend_below(
+                        _build_combined_stocks_mc_fig(
+                            df_view, _mc_labels, height=380)),
+                    raw_df=_mc_raw.sort_values("date", ascending=False),
+                    raw_key="asset_equities_combined_mc_all",
+                    raw_filename="tokenized_equities_combined_mc_all_chains",
+                    caption=(
+                        "Per-project MC stacked across every chain. "
+                        "Sources: DefiLlama aggregate (xStocks, Ondo); "
+                        "CoinGecko cross-chain MC for PreStocks; "
+                        "per-token Birdeye fallbacks."
+                    ),
+                    col_aggs={l: "last" for l in _mc_labels},
                 )
-            else:
-                _vol_labels = list(dict.fromkeys(
-                    p.GROUP_LABEL for p in stocks_pullers))
-                _vol_present = [l for l in _vol_labels
-                                if l in _vol_combined.columns]
-                if _vol_present:
-                    _vol_raw = _vol_combined.copy()
-                    _vol_raw["Total"] = (_vol_raw[_vol_present].fillna(0)
-                                                              .sum(axis=1))
-                    # _build_combined_stocks_fig handles its own
-                    # weekly/monthly resampling via the `period` arg, so
-                    # we pass D/W/M directly per tab instead of using
-                    # _chart_dwm_simple's resample-then-build flow.
+
+            with col_mc_c:
+                if _mc_by_chain is None or _mc_by_chain.empty:
+                    st.info(
+                        "No per-chain MC data yet — next pull "
+                        "(every 4h) will populate this view."
+                    )
+                else:
+                    _mc_chain_cols = [
+                        c for c in _mc_by_chain.columns
+                        if c.startswith("mc_") and c.endswith("_usd")
+                    ]
+                    # Largest chain at the bottom of the stack.
+                    def _latest_mc_chain(col, _df=_mc_by_chain):
+                        s = _df[col].dropna()
+                        return float(s.iloc[-1]) if len(s) else 0.0
+                    _mc_chain_cols.sort(key=_latest_mc_chain,
+                                        reverse=True)
+
+                    def _build_stocks_mc_by_chain_fig(df_view):
+                        fig = go.Figure()
+                        present = [c for c in _mc_chain_cols
+                                   if c in df_view.columns]
+                        for col in present:
+                            ch_safe = col[len("mc_"):-len("_usd")]
+                            label = _PER_CHAIN_LABEL.get(
+                                ch_safe, ch_safe.title())
+                            color = _PER_CHAIN_COLOR.get(ch_safe,
+                                                         "#888888")
+                            y = df_view[col].ffill().fillna(0.0)
+                            fig.add_trace(go.Scatter(
+                                x=df_view["date"], y=y, name=label,
+                                mode="lines",
+                                line=dict(color=color, width=0.8),
+                                stackgroup="mc_chain",
+                                customdata=y.map(_fmt_usd),
+                                hovertemplate=f"{label}: %{{customdata}}<extra></extra>",
+                            ))
+                        totals_v = (df_view[present].ffill().fillna(0)
+                                                     .sum(axis=1))
+                        fig.add_trace(go.Scatter(
+                            x=df_view["date"], y=totals_v, name="Total",
+                            mode="lines",
+                            line=dict(width=0, color="rgba(0,0,0,0)"),
+                            showlegend=False, stackgroup=None,
+                            customdata=totals_v.map(_fmt_usd),
+                            hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+                        ))
+                        y_max = float(totals_v.max() or 0)
+                        fig.update_layout(
+                            height=380, hovermode="x unified",
+                            margin=dict(t=10, b=10, l=10, r=10),
+                            legend=dict(orientation="h",
+                                        yanchor="top", y=-0.22,
+                                        xanchor="center", x=0.5),
+                            yaxis=dict(tickprefix="$", tickformat="~s",
+                                       showgrid=True, rangemode="tozero",
+                                       range=[0, y_max * 1.10] if y_max > 0 else None),
+                        )
+                        return fig
+
+                    _mc_chain_raw = _mc_by_chain.copy()
+                    _mc_chain_raw["total"] = (
+                        _mc_by_chain[_mc_chain_cols].ffill().fillna(0)
+                                                     .sum(axis=1).values)
+                    _chart_dwm_simple(
+                        "Market Cap by Chain (all projects)",
+                        source_df=_mc_by_chain,
+                        build_fig=_build_stocks_mc_by_chain_fig,
+                        raw_df=_mc_chain_raw.sort_values("date", ascending=False),
+                        raw_key="asset_equities_mc_by_chain",
+                        raw_filename="tokenized_equities_mc_by_chain",
+                        caption=(
+                            "Per-chain MC summed across every project "
+                            "deployed on that chain. Same sources as "
+                            "the by-project view to the left."
+                        ),
+                        col_aggs={c: "last" for c in _mc_chain_cols},
+                    )
+
+            # ── Row 2: Trading Volume by Project | by Chain ──────────
+            st.divider()
+            col_vol_p, col_vol_c = st.columns(2, gap="medium")
+
+            with col_vol_p:
+                if _vol_combined is None or _vol_combined.empty or not _vol_present:
+                    st.info(
+                        "No tokenized-stocks volume data yet — next "
+                        "pull will populate this view."
+                    )
+                else:
+                    # _build_combined_stocks_fig does its own period
+                    # resampling internally, so use _chart_dwm_frame
+                    # (not _chart_dwm_simple) and pass D/W/M per tab.
                     with _chart_dwm_frame(
-                        "All Tokenized Equities — Volume by Project (all chains)",
+                        "Trading Volume by Project (all chains)",
                         raw_df=_vol_raw.sort_values("date", ascending=False),
                         raw_key="asset_equities_combined_vol_all",
                         raw_filename="tokenized_equities_combined_volume_all_chains",
                         caption=(
-                            "Stacked daily trading volume per project, "
-                            "summed across every chain the project is "
-                            "deployed on (Solana / Ethereum / BSC / "
-                            "Base / Arbitrum). Source: Birdeye OHLCV "
-                            "V3 per (token, chain). On-chain DEX "
-                            "volume only — centralized exchange "
-                            "volume isn't tracked for tokenized stocks."
+                            "Stacked daily volume per project, summed "
+                            "across every chain (Solana / Ethereum / "
+                            "BSC / Base / Arbitrum). Source: Birdeye "
+                            "OHLCV V3. On-chain DEX volume only."
                         ),
                     ) as (tab_d, tab_w, tab_m):
                         with tab_d:
-                            _chart(
+                            _chart(_legend_below(
                                 _build_combined_stocks_fig(
-                                    _vol_combined, _vol_labels, "D", 380),
-                                use_container_width=True,
-                            )
+                                    _vol_combined, _vol_labels, "D", 380)),
+                                use_container_width=True)
                         with tab_w:
-                            _chart(
+                            _chart(_legend_below(
                                 _build_combined_stocks_fig(
-                                    _vol_combined, _vol_labels, "W", 380),
-                                use_container_width=True,
-                            )
+                                    _vol_combined, _vol_labels, "W", 380)),
+                                use_container_width=True)
                         with tab_m:
-                            _chart(
+                            _chart(_legend_below(
                                 _build_combined_stocks_fig(
-                                    _vol_combined, _vol_labels, "M", 380),
-                                use_container_width=True,
-                            )
+                                    _vol_combined, _vol_labels, "M", 380)),
+                                use_container_width=True)
 
-            # ── All Tokenized Equities — Market Cap by Chain ─────────────
-            st.divider()
-            _mc_by_chain = _stocks_mc_by_chain_df(stocks_pullers)
-            if _mc_by_chain is not None and not _mc_by_chain.empty:
-                _mc_chain_cols = [c for c in _mc_by_chain.columns
-                                  if c.startswith("mc_") and c.endswith("_usd")]
-                # Sort chains by latest MC desc so the largest band sits
-                # at the bottom of the stack (anchor + most readable).
-                def _latest_mc_chain(col):
-                    s = _mc_by_chain[col].dropna()
-                    return float(s.iloc[-1]) if len(s) else 0.0
-                _mc_chain_cols.sort(key=_latest_mc_chain, reverse=True)
+            with col_vol_c:
+                if _vol_by_chain is None or _vol_by_chain.empty:
+                    st.info(
+                        "No per-chain volume data yet — next pull "
+                        "(every 4h) will populate this view."
+                    )
+                else:
+                    _vol_chain_cols = [
+                        c for c in _vol_by_chain.columns
+                        if c.startswith("vol_") and c.endswith("_usd")
+                    ]
+                    def _total_v_chain(col, _df=_vol_by_chain):
+                        return float(_df[col].fillna(0).sum())
+                    _vol_chain_cols.sort(key=_total_v_chain, reverse=True)
 
-                def _build_stocks_mc_by_chain_fig(df_view):
-                    fig = go.Figure()
-                    present = [c for c in _mc_chain_cols
-                               if c in df_view.columns]
-                    # Add largest-first → Plotly stacks largest at the
-                    # BOTTOM (anchor band).
-                    for col in present:
-                        ch_safe = col[len("mc_"):-len("_usd")]
-                        label = _PER_CHAIN_LABEL.get(ch_safe,
-                                                     ch_safe.title())
-                        color = _PER_CHAIN_COLOR.get(ch_safe, "#888888")
-                        y = df_view[col].ffill().fillna(0.0)
+                    def _build_stocks_vol_by_chain_fig(df_view):
+                        fig = go.Figure()
+                        present = [c for c in _vol_chain_cols
+                                   if c in df_view.columns]
+                        for col in present:
+                            ch_safe = col[len("vol_"):-len("_usd")]
+                            label = _PER_CHAIN_LABEL.get(
+                                ch_safe, ch_safe.title())
+                            color = _PER_CHAIN_COLOR.get(ch_safe,
+                                                         "#888888")
+                            y = df_view[col].fillna(0).replace(0, float("nan"))
+                            fig.add_trace(go.Bar(
+                                x=df_view["date"], y=y, name=label,
+                                marker_color=color, opacity=0.85,
+                                customdata=y.map(_fmt_usd),
+                                hovertemplate=f"{label}: %{{customdata}}<extra></extra>",
+                            ))
+                        totals_v = (df_view[present].fillna(0).sum(axis=1)
+                                                     .replace(0, float("nan")))
                         fig.add_trace(go.Scatter(
-                            x=df_view["date"], y=y, name=label,
+                            x=df_view["date"], y=totals_v, name="Total",
                             mode="lines",
-                            line=dict(color=color, width=0.8),
-                            stackgroup="mc_chain",
-                            customdata=y.map(_fmt_usd),
-                            hovertemplate=f"{label}: %{{customdata}}<extra></extra>",
+                            line=dict(width=0, color="rgba(0,0,0,0)"),
+                            showlegend=False,
+                            customdata=totals_v.map(_fmt_usd),
+                            hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
                         ))
-                    totals_v = (df_view[present].ffill().fillna(0)
-                                                 .sum(axis=1))
-                    fig.add_trace(go.Scatter(
-                        x=df_view["date"], y=totals_v, name="Total",
-                        mode="lines",
-                        line=dict(width=0, color="rgba(0,0,0,0)"),
-                        showlegend=False, stackgroup=None,
-                        customdata=totals_v.map(_fmt_usd),
-                        hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
-                    ))
-                    y_max = float(totals_v.max() or 0)
-                    fig.update_layout(
-                        height=460, hovermode="x unified",
-                        margin=dict(t=10, b=10, l=10, r=10),
-                        legend=dict(orientation="h", yanchor="bottom",
-                                    y=1.02, xanchor="right", x=1),
-                        yaxis=dict(tickprefix="$", tickformat="~s",
-                                   showgrid=True, rangemode="tozero",
-                                   range=[0, y_max * 1.10] if y_max > 0 else None),
+                        y_max = float(totals_v.max() or 0)
+                        fig.update_layout(
+                            height=380, barmode="stack",
+                            hovermode="x unified",
+                            margin=dict(t=10, b=10, l=10, r=10),
+                            legend=dict(orientation="h",
+                                        yanchor="top", y=-0.22,
+                                        xanchor="center", x=0.5),
+                            yaxis=dict(tickprefix="$", tickformat="~s",
+                                       showgrid=True, rangemode="tozero",
+                                       range=[0, y_max * 1.10] if y_max > 0 else None),
+                        )
+                        return fig
+
+                    _vol_chain_raw = _vol_by_chain.copy()
+                    _vol_chain_raw["total"] = (
+                        _vol_by_chain[_vol_chain_cols].fillna(0)
+                                                       .sum(axis=1).values)
+                    _chart_dwm_simple(
+                        "Trading Volume by Chain (all projects)",
+                        source_df=_vol_by_chain,
+                        build_fig=_build_stocks_vol_by_chain_fig,
+                        raw_df=_vol_chain_raw.sort_values("date", ascending=False),
+                        raw_key="asset_equities_vol_by_chain",
+                        raw_filename="tokenized_equities_vol_by_chain",
+                        caption=(
+                            "Per-chain volume summed across every "
+                            "project on that chain. Source: Birdeye "
+                            "OHLCV V3. On-chain DEX volume only."
+                        ),
+                        col_aggs={c: "sum" for c in _vol_chain_cols},
                     )
-                    return fig
-
-                _mc_chain_raw = _mc_by_chain.copy()
-                _mc_chain_raw["total"] = (_mc_by_chain[_mc_chain_cols]
-                                          .ffill().fillna(0).sum(axis=1).values)
-                _chart_dwm_simple(
-                    "All Tokenized Equities — Market Cap by Chain (all projects)",
-                    source_df=_mc_by_chain,
-                    build_fig=_build_stocks_mc_by_chain_fig,
-                    raw_df=_mc_chain_raw.sort_values("date", ascending=False),
-                    raw_key="asset_equities_mc_by_chain",
-                    raw_filename="tokenized_equities_mc_by_chain",
-                    caption=(
-                        "Per-chain tokenized-equity market cap, summed "
-                        "across every project deployed on that chain. "
-                        "Same DL-aggregate / CG-cross-chain / Birdeye-"
-                        "snapshot sources as the by-project view above, "
-                        "just rolled up by chain instead. Hover shows "
-                        "per-chain + Total."
-                    ),
-                    col_aggs={c: "last" for c in _mc_chain_cols},
-                )
-
-            # ── All Tokenized Equities — Volume by Chain ─────────────────
-            st.divider()
-            _vol_by_chain = _stocks_vol_by_chain_df(stocks_pullers)
-            if _vol_by_chain is not None and not _vol_by_chain.empty:
-                _vol_chain_cols = [c for c in _vol_by_chain.columns
-                                   if c.startswith("vol_") and c.endswith("_usd")]
-                # Order chains by total contribution across history so
-                # the largest reads first in the legend.
-                def _total_v_chain(col):
-                    return float(_vol_by_chain[col].fillna(0).sum())
-                _vol_chain_cols.sort(key=_total_v_chain, reverse=True)
-
-                def _build_stocks_vol_by_chain_fig(df_view):
-                    fig = go.Figure()
-                    present = [c for c in _vol_chain_cols
-                               if c in df_view.columns]
-                    for col in present:
-                        ch_safe = col[len("vol_"):-len("_usd")]
-                        label = _PER_CHAIN_LABEL.get(ch_safe,
-                                                     ch_safe.title())
-                        color = _PER_CHAIN_COLOR.get(ch_safe, "#888888")
-                        y = df_view[col].fillna(0).replace(0, float("nan"))
-                        fig.add_trace(go.Bar(
-                            x=df_view["date"], y=y, name=label,
-                            marker_color=color, opacity=0.85,
-                            customdata=y.map(_fmt_usd),
-                            hovertemplate=f"{label}: %{{customdata}}<extra></extra>",
-                        ))
-                    totals_v = (df_view[present].fillna(0).sum(axis=1)
-                                                 .replace(0, float("nan")))
-                    fig.add_trace(go.Scatter(
-                        x=df_view["date"], y=totals_v, name="Total",
-                        mode="lines",
-                        line=dict(width=0, color="rgba(0,0,0,0)"),
-                        showlegend=False,
-                        customdata=totals_v.map(_fmt_usd),
-                        hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
-                    ))
-                    y_max = float(totals_v.max() or 0)
-                    fig.update_layout(
-                        height=460, barmode="stack",
-                        hovermode="x unified",
-                        margin=dict(t=10, b=10, l=10, r=10),
-                        legend=dict(orientation="h", yanchor="bottom",
-                                    y=1.02, xanchor="right", x=1),
-                        yaxis=dict(tickprefix="$", tickformat="~s",
-                                   showgrid=True, rangemode="tozero",
-                                   range=[0, y_max * 1.10] if y_max > 0 else None),
-                    )
-                    return fig
-
-                _vol_chain_raw = _vol_by_chain.copy()
-                _vol_chain_raw["total"] = (_vol_by_chain[_vol_chain_cols]
-                                           .fillna(0).sum(axis=1).values)
-                _chart_dwm_simple(
-                    "All Tokenized Equities — Volume by Chain (all projects)",
-                    source_df=_vol_by_chain,
-                    build_fig=_build_stocks_vol_by_chain_fig,
-                    raw_df=_vol_chain_raw.sort_values("date", ascending=False),
-                    raw_key="asset_equities_vol_by_chain",
-                    raw_filename="tokenized_equities_vol_by_chain",
-                    caption=(
-                        "Per-chain tokenized-equity trading volume, "
-                        "summed across every project deployed on that "
-                        "chain. Source: Birdeye OHLCV V3 per (token, "
-                        "chain). On-chain DEX volume only. Hover shows "
-                        "per-chain + Total at each date."
-                    ),
-                    col_aggs={c: "sum" for c in _vol_chain_cols},
-                )
 
             # ── Per-project breakdowns — 2 per row, all-chain MC each ────
             st.divider()

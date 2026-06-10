@@ -8449,6 +8449,35 @@ if __name__ == "__main__":
                 st.divider()
             st.stop()
 
+        if selected_asset == "Tokenized treasuries":
+            # All-chain per-token MC (DefiLlama-sourced). Treasuries
+            # have no on-chain trading activity tracked by Birdeye —
+            # MC is the only meaningful metric, so this vertical
+            # shows just one chart per puller (no volume sibling
+            # like commodities/equities have).
+            if not treasury_pullers:
+                st.info("No tokenized treasury pullers registered.")
+                st.stop()
+            for p in treasury_pullers:
+                _safe_p = (getattr(p, "name", p.GROUP_LABEL).lower()
+                                                          .replace("-", "_")
+                                                          .replace(" ", "_"))
+                p.render_market_cap_chain(
+                    chain=None, stacked=True,
+                    raw_key=f"asset_treas_mc_{_safe_p}",
+                    chart_title=f"{p.GROUP_LABEL} — Market Cap (all chains)",
+                )
+                st.caption(
+                    "Per-token market cap stacked across every chain. "
+                    "Source: DefiLlama free API (daily history). "
+                    "These tokens (BlackRock BUIDL, Ondo USDY, "
+                    "Franklin BENJI, etc.) have no Birdeye-tracked "
+                    "on-chain trading volume — MC is the only metric "
+                    "available. Hover tooltip shows per-token + Total "
+                    "at each date."
+                )
+            st.stop()
+
         # Other asset verticals: placeholder until specs land.
         st.info(
             f"📊 **{selected_asset}** view is coming soon. "

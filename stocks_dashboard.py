@@ -5536,8 +5536,18 @@ _TREASURY_DEFILLAMA: dict = {
     "MTBILL": {"type": "protocol",   "slug": "midas-rwa"},
     "USTBL":  {"type": "protocol",   "slug": "spiko"},
     "CASHx":  {"type": "protocol",   "slug": "asseto-cash+"},
+    # JTRSY = Janus Henderson Anemoy Treasury Fund (Ethereum,
+    # 0x8c213ee79581ff4984583c6a801e5263418c4b86). DefiLlama tracks
+    # this as the umbrella "Anemoy Capital" protocol, but Anemoy's
+    # only major live fund TODAY is JTRSY — so the protocol TVL is
+    # effectively the JTRSY AUM. Cross-checked against CoinGecko's
+    # market_cap for the same contract: $865.68M (DL) vs $865.83M
+    # (CG) — match within 0.02%. If Anemoy launches additional
+    # funds and DefiLlama starts splitting them, swap this for a
+    # token-specific slug.
+    "JTRSY":  {"type": "protocol",   "slug": "anemoy-capital"},
     # Not yet mapped (no clean DefiLlama equivalent found):
-    #   iBENJI, BENJI, JTRSY, CUMIU, BELIF, MONY, FILQ, CUMBU, UMINT,
+    #   iBENJI, BENJI, CUMIU, BELIF, MONY, FILQ, CUMBU, UMINT,
     #   CUMFU, usfr.d, deJTRSY, CMBMINT, nTBILL, FLTTX, TIPSX, WTLGX,
     #   WTSTX, WTTSX, WTSYX, USTRY
 }
@@ -6574,7 +6584,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v61-clear-data-cache-on-version-bump"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v62-jtrsy-defillama-mapping"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────

@@ -8713,12 +8713,23 @@ if __name__ == "__main__":
                     raw_filename="tokenized_treasuries_mc_by_chain",
                     caption=(
                         "Per-chain MC summed across every treasury "
-                        "token deployed on that chain. Same sources "
-                        "as the by-token view above. Ethereum + "
-                        "Aptos typically dominate BUIDL / OUSG / "
-                        "USDY's footprint; smaller-tail chains "
-                        "(Plume / Glue / Noble / etc.) reveal which "
-                        "emerging L1s issuers prioritize."
+                        "token deployed on that chain. **Ethereum** "
+                        "is the long-time dominant chain (BUIDL / "
+                        "OUSG / USTB / VBILL / JTRSY / ULTRA / etc. "
+                        "all launched here first). **Stellar** carries "
+                        "Ondo (OUSG + USDY), Spiko USTBL, and "
+                        "WisdomTree WTGXX — not BUIDL. **Aptos** is "
+                        "the largest BUIDL chain outside Ethereum.  \n"
+                        "**Methodology note:** this chart sums each "
+                        "token's DefiLlama per-chain TVL; the by-token "
+                        "chart above uses CoinGecko's MC aggregate for "
+                        "the 7 user-assigned CG tokens (BUIDL / JTRSY / "
+                        "VBILL / USYC / USTB / OUSG / USDY). The two "
+                        "totals will diverge wherever DL and CG report "
+                        "different aggregates (notably BUIDL: DL "
+                        "+22% vs CG; OUSG: DL slug is umbrella, CG is "
+                        "per-token). Both views are internally "
+                        "consistent — they answer different questions."
                     ),
                     col_aggs={c: "last" for c in _treas_chain_cols},
                     legend_label="chains",

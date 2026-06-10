@@ -1153,6 +1153,151 @@ def _render_stablecoins() -> None:
             col_aggs={c: "sum" for c in _cats},
         )
 
+    # ── Paymentscan: Solana card-payment volume by card issuer ───────────
+    # Companion view to the Allium charts above — same vertical (payment
+    # flows on Solana stablecoins) but a different lens: who's issuing
+    # the cards being swiped, not what kind of flow it is.
+    #
+    # Limitation we're honest about: Paymentscan's PUBLIC REST API
+    # (https://paymentscan.xyz/api-docs) doesn't expose a chain ×
+    # issuer crosstab. The two query params it supports are
+    # `includeTopups` and `includeOffchainData`; everything else
+    # returns the same global rows regardless of any `chain=` hint.
+    # Their own UI (https://paymentscan.xyz/chains/solana) DOES show
+    # a Solana-filtered per-issuer chart — but it's powered by an
+    # undocumented SolidStart `/_server` action, not the public API.
+    # The user's rule is "no data from sources I don't dictate", so
+    # we stick to the documented endpoints.
+    #
+    # Approach: filter /projects/daily to a hand-curated set of
+    # SOLANA-NATIVE cards (their full /projects volume IS their Solana
+    # volume because they don't operate on other chains). Multi-chain
+    # issuers (KAST / RedotPay / MetaMask / Tria / Bitget Wallet /
+    # Holyheld) are excluded — adding them would overcount Solana's
+    # share because we can't strip the other-chain portion.
+    st.divider()
+    st.markdown("### Stablecoin Payment Cards — Solana Card Issuers")
+    import paymentscan as _ps
+    # Curated as of June 2026 from Paymentscan's project catalogue
+    # and the Solana payment-cards UI (Phantom Cash, Solflare, Solayer
+    # are Solana wallet-issued cards; Cypher is the Cypher Protocol
+    # Solana spending card). Add more here as Solana-only cards
+    # appear in Paymentscan's catalogue.
+    _SOLANA_NATIVE_PROJECTS = ["Phantom Cash", "Solflare", "Solayer",
+                                "Cypher"]
+    # Solana-themed colors so the chart reads visually as "Solana"
+    # — purple/green echo the Solana brand palette used elsewhere
+    # on this dashboard.
+    _SOLANA_PROJECT_COLORS = {
+        "Phantom Cash": "#9945FF",   # phantom purple / Solana brand
+        "Solflare":     "#FFB800",   # solflare amber
+        "Solayer":      "#14F195",   # solana green
+        "Cypher":       "#4285F4",   # blue (cypher protocol brand)
+    }
+    _psol_df, _psol_err = _ps.fetch("projects", "daily")
+    if _psol_df.empty:
+        st.caption(
+            "Source: [Paymentscan /projects/daily]"
+            "(https://paymentscan.xyz/api-docs)."
+        )
+        st.info(f"No data. Reason: `{_psol_err or 'empty'}`")
+    else:
+        # Filter to Solana-native subset, pivot long→wide.
+        _filtered = _psol_df[
+            _psol_df["project"].isin(_SOLANA_NATIVE_PROJECTS)].copy()
+        if _filtered.empty:
+            st.info(
+                "Paymentscan returned data but none of the Solana-native "
+                f"projects ({', '.join(_SOLANA_NATIVE_PROJECTS)}) were "
+                "present. The catalogue may have changed — update "
+                "_SOLANA_NATIVE_PROJECTS in solana_dashboard.py."
+            )
+        else:
+            _filtered["date"] = _pd.to_datetime(_filtered["date"],
+                                                  errors="coerce")
+            _filtered["volumes"] = (_pd.to_numeric(_filtered["volumes"],
+                                                    errors="coerce")
+                                       .fillna(0))
+            _psol_wide = (_filtered.pivot_table(
+                index="date", columns="project",
+                values="volumes", aggfunc="sum")
+                .fillna(0))
+            # Sort bands by lifetime volume desc so the biggest issuer
+            # anchors the bottom of the stack (most readable).
+            _psol_totals = _psol_wide.sum(axis=0).sort_values(ascending=False)
+            _psol_ordered = list(_psol_totals.index)
+            _psol_wide = _psol_wide[_psol_ordered].reset_index()
+
+            def _build_psol_fig(df_view):
+                fig = _go.Figure()
+                # reversed() so largest band draws first → ends up at
+                # the BOTTOM of the stack (Plotly draws first-trace-low).
+                for proj in reversed(_psol_ordered):
+                    if proj not in df_view.columns:
+                        continue
+                    color = _SOLANA_PROJECT_COLORS.get(proj, "#888888")
+                    y = df_view[proj].fillna(0)
+                    fig.add_trace(_go.Scatter(
+                        x=df_view["date"], y=y, name=proj,
+                        mode="lines",
+                        line=dict(color=color, width=0.9),
+                        stackgroup="psol",
+                        customdata=y.map(sd._fmt_usd),
+                        hovertemplate=f"{proj}: %{{customdata}}<extra></extra>",
+                    ))
+                present = [c for c in _psol_ordered
+                            if c in df_view.columns]
+                tot = df_view[present].fillna(0).sum(axis=1)
+                fig.add_trace(_go.Scatter(
+                    x=df_view["date"], y=tot, name="Total",
+                    mode="lines",
+                    line=dict(width=0, color="rgba(0,0,0,0)"),
+                    showlegend=False, stackgroup=None,
+                    customdata=tot.map(sd._fmt_usd),
+                    hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+                ))
+                y_max = float(tot.max() or 0)
+                fig.update_layout(
+                    height=400, hovermode="x unified",
+                    margin=dict(t=10, b=10, l=10, r=10),
+                    legend=dict(orientation="h", yanchor="bottom",
+                                y=1.02, xanchor="right", x=1),
+                    yaxis=dict(tickprefix="$", tickformat="~s",
+                                showgrid=True, rangemode="tozero",
+                                range=[0, y_max * 1.10] if y_max > 0 else None),
+                )
+                return fig
+
+            _psol_raw = _psol_wide.copy()
+            _psol_raw["Total"] = (_psol_wide[_psol_ordered].fillna(0)
+                                                            .sum(axis=1).values)
+            sd._chart_dwm_simple(
+                "Daily Volume by Solana Card Issuer",
+                source_df=_psol_wide,
+                build_fig=_build_psol_fig,
+                raw_df=_psol_raw.sort_values("date", ascending=False),
+                raw_key="sd_ps_solana_issuers",
+                raw_filename="sol_paymentscan_solana_issuers",
+                raw_fmt={c: "${:,.0f}"
+                          for c in _psol_ordered + ["Total"]},
+                caption=(
+                    "Daily card-payment volume per **Solana-native** "
+                    "card issuer (Phantom Cash, Solflare, Solayer, "
+                    "Cypher). Source: [Paymentscan /projects/daily]"
+                    "(https://paymentscan.xyz/api-docs).  \n"
+                    "**Note:** the Paymentscan public REST API "
+                    "doesn't expose a chain × issuer crosstab, so "
+                    "multi-chain issuers (KAST, RedotPay, MetaMask, "
+                    "Tria, Bitget Wallet, Holyheld, etc.) are excluded "
+                    "here — they DO carry Solana volume, but the "
+                    "endpoint returns their global totals only. For "
+                    "the full Solana-filtered view see Paymentscan's "
+                    "own page: [paymentscan.xyz/chains/solana]"
+                    "(https://paymentscan.xyz/chains/solana)."
+                ),
+                col_aggs={c: "sum" for c in _psol_ordered},
+            )
+
 
 # ── Foreign L1 tokens vertical — grouped by underlying asset class ────────────
 # Group by what the underlying asset IS, not the bridge tech. Same Bitcoin

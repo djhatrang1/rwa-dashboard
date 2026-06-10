@@ -7116,6 +7116,192 @@ if __name__ == "__main__":
                     xaxis=dict(tickformat="~s", showgrid=True),
                 )
                 st.plotly_chart(fig_tok, use_container_width=True)
+
+            # ── Paymentscan: payment volume by chain + by card issuer ────
+            # Daily stablecoin payment-card flows from
+            # https://paymentscan.xyz (auth Bearer PAYMENTSCAN_API_KEY,
+            # st.secrets first → env fallback). Two time-series charts:
+            # (a) /chains/daily stacked by chain; (b) /projects/daily
+            # stacked by card "issuer" — Paymentscan calls these
+            # `projects` but the user's terminology is "card issuer"
+            # so labels say issuer throughout.
+            #
+            # Long-tail handling: 20+ chains and 23+ issuers exist;
+            # showing all in a stack would crowd the legend and squash
+            # colors. We rank by lifetime volume, keep the top 12, fold
+            # the rest into "Others". Top-N selection happens against
+            # the FULL daily df so D/W/M tabs don't reshuffle the band
+            # order between granularities.
+            st.divider()
+            import paymentscan as _ps
+
+            def _build_ps_stack(pivot_df, ordered_cols, color_map,
+                                stackgroup_id):
+                """Reusable stacked-area builder for both Paymentscan
+                charts. Largest band at the bottom (most readable
+                anchor), smallest at the top — Plotly's stack draws
+                first-trace-first so we reverse the iteration."""
+                fig = go.Figure()
+                for col in reversed(ordered_cols):
+                    if col not in pivot_df.columns:
+                        continue
+                    color = color_map.get(col, "#888888")
+                    y = pivot_df[col].fillna(0)
+                    fig.add_trace(go.Scatter(
+                        x=pivot_df["date"], y=y, name=col,
+                        mode="lines",
+                        line=dict(color=color, width=0.9),
+                        stackgroup=stackgroup_id,
+                        customdata=y.map(_fmt_usd),
+                        hovertemplate=f"{col}: %{{customdata}}<extra></extra>",
+                    ))
+                present = [c for c in ordered_cols
+                            if c in pivot_df.columns]
+                tot = pivot_df[present].fillna(0).sum(axis=1)
+                fig.add_trace(go.Scatter(
+                    x=pivot_df["date"], y=tot, name="Total",
+                    mode="lines",
+                    line=dict(width=0, color="rgba(0,0,0,0)"),
+                    showlegend=False, stackgroup=None,
+                    customdata=tot.map(_fmt_usd),
+                    hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+                ))
+                y_max = float(tot.max() or 0)
+                fig.update_layout(
+                    height=430, hovermode="x unified",
+                    margin=dict(t=10, b=10, l=10, r=10),
+                    legend=dict(orientation="h", yanchor="bottom",
+                                y=1.02, xanchor="right", x=1),
+                    yaxis=dict(tickprefix="$", tickformat="~s",
+                                showgrid=True, rangemode="tozero",
+                                range=[0, y_max * 1.10] if y_max > 0 else None),
+                )
+                return fig
+
+            def _pivot_top_n(df, key_col, value_col="volumes",
+                              top_n=12, others_label="Others"):
+                """Pivot long → wide (date × key_col), rank columns by
+                lifetime sum desc, keep top_n, fold the rest into a
+                single Others column. Returns (pivot_df_with_date,
+                ordered_columns_list)."""
+                if df.empty:
+                    return pd.DataFrame(columns=["date"]), []
+                d = df.copy()
+                d["date"] = pd.to_datetime(d["date"], errors="coerce")
+                d = d.dropna(subset=["date"])
+                d[value_col] = pd.to_numeric(d[value_col], errors="coerce") \
+                                 .fillna(0)
+                wide = (d.pivot_table(index="date", columns=key_col,
+                                       values=value_col, aggfunc="sum")
+                          .fillna(0))
+                # Rank by lifetime sum, keep top_n, bucket the rest.
+                totals = wide.sum(axis=0).sort_values(ascending=False)
+                top_cols = list(totals.head(top_n).index)
+                tail_cols = [c for c in totals.index if c not in top_cols]
+                if tail_cols:
+                    wide[others_label] = wide[tail_cols].sum(axis=1)
+                    wide = wide.drop(columns=tail_cols)
+                # Sort bands by latest value (largest first → bottom
+                # of stack via reversed() iteration in builder).
+                latest = wide.iloc[-1] if len(wide) else pd.Series()
+                ordered = sorted(
+                    list(wide.columns),
+                    key=lambda c: float(latest.get(c, 0) or 0),
+                    reverse=True)
+                wide = wide.reset_index()
+                return wide, ordered
+
+            # Stable palette: 12 high-contrast hues + grey for Others.
+            # Same palette reused for chain + issuer charts so the legend
+            # tones are consistent across the section.
+            _PS_PALETTE = [
+                "#4285F4", "#10B981", "#F97316", "#A78BFA", "#EF4444",
+                "#EC4899", "#14B8A6", "#FACC15", "#F472B6", "#22D3EE",
+                "#F87171", "#84CC16",
+            ]
+
+            # ── (a) Volume by Chain (stacked area, daily) ─────────
+            _ps_chain_df, _ps_chain_err = _ps.fetch("chains", "daily")
+            if _ps_chain_df.empty:
+                st.subheader("Payment Volume by Chain")
+                st.caption(
+                    "Source: [Paymentscan /chains/daily]"
+                    "(https://paymentscan.xyz/api-docs)."
+                )
+                st.info(f"No data. Reason: `{_ps_chain_err or 'empty'}`")
+            else:
+                _ch_wide, _ch_ordered = _pivot_top_n(
+                    _ps_chain_df, key_col="chain", value_col="volumes",
+                    top_n=12)
+                _ch_colors = {c: (_PS_PALETTE[i] if c != "Others" else "#888888")
+                                for i, c in enumerate(_ch_ordered)}
+                _ch_raw = _ch_wide.copy()
+                _ch_raw["Total"] = (_ch_wide[_ch_ordered].fillna(0)
+                                                          .sum(axis=1).values)
+                _chart_dwm_simple(
+                    "Payment Volume by Chain",
+                    source_df=_ch_wide,
+                    build_fig=lambda dfv: _build_ps_stack(
+                        dfv, _ch_ordered, _ch_colors, "ps_chain"),
+                    raw_df=_ch_raw.sort_values("date", ascending=False),
+                    raw_key="asset_ps_chain",
+                    raw_filename="paymentscan_volume_by_chain",
+                    caption=(
+                        "Daily card-payment volume in USD per "
+                        "settlement chain. Top 12 chains shown; "
+                        "remaining long-tail chains rolled into "
+                        "**Others**. Source: [Paymentscan /chains/daily]"
+                        "(https://paymentscan.xyz/api-docs)."
+                    ),
+                    col_aggs={c: "sum" for c in _ch_ordered},
+                )
+
+            st.divider()
+
+            # ── (b) Volume by Card Issuer (stacked area, daily) ───
+            # Paymentscan calls these `projects`; user terminology is
+            # "card issuer" (= consumer-facing card brand: Phantom Cash,
+            # RedotPay, MetaMask, etc.). The /infra endpoint is the
+            # different concept of BIN-sponsor "card provider" (Rain,
+            # Wirex, Kulipa, ...).
+            _ps_proj_df, _ps_proj_err = _ps.fetch("projects", "daily")
+            if _ps_proj_df.empty:
+                st.subheader("Payment Volume by Card Issuer")
+                st.caption(
+                    "Source: [Paymentscan /projects/daily]"
+                    "(https://paymentscan.xyz/api-docs)."
+                )
+                st.info(f"No data. Reason: `{_ps_proj_err or 'empty'}`")
+            else:
+                _pr_wide, _pr_ordered = _pivot_top_n(
+                    _ps_proj_df, key_col="project", value_col="volumes",
+                    top_n=12)
+                _pr_colors = {c: (_PS_PALETTE[i] if c != "Others" else "#888888")
+                                for i, c in enumerate(_pr_ordered)}
+                _pr_raw = _pr_wide.copy()
+                _pr_raw["Total"] = (_pr_wide[_pr_ordered].fillna(0)
+                                                          .sum(axis=1).values)
+                _chart_dwm_simple(
+                    "Payment Volume by Card Issuer",
+                    source_df=_pr_wide,
+                    build_fig=lambda dfv: _build_ps_stack(
+                        dfv, _pr_ordered, _pr_colors, "ps_proj"),
+                    raw_df=_pr_raw.sort_values("date", ascending=False),
+                    raw_key="asset_ps_issuer",
+                    raw_filename="paymentscan_volume_by_issuer",
+                    caption=(
+                        "Daily card-payment volume in USD per card "
+                        "issuer (RedotPay, KAST, EtherFi, MetaMask, "
+                        "Phantom Cash, Solflare, …). Top 12 issuers "
+                        "shown; the long tail of smaller issuers is "
+                        "rolled into **Others**. Source: "
+                        "[Paymentscan /projects/daily]"
+                        "(https://paymentscan.xyz/api-docs). "
+                        "(Paymentscan labels these `projects`; "
+                        "renamed here for clarity.)"
+                    ),
+                    col_aggs={c: "sum" for c in _pr_ordered},
+                )
             st.stop()
 
         if selected_asset == "Tokenized commodities":

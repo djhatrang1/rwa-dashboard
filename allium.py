@@ -72,11 +72,11 @@ def _allium_request(method: str, url: str, headers: dict,
 
 
 @st.cache_data(ttl=14_400,
-               show_spinner="Running Allium query (≈45s)…")
+               show_spinner="Running Allium query (≈1–2 min)…")
 def _fetch_cached(query_id: str, run_limit: int = 50_000,
                   poll_seconds: int = 10,
                   initial_wait_seconds: int = 15,
-                  max_wait_seconds: int = 180) -> pd.DataFrame:
+                  max_wait_seconds: int = 300) -> pd.DataFrame:
     """Cached inner — RAISES on failure (key missing, async timeout,
     run error). Raising matters because @st.cache_data caches return
     values but NOT exceptions, so a failed run won't get pinned for
@@ -144,12 +144,23 @@ def _fetch_cached(query_id: str, run_limit: int = 50_000,
     return df
 
 
-def fetch_allium_query_results(query_id: str,
-                               run_limit: int = 50_000) -> pd.DataFrame:
-    """Public entry. Returns empty DataFrame on any error (with a
-    one-line warning logged). Cached 4h via the inner."""
+def fetch_allium_query_results(
+    query_id: str, run_limit: int = 50_000,
+) -> tuple[pd.DataFrame, str | None]:
+    """Public entry. Returns (DataFrame, error_message). On success the
+    error is None; on failure the DataFrame is empty and the error is
+    a short string describing what went wrong (key missing, timeout,
+    429, schema error, etc.) so renderers can surface the actual
+    cause instead of a generic "no data".
+
+    The inner is cached + RAISES on failure (matters because
+    @st.cache_data caches values but NOT exceptions — so a failed
+    run isn't pinned for 4h and the next page-load auto-retries).
+    """
     try:
-        return _fetch_cached(query_id, run_limit=run_limit)
+        df = _fetch_cached(query_id, run_limit=run_limit)
+        return df, None
     except Exception as exc:
-        log.warning("Allium %s fetch failed: %s", query_id, exc)
-        return pd.DataFrame()
+        msg = f"{type(exc).__name__}: {exc}"
+        log.warning("Allium %s fetch failed: %s", query_id, msg)
+        return pd.DataFrame(), msg

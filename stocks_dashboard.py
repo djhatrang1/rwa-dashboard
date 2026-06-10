@@ -6672,13 +6672,21 @@ if __name__ == "__main__":
             import allium as _allium
             _STABLE_PAYMENTS_QID = "wMIF6Iy6nuhbTyu2wXKm"
 
-            _sp_df = _allium.fetch_allium_query_results(_STABLE_PAYMENTS_QID)
+            _sp_df, _sp_err = _allium.fetch_allium_query_results(
+                _STABLE_PAYMENTS_QID)
             if _sp_df.empty:
+                # Surface the actual failure cause so the user sees
+                # whether it's a missing API key, a 429 rate-limit, a
+                # timeout, etc. — generic "no data" was useless.
+                _diag = (f"  \n*Reason:* `{_sp_err}`"
+                         if _sp_err else
+                         "  \n*Reason:* (no error captured — Allium "
+                         "returned 0 rows.)")
                 st.info(
                     "Allium query returned no data. The async run may "
                     "have timed out or rate-limited — retry in a few "
-                    "minutes. Verify ALLIUM_API_KEY is set in Streamlit "
-                    "secrets if this persists."
+                    "minutes. Verify `ALLIUM_API_KEY` is set in "
+                    "Streamlit secrets if this persists." + _diag
                 )
                 st.stop()
 

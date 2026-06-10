@@ -80,7 +80,7 @@ treasury_pullers      = [p for p in pullers if getattr(p, "GROUP", "") == "treas
 # documented in the module docstring; they'll appear here as each gets
 # its data source nailed down.
 _VERTICALS = ["SOL token", "Stablecoins", "Lending", "RWA",
-              "Foreign L1 tokens", "Prediction Markets"]
+              "Foreign L1 tokens", "Prediction Markets", "Perp DEXs"]
 
 with st.sidebar:
     st.markdown(
@@ -2408,6 +2408,326 @@ def _render_phantom_prediction_section() -> None:
     )
 
 
+# ── Perp DEXs vertical (Blockworks Research scraped) ─────────────────────────
+# Data: blockworks.fetch_perp_dex_data() — scrapes the Blockworks
+# Analytics page for current execution IDs, then pulls 11 query
+# results from rest.blockworksresearch.com (no auth required, ~MBs
+# of JSON, all cached for 4h via @st.cache_data).
+import blockworks as _blockworks
+
+
+# Brand colors for the major Solana perp DEXs — picked from each
+# project's primary brand color where possible, otherwise distinct
+# from the Solana / SOL palette already in use elsewhere.
+_PERP_DEX_COLORS = {
+    "Drift":       "#9945FF",   # Solana purple — Drift is the OG
+    "Jupiter":     "#FBA43A",   # Jupiter orange
+    "Flash Trade": "#3DD7B0",   # Flash teal
+    "GMTrade":     "#F45BBE",   # GMX-ish pink
+    "Pacifica":    "#5BC0EB",   # cyan
+    "Phoenix":     "#FF6B6B",   # red
+    "Bullet":      "#FEE440",   # yellow
+}
+
+
+def _render_perp_dexs() -> None:
+    """Solana perp DEXs analytics — sourced from the Blockworks
+    Research dashboard (blockworks.com/analytics/solana/perp-dexs-
+    solana) via their public read-side REST endpoint.
+
+    Layout:
+      Headline metrics (24h volume / OI / fees from the snapshot
+      query) → per-DEX stacked area for Volume, OI, Fees+Rev, Markets
+      → per-asset-class daily volume stacks (Commodities / Equities /
+      Indices / FX) in 2-col rows.
+    """
+    st.markdown("## Solana Perp DEXs")
+    st.caption(
+        "On-chain perpetual-futures DEX activity on Solana. Source: "
+        "[Blockworks Research analytics dashboard]("
+        f"{_blockworks.DASHBOARD_URL}) — execution IDs scraped from "
+        "the SSR'd dashboard page, raw rows pulled from "
+        "`rest.blockworksresearch.com`'s public execution endpoint. "
+        "Cached 4h. Tracks Drift, Jupiter, Flash Trade, GMTrade, "
+        "Pacifica, Phoenix, Bullet."
+    )
+
+    data = _blockworks.fetch_perp_dex_data()
+    if not data:
+        st.warning(
+            "Blockworks data fetch failed — page scrape returned no "
+            "execution IDs. Either the dashboard moved or the page "
+            "structure changed. Check the network manually."
+        )
+        return
+
+    # ── Helpers ────────────────────────────────────────────────────────────
+    def _pivot_metric(df: _pd.DataFrame, metric_col: str,
+                       dim_filter=None) -> _pd.DataFrame:
+        """Pivot the qid=4594-style wide table to date×symbol where
+        `metric_col` is populated. `dim_filter(sym)` returns True for
+        symbols to keep — defaults to keeping non-prefixed names
+        (DEX-level, not the _Drift / __BTC sub-rows)."""
+        if dim_filter is None:
+            dim_filter = lambda s: (
+                isinstance(s, str) and not s.startswith("_")
+                and s not in ("Total",)
+            )
+        if metric_col not in df.columns or "symbol" not in df.columns:
+            return _pd.DataFrame()
+        sub = df[df[metric_col].notna() & df["symbol"].apply(dim_filter)]
+        if sub.empty:
+            return _pd.DataFrame()
+        wide = (sub.pivot_table(index="date", columns="symbol",
+                                values=metric_col, aggfunc="sum")
+                   .sort_index().reset_index())
+        return wide
+
+    def _sort_cols_by_latest(wide: _pd.DataFrame) -> list[str]:
+        """Order non-date columns by latest value desc — largest DEX
+        sits at the bottom of the stack as the anchor."""
+        if wide.empty or len(wide.columns) <= 1:
+            return []
+        cols = [c for c in wide.columns if c != "date"]
+        latest = wide.iloc[-1].fillna(0)
+        return sorted(cols, key=lambda c: float(latest.get(c, 0) or 0),
+                      reverse=True)
+
+    def _build_perp_stack(wide: _pd.DataFrame, fmt_kind: str = "currency",
+                          height: int = 380):
+        """Stacked area figure from a date×<DEX> wide df. fmt_kind:
+        'currency' → '$X.YB' y-axis; 'count' → bare numbers."""
+        ordered = _sort_cols_by_latest(wide)
+        fig = _go.Figure()
+        totals = wide[ordered].ffill().fillna(0).sum(axis=1) if ordered else _pd.Series()
+        # Add smallest-last so largest-DEX band lands at the bottom
+        # of the visual stack (anchor + most readable).
+        for col in reversed(ordered):
+            color = _PERP_DEX_COLORS.get(col, "#888888")
+            y = wide[col].ffill().fillna(0)
+            fig.add_trace(_go.Scatter(
+                x=wide["date"], y=y, name=col,
+                mode="lines",
+                line=dict(color=color, width=0.9),
+                stackgroup="perps",
+                customdata=y.map(sd._fmt_usd if fmt_kind == "currency"
+                                  else (lambda v: f"{int(v):,}")),
+                hovertemplate=f"{col}: %{{customdata}}<extra></extra>",
+            ))
+        if not totals.empty:
+            fig.add_trace(_go.Scatter(
+                x=wide["date"], y=totals, name="Total",
+                mode="lines",
+                line=dict(width=0, color="rgba(0,0,0,0)"),
+                showlegend=False, stackgroup=None,
+                customdata=totals.map(sd._fmt_usd if fmt_kind == "currency"
+                                       else (lambda v: f"{int(v):,}")),
+                hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+            ))
+        y_max = float(totals.max() or 0) if not totals.empty else 0
+        fig.update_layout(
+            height=height, hovermode="x unified",
+            margin=dict(t=10, b=10, l=10, r=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                        xanchor="right", x=1),
+            yaxis=dict(
+                tickprefix="$" if fmt_kind == "currency" else "",
+                tickformat="~s",
+                showgrid=True, rangemode="tozero",
+                range=[0, y_max * 1.10] if y_max > 0 else None,
+            ),
+        )
+        return fig
+
+    # ── Headline metrics (24h, from snapshot queries) ─────────────────────
+    snap = data.get(4600)
+    snap_sym = data.get(4601)
+    if snap is not None and not snap.empty:
+        latest_vol = float(snap["delta_vol"].fillna(0).sum()) if "delta_vol" in snap.columns else None
+        latest_oi  = float(snap["delta_oi"].fillna(0).sum())  if "delta_oi" in snap.columns else None
+        latest_tc  = int(snap["delta_tc"].fillna(0).sum())    if "delta_tc" in snap.columns else None
+        c1, c2, c3, c4 = st.columns(4)
+        if latest_vol: c1.metric("24h Volume",   sd._fmt_usd(latest_vol))
+        if latest_oi:  c2.metric("24h Δ OI",     sd._fmt_usd(latest_oi))
+        if latest_tc:  c3.metric("24h Trades",   f"{latest_tc:,}")
+        if 4631 in data and not data[4631].empty:
+            d31 = data[4631]
+            if "delta_fee_1d" in d31.columns:
+                c4.metric("24h Fees",
+                          sd._fmt_usd(float(d31["delta_fee_1d"].fillna(0).sum())))
+
+    main = data.get(4594)
+    fees = data.get(4630)
+    markets = data.get(4617)
+
+    if main is None or main.empty:
+        st.warning("Main metrics query (4594) missing — check "
+                   "Blockworks page scrape.")
+        return
+
+    st.divider()
+    # ── Daily Volume by DEX ────────────────────────────────────────────────
+    vol_wide = _pivot_metric(main, "vol_exch")
+    if not vol_wide.empty:
+        _raw = vol_wide.copy()
+        _ordered = _sort_cols_by_latest(vol_wide)
+        _raw["Total"] = vol_wide[_ordered].fillna(0).sum(axis=1)
+        sd._chart_dwm_simple(
+            "Daily Volume by DEX",
+            source_df=vol_wide,
+            build_fig=lambda df_view: _build_perp_stack(df_view),
+            raw_df=_raw.sort_values("date", ascending=False),
+            raw_key="perp_dex_vol_by_dex",
+            raw_filename="solana_perp_dex_volume_by_dex",
+            caption=(
+                "Daily on-chain perpetual-futures notional volume per "
+                "DEX. Stacked area; hover shows per-DEX + Total."
+            ),
+            col_aggs={c: "sum" for c in _ordered},
+        )
+
+    st.divider()
+    # ── Open Interest by DEX ──────────────────────────────────────────────
+    oi_wide = _pivot_metric(main, "oi_exch")
+    if not oi_wide.empty:
+        _raw_oi = oi_wide.copy()
+        _ord_oi = _sort_cols_by_latest(oi_wide)
+        _raw_oi["Total"] = oi_wide[_ord_oi].fillna(0).sum(axis=1)
+        sd._chart_dwm_simple(
+            "Open Interest by DEX",
+            source_df=oi_wide,
+            build_fig=lambda df_view: _build_perp_stack(df_view),
+            raw_df=_raw_oi.sort_values("date", ascending=False),
+            raw_key="perp_dex_oi_by_dex",
+            raw_filename="solana_perp_dex_oi_by_dex",
+            caption=(
+                "Daily open interest per DEX. OI is a stock not a "
+                "flow → Weekly/Monthly = period-end (last) value."
+            ),
+            col_aggs={c: "last" for c in _ord_oi},
+        )
+
+    st.divider()
+    # ── Fees + Revenue ─────────────────────────────────────────────────────
+    if fees is not None and not fees.empty:
+        col_fees, col_rev = st.columns(2, gap="medium")
+        with col_fees:
+            fees_wide = _pivot_metric(fees, "fee_usd_totals",
+                                      dim_filter=lambda s: (
+                                          isinstance(s, str)
+                                          and s != "Total"
+                                          and not s.startswith("_")
+                                      ))
+            if not fees_wide.empty:
+                _raw_f = fees_wide.copy()
+                _ord_f = _sort_cols_by_latest(fees_wide)
+                _raw_f["Total"] = fees_wide[_ord_f].fillna(0).sum(axis=1)
+                sd._chart_dwm_simple(
+                    "Daily Fees by DEX",
+                    source_df=fees_wide,
+                    build_fig=lambda df_view: _build_perp_stack(df_view),
+                    raw_df=_raw_f.sort_values("date", ascending=False),
+                    raw_key="perp_dex_fees",
+                    raw_filename="solana_perp_dex_fees",
+                    caption="Daily protocol fees paid per DEX.",
+                    col_aggs={c: "sum" for c in _ord_f},
+                )
+        with col_rev:
+            rev_wide = _pivot_metric(fees, "rev_usd_totals",
+                                     dim_filter=lambda s: (
+                                         isinstance(s, str)
+                                         and s != "Total"
+                                         and not s.startswith("_")
+                                     ))
+            if not rev_wide.empty:
+                _raw_r = rev_wide.copy()
+                _ord_r = _sort_cols_by_latest(rev_wide)
+                _raw_r["Total"] = rev_wide[_ord_r].fillna(0).sum(axis=1)
+                sd._chart_dwm_simple(
+                    "Daily Revenue by DEX",
+                    source_df=rev_wide,
+                    build_fig=lambda df_view: _build_perp_stack(df_view),
+                    raw_df=_raw_r.sort_values("date", ascending=False),
+                    raw_key="perp_dex_rev",
+                    raw_filename="solana_perp_dex_rev",
+                    caption=(
+                        "Daily protocol revenue per DEX (post-LP / "
+                        "post-rebate, what flows to the protocol)."
+                    ),
+                    col_aggs={c: "sum" for c in _ord_r},
+                )
+
+    st.divider()
+    # ── Number of markets per DEX ─────────────────────────────────────────
+    if markets is not None and not markets.empty:
+        mk_wide = _pivot_metric(markets, "num_markets_totals")
+        if not mk_wide.empty:
+            _raw_m = mk_wide.copy()
+            _ord_m = _sort_cols_by_latest(mk_wide)
+            _raw_m["Total"] = mk_wide[_ord_m].fillna(0).sum(axis=1)
+            sd._chart_dwm_simple(
+                "Number of Markets per DEX",
+                source_df=mk_wide,
+                build_fig=lambda df_view: _build_perp_stack(
+                    df_view, fmt_kind="count"),
+                raw_df=_raw_m.sort_values("date", ascending=False),
+                raw_key="perp_dex_market_count",
+                raw_filename="solana_perp_dex_market_count",
+                caption=(
+                    "Number of distinct trading pairs listed per DEX. "
+                    "Weekly/Monthly = period-end (last) count."
+                ),
+                col_aggs={c: "last" for c in _ord_m},
+                fmt_mode="count",
+            )
+
+    # ── Asset-class breakdowns ────────────────────────────────────────────
+    st.divider()
+    st.subheader("Volume by asset class")
+    st.caption(
+        "Each chart breaks down perp volume on one asset class across "
+        "the symbols traded on Solana DEXs."
+    )
+
+    asset_charts = [
+        ("Crypto perps",      4594, "vol_market_symbol",
+         lambda s: isinstance(s, str) and s.startswith("__") and s[2:] in
+            ("BTC","ETH","SOL","BNB","XRP","HYPE","OTHER","ZEC")),
+        ("Commodity perps",   4625, "vol_category", None),
+        ("Equity perps",      4626, "vol_category", None),
+        ("Index perps",       4627, "vol_category", None),
+        ("FX perps",          4628, "vol_category", None),
+    ]
+    for row_start in range(0, len(asset_charts), 2):
+        cols = st.columns(2, gap="medium")
+        for col, spec in zip(cols, asset_charts[row_start: row_start + 2]):
+            title, qid, metric_col, dim_filter = spec
+            df_q = data.get(qid)
+            if df_q is None or df_q.empty:
+                with col:
+                    st.info(f"{title}: no data for query {qid}.")
+                continue
+            wide = _pivot_metric(df_q, metric_col, dim_filter=dim_filter)
+            if wide.empty:
+                with col:
+                    st.info(f"{title}: pivoted result is empty.")
+                continue
+            _raw_a = wide.copy()
+            _ord_a = _sort_cols_by_latest(wide)
+            _raw_a["Total"] = wide[_ord_a].fillna(0).sum(axis=1)
+            with col:
+                sd._chart_dwm_simple(
+                    title,
+                    source_df=wide,
+                    build_fig=lambda df_view: _build_perp_stack(
+                        df_view, height=360),
+                    raw_df=_raw_a.sort_values("date", ascending=False),
+                    raw_key=f"perp_assetclass_{qid}",
+                    raw_filename=f"solana_perp_{title.lower().replace(' ','_')}",
+                    col_aggs={c: "sum" for c in _ord_a},
+                )
+
+
 # ── Dispatch ─────────────────────────────────────────────────────────────────
 if vertical == "SOL token":
     _render_sol_token()
@@ -2421,3 +2741,5 @@ elif vertical == "Foreign L1 tokens":
     _render_foreign_l1()
 elif vertical == "Prediction Markets":
     _render_prediction_markets()
+elif vertical == "Perp DEXs":
+    _render_perp_dexs()

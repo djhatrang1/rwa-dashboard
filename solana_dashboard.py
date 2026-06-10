@@ -2436,6 +2436,46 @@ _PERP_DEX_COLORS = {
     "Bullet":      "#FEE440",   # yellow
 }
 
+# Per-asset fallback palette for the Crypto / Commodity / Equity /
+# Index / FX charts where each stacked band is a TICKER (BTC, XAU,
+# TSLA, EUR…) not a DEX. 18 maximally-distinct hues picked from
+# opposite quadrants of the color wheel so adjacent stacked bands
+# always read as different colors. Cycled by index into the
+# sorted-by-latest-value column order, so band-to-color mapping is
+# stable per render — and consistent across the chart traces +
+# legend expander swatches.
+_PERP_ASSET_PALETTE = [
+    "#4285F4",  # google blue
+    "#EF4444",  # red
+    "#10B981",  # emerald
+    "#F97316",  # orange
+    "#A78BFA",  # lavender
+    "#06B6D4",  # cyan
+    "#EC4899",  # pink
+    "#FBBF24",  # yellow
+    "#14B8A6",  # teal
+    "#1E40AF",  # navy
+    "#84CC16",  # lime
+    "#FB7185",  # coral
+    "#9333EA",  # violet
+    "#0EA5E9",  # sky
+    "#F59E0B",  # amber
+    "#22C55E",  # green
+    "#E11D48",  # rose
+    "#7C3AED",  # purple
+]
+
+
+def _resolve_perp_color(name: str, idx: int) -> str:
+    """Color for a perp-chart series. Resolves DEX brand colors first
+    (Drift/Jupiter/Flash Trade/etc.) so the per-DEX charts stay
+    branded; falls back to the per-asset palette cycled by index for
+    everything else (BTC/XAU/TSLA/EUR/…), so the asset-class charts
+    differentiate bands instead of stacking 10 greys."""
+    if name in _PERP_DEX_COLORS:
+        return _PERP_DEX_COLORS[name]
+    return _PERP_ASSET_PALETTE[idx % len(_PERP_ASSET_PALETTE)]
+
 
 def _render_perp_dexs() -> None:
     """Solana perp DEXs analytics — sourced from the Blockworks
@@ -2511,12 +2551,18 @@ def _render_perp_dexs() -> None:
         charts have 10+ symbols which would dominate the plot if
         rendered inline)."""
         ordered = _sort_cols_by_latest(wide)
+        # Color-by-rank: position in `ordered` (sorted by latest value
+        # desc) drives the palette index. Same `(name, idx)` pair is
+        # used by `_perp_legend_expander` below so chart band colors
+        # match the expander swatches exactly.
+        color_for = {name: _resolve_perp_color(name, i)
+                     for i, name in enumerate(ordered)}
         fig = _go.Figure()
         totals = wide[ordered].ffill().fillna(0).sum(axis=1) if ordered else _pd.Series()
-        # Add smallest-last so largest-DEX band lands at the bottom
-        # of the visual stack (anchor + most readable).
+        # Add smallest-last so largest band lands at the bottom of the
+        # visual stack (anchor + most readable).
         for col in reversed(ordered):
-            color = _PERP_DEX_COLORS.get(col, "#888888")
+            color = color_for[col]
             y = wide[col].ffill().fillna(0)
             fig.add_trace(_go.Scatter(
                 x=wide["date"], y=y, name=col,
@@ -2561,6 +2607,10 @@ def _render_perp_dexs() -> None:
         ordered = _sort_cols_by_latest(wide)
         if not ordered:
             return
+        # Use the SAME (name, idx) → color mapping the chart traces
+        # use, so swatch colors match the chart bands exactly. DEX
+        # name → brand color; ticker → fallback palette cycled by
+        # rank index (largest by latest value gets palette[0]).
         with st.expander(f"Legend ({len(ordered)} series)",
                          expanded=False):
             items_html = "".join(
@@ -2568,10 +2618,10 @@ def _render_perp_dexs() -> None:
                 f'white-space:nowrap">'
                 f'<span style="display:inline-block;width:12px;height:12px;'
                 f'border-radius:2px;background:'
-                f'{_PERP_DEX_COLORS.get(col, "#888888")};'
+                f'{_resolve_perp_color(col, i)};'
                 f'flex-shrink:0"></span>'
                 f'<span style="font-size:0.8rem">{col}</span></div>'
-                for col in ordered
+                for i, col in enumerate(ordered)
             )
             st.markdown(
                 f'<div style="display:grid;'

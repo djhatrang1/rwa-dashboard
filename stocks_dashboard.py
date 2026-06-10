@@ -6661,6 +6661,123 @@ if __name__ == "__main__":
     # per vertical land in this block as the user specifies them — for
     # now each shows a placeholder so the navigation is clickable.
     if selected_asset:
+        if selected_asset == "Stablecoin payments":
+            # ── Allium-sourced stablecoin payment flows by category ───────
+            # Query wMIF6Iy6nuhbTyu2wXKm: daily USD volume split into
+            # five flow categories (C2B retail / C2C P2P / B2B / B2C
+            # payouts / Institutional). 84 days of history at time of
+            # wiring, ~3 months — extends automatically as Allium's
+            # backing tables grow. Source dashboard:
+            # https://app.allium.so/analyze/dashboards/vyVDjb3pD1ogjEuMrIIL
+            import allium as _allium
+            _STABLE_PAYMENTS_QID = "wMIF6Iy6nuhbTyu2wXKm"
+
+            _sp_df = _allium.fetch_allium_query_results(_STABLE_PAYMENTS_QID)
+            if _sp_df.empty:
+                st.info(
+                    "Allium query returned no data. The async run may "
+                    "have timed out or rate-limited — retry in a few "
+                    "minutes. Verify ALLIUM_API_KEY is set in Streamlit "
+                    "secrets if this persists."
+                )
+                st.stop()
+
+            # Normalize date column and column display labels.
+            _sp_df = _sp_df.copy()
+            _sp_df["date"] = pd.to_datetime(_sp_df["activity_date"],
+                                            errors="coerce")
+            _sp_df = (_sp_df.drop(columns=["activity_date"])
+                            .sort_values("date")
+                            .reset_index(drop=True))
+            _CAT_LABEL = {
+                "c2b_retail":    "C2B Retail",
+                "c2c_p2p":       "C2C P2P",
+                "b2b_business":  "B2B Business",
+                "b2c_payouts":   "B2C Payouts",
+                "institutional": "Institutional",
+            }
+            _sp_df = _sp_df.rename(columns=_CAT_LABEL)
+            _CAT_COLORS = {
+                "C2B Retail":    "#4285F4",  # google blue
+                "C2C P2P":       "#10B981",  # emerald
+                "B2B Business":  "#F97316",  # orange
+                "B2C Payouts":   "#A78BFA",  # lavender
+                "Institutional": "#EF4444",  # red
+            }
+            _SP_LABELS = list(_CAT_LABEL.values())
+
+            def _build_stablecoin_payments_fig(df_view):
+                fig = go.Figure()
+                present = [c for c in _SP_LABELS if c in df_view.columns]
+                if not present:
+                    return fig
+                # Sort by latest value desc so the largest band sits at
+                # the BOTTOM of the stack (anchor + most readable).
+                latest = df_view.iloc[-1].fillna(0) if len(df_view) else pd.Series()
+                ordered = sorted(present,
+                                 key=lambda c: float(latest.get(c, 0) or 0),
+                                 reverse=True)
+                # Add smallest-last so largest band is at the BOTTOM.
+                for cat in reversed(ordered):
+                    color = _CAT_COLORS.get(cat, "#888888")
+                    y = df_view[cat].fillna(0)
+                    fig.add_trace(go.Scatter(
+                        x=df_view["date"], y=y, name=cat,
+                        mode="lines",
+                        line=dict(color=color, width=0.9),
+                        stackgroup="sp",
+                        customdata=y.map(_fmt_usd),
+                        hovertemplate=f"{cat}: %{{customdata}}<extra></extra>",
+                    ))
+                totals = df_view[ordered].fillna(0).sum(axis=1)
+                fig.add_trace(go.Scatter(
+                    x=df_view["date"], y=totals, name="Total",
+                    mode="lines",
+                    line=dict(width=0, color="rgba(0,0,0,0)"),
+                    showlegend=False, stackgroup=None,
+                    customdata=totals.map(_fmt_usd),
+                    hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+                ))
+                y_max = float(totals.max() or 0)
+                fig.update_layout(
+                    height=460, hovermode="x unified",
+                    margin=dict(t=10, b=10, l=10, r=10),
+                    legend=dict(orientation="h", yanchor="bottom",
+                                y=1.02, xanchor="right", x=1),
+                    yaxis=dict(tickprefix="$", tickformat="~s",
+                               showgrid=True, rangemode="tozero",
+                               range=[0, y_max * 1.10] if y_max > 0 else None),
+                )
+                return fig
+
+            _sp_raw = _sp_df.copy()
+            _sp_raw["Total"] = (_sp_df[_SP_LABELS].fillna(0)
+                                                  .sum(axis=1).values)
+            _chart_dwm_simple(
+                "Stablecoin Payments — Daily Volume by Category",
+                source_df=_sp_df,
+                build_fig=_build_stablecoin_payments_fig,
+                raw_df=_sp_raw.sort_values("date", ascending=False),
+                raw_key="asset_stable_payments_by_category",
+                raw_filename="stablecoin_payments_by_category",
+                caption=(
+                    "Daily stablecoin payment flow volume in USD, split "
+                    "by flow category. Source: Allium query "
+                    f"[`{_STABLE_PAYMENTS_QID}`]"
+                    f"(https://app.allium.so/analyze/queries/{_STABLE_PAYMENTS_QID}) "
+                    "on the [stablecoin-payments dashboard]"
+                    "(https://app.allium.so/analyze/dashboards/vyVDjb3pD1ogjEuMrIIL). "
+                    "Categories: **C2B Retail** (consumer→merchant "
+                    "purchases), **C2C P2P** (peer-to-peer transfers), "
+                    "**B2B Business** (corporate stablecoin payments), "
+                    "**B2C Payouts** (business→consumer disbursements), "
+                    "**Institutional** (treasury / desk flows). Weekly "
+                    "/ Monthly tabs sum across the period."
+                ),
+                col_aggs={c: "sum" for c in _SP_LABELS},
+            )
+            st.stop()
+
         if selected_asset == "Tokenized commodities":
             # ── MC chart (D/W/M via render_market_cap_chain) ──────────────
             if not commodity_pullers:

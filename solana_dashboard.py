@@ -2606,6 +2606,11 @@ def _render_perp_dexs() -> None:
                    "Blockworks page scrape.")
         return
 
+    # Each section renders its own trailing st.divider() *inside* the
+    # data-present guard. That way an empty section (e.g. a query that
+    # returned no rows for one metric) doesn't leave an orphan divider
+    # stacked against the next section's divider, which read as two
+    # parallel lines with empty space between them.
     st.divider()
     # ── Daily Volume by DEX ────────────────────────────────────────────────
     vol_wide = _pivot_metric(main, "vol_exch")
@@ -2627,8 +2632,8 @@ def _render_perp_dexs() -> None:
             col_aggs={c: "sum" for c in _ordered},
         )
         _perp_legend_expander(vol_wide)
+        st.divider()
 
-    st.divider()
     # ── Open Interest by DEX ──────────────────────────────────────────────
     oi_wide = _pivot_metric(main, "oi_exch")
     if not oi_wide.empty:
@@ -2649,60 +2654,61 @@ def _render_perp_dexs() -> None:
             col_aggs={c: "last" for c in _ord_oi},
         )
         _perp_legend_expander(oi_wide)
+        st.divider()
 
-    st.divider()
     # ── Fees + Revenue ─────────────────────────────────────────────────────
     if fees is not None and not fees.empty:
-        col_fees, col_rev = st.columns(2, gap="medium")
-        with col_fees:
-            fees_wide = _pivot_metric(fees, "fee_usd_totals",
-                                      dim_filter=lambda s: (
-                                          isinstance(s, str)
-                                          and s != "Total"
-                                          and not s.startswith("_")
-                                      ))
-            if not fees_wide.empty:
-                _raw_f = fees_wide.copy()
-                _ord_f = _sort_cols_by_latest(fees_wide)
-                _raw_f["Total"] = fees_wide[_ord_f].fillna(0).sum(axis=1)
-                sd._chart_dwm_simple(
-                    "Daily Fees by DEX",
-                    source_df=fees_wide,
-                    build_fig=lambda df_view: _build_perp_stack(df_view),
-                    raw_df=_raw_f.sort_values("date", ascending=False),
-                    raw_key="perp_dex_fees",
-                    raw_filename="solana_perp_dex_fees",
-                    caption="Daily protocol fees paid per DEX.",
-                    col_aggs={c: "sum" for c in _ord_f},
-                )
-                _perp_legend_expander(fees_wide)
-        with col_rev:
-            rev_wide = _pivot_metric(fees, "rev_usd_totals",
-                                     dim_filter=lambda s: (
-                                         isinstance(s, str)
-                                         and s != "Total"
-                                         and not s.startswith("_")
-                                     ))
-            if not rev_wide.empty:
-                _raw_r = rev_wide.copy()
-                _ord_r = _sort_cols_by_latest(rev_wide)
-                _raw_r["Total"] = rev_wide[_ord_r].fillna(0).sum(axis=1)
-                sd._chart_dwm_simple(
-                    "Daily Revenue by DEX",
-                    source_df=rev_wide,
-                    build_fig=lambda df_view: _build_perp_stack(df_view),
-                    raw_df=_raw_r.sort_values("date", ascending=False),
-                    raw_key="perp_dex_rev",
-                    raw_filename="solana_perp_dex_rev",
-                    caption=(
-                        "Daily protocol revenue per DEX (post-LP / "
-                        "post-rebate, what flows to the protocol)."
-                    ),
-                    col_aggs={c: "sum" for c in _ord_r},
-                )
-                _perp_legend_expander(rev_wide)
+        fees_wide = _pivot_metric(fees, "fee_usd_totals",
+                                  dim_filter=lambda s: (
+                                      isinstance(s, str)
+                                      and s != "Total"
+                                      and not s.startswith("_")
+                                  ))
+        rev_wide = _pivot_metric(fees, "rev_usd_totals",
+                                 dim_filter=lambda s: (
+                                     isinstance(s, str)
+                                     and s != "Total"
+                                     and not s.startswith("_")
+                                 ))
+        if not fees_wide.empty or not rev_wide.empty:
+            col_fees, col_rev = st.columns(2, gap="medium")
+            with col_fees:
+                if not fees_wide.empty:
+                    _raw_f = fees_wide.copy()
+                    _ord_f = _sort_cols_by_latest(fees_wide)
+                    _raw_f["Total"] = fees_wide[_ord_f].fillna(0).sum(axis=1)
+                    sd._chart_dwm_simple(
+                        "Daily Fees by DEX",
+                        source_df=fees_wide,
+                        build_fig=lambda df_view: _build_perp_stack(df_view),
+                        raw_df=_raw_f.sort_values("date", ascending=False),
+                        raw_key="perp_dex_fees",
+                        raw_filename="solana_perp_dex_fees",
+                        caption="Daily protocol fees paid per DEX.",
+                        col_aggs={c: "sum" for c in _ord_f},
+                    )
+                    _perp_legend_expander(fees_wide)
+            with col_rev:
+                if not rev_wide.empty:
+                    _raw_r = rev_wide.copy()
+                    _ord_r = _sort_cols_by_latest(rev_wide)
+                    _raw_r["Total"] = rev_wide[_ord_r].fillna(0).sum(axis=1)
+                    sd._chart_dwm_simple(
+                        "Daily Revenue by DEX",
+                        source_df=rev_wide,
+                        build_fig=lambda df_view: _build_perp_stack(df_view),
+                        raw_df=_raw_r.sort_values("date", ascending=False),
+                        raw_key="perp_dex_rev",
+                        raw_filename="solana_perp_dex_rev",
+                        caption=(
+                            "Daily protocol revenue per DEX (post-LP / "
+                            "post-rebate, what flows to the protocol)."
+                        ),
+                        col_aggs={c: "sum" for c in _ord_r},
+                    )
+                    _perp_legend_expander(rev_wide)
+            st.divider()
 
-    st.divider()
     # ── Number of markets per DEX ─────────────────────────────────────────
     if markets is not None and not markets.empty:
         mk_wide = _pivot_metric(markets, "num_markets_totals")
@@ -2726,9 +2732,9 @@ def _render_perp_dexs() -> None:
                 fmt_mode="count",
             )
             _perp_legend_expander(mk_wide)
+            st.divider()
 
     # ── Asset-class breakdowns ────────────────────────────────────────────
-    st.divider()
     st.subheader("Volume by asset class")
     st.caption(
         "Each chart breaks down perp volume on one asset class across "

@@ -8998,15 +8998,72 @@ if __name__ == "__main__":
 
         if selected_asset == "RWA perps":
             # ── Section 1: Hyperliquid historical (Allium) ──────────
-            # 3 user-built queries against Allium's hyperliquid.*
-            # tables, scoped to perp_dex='xyz' (the HIP-3 umbrella
-            # hosting all 73 RWA perp markets). Daily series from
-            # 2025-10-13 onward; OI null before 2025-11-20 (per-row
-            # gap in the underlying snapshot table).
+            # User-built queries against Allium's hyperliquid.* tables,
+            # scoped to perp_dex='xyz' (the HIP-3 umbrella hosting all
+            # 73 RWA perp markets). Daily series from 2025-10-13
+            # onward; OI null before 2025-11-20 (per-row gap in the
+            # underlying snapshot table).
+            #
+            # Umbrella aggregate (Q1) is a single low-cardinality
+            # query — fits well under Allium's 2000-row response cap.
+            #
+            # Per-market OI + per-market volume queries hit the row
+            # cap when run as a single multi-month query (~17,500 rows
+            # ÷ 73 markets × ~240 days). User split each into 9
+            # month-scoped queries (2025-10 → 2026-06) so each one
+            # returns ≤ ~2,200 rows / month and stays under the cap.
+            # We fetch all 9 sequentially (cached per-month for 4h)
+            # and concat — same result as one un-LIMITed query.
             import allium as _allium
             _Q_AGG  = "AAdTLRmNwAdpff0JQcdq"   # daily vol+OI umbrella
-            _Q_OI   = "8DiueFXlG6RWaVgZSYSH"   # per-market daily OI
-            _Q_VOL  = "YWHDBceQJPGtHXkWxrFN"   # per-market daily volume
+
+            # Per-market daily OI — 9 monthly queries, 2025-10 → 2026-06.
+            _Q_OI_MONTHS: list[tuple[str, str]] = [
+                ("2025-10", "X245492iOjb732UetWSB"),
+                ("2025-11", "Y0dQpQr4hlIAB3OcHskc"),
+                ("2025-12", "5o5BxYqNBZ7ilym8IrVD"),
+                ("2026-01", "VTDbrmTWDpLD17FNJ75a"),
+                ("2026-02", "vTVCW5klGQZB7yPhMfFX"),
+                ("2026-03", "l6qTddnDzjghkopXkHnG"),
+                ("2026-04", "AfTgrxI4iz8f6bLzGTyN"),
+                ("2026-05", "nbXTSEgW4BengtO1yo9Y"),
+                ("2026-06", "3EFdKoYQbnF6SUe5tKxM"),
+            ]
+            # Per-market daily volume — same monthly split.
+            _Q_VOL_MONTHS: list[tuple[str, str]] = [
+                ("2025-10", "ha8KI7UgIYErrRX7FVRb"),
+                ("2025-11", "bjteVj88hcZ2J7aMYTLL"),
+                ("2025-12", "yQwb2E1DbTXBMUQOxv91"),
+                ("2026-01", "Y3dnh1cetFe4Mvk71RXw"),
+                ("2026-02", "rn6de7jubz6UJqmboI3C"),
+                ("2026-03", "GTUOinJ1mGqFg05Anf5E"),
+                ("2026-04", "3f15H7ewiru0jSSg1pA0"),
+                ("2026-05", "c4RdLzLIA2vLooZpI2jV"),
+                ("2026-06", "4llrBGWuqueGZmjIc96n"),
+            ]
+
+            def _fetch_monthly_concat(
+                months: list[tuple[str, str]]
+            ) -> tuple[pd.DataFrame, list[tuple[str, str]]]:
+                """Run each month's Allium query (each cached
+                independently for 4h), concat the rows, and return
+                (combined_df, list_of_(month, error)) for any month
+                that failed. An empty-but-no-error month is silently
+                skipped — happens naturally for current/future months
+                where the data hasn't materialised yet."""
+                frames: list[pd.DataFrame] = []
+                errs: list[tuple[str, str]] = []
+                for _month, _qid in months:
+                    _df, _err = _allium.fetch_allium_query_results(_qid)
+                    if _err:
+                        errs.append((_month, _err))
+                        continue
+                    if not _df.empty:
+                        frames.append(_df)
+                if not frames:
+                    return pd.DataFrame(), errs
+                _out = pd.concat(frames, ignore_index=True)
+                return _out, errs
 
             _agg_df, _agg_err = _allium.fetch_allium_query_results(_Q_AGG)
             if _agg_df.empty:
@@ -9119,11 +9176,16 @@ if __name__ == "__main__":
                 )
 
             # ── Chart 1b: Per-market daily OI (stacked area) ────────
-            _oi_df, _oi_err = _allium.fetch_allium_query_results(_Q_OI)
+            # Fetch + concat 9 monthly queries (Oct-2025 → Jun-2026).
+            # Each month is cached separately so adding a new month
+            # later doesn't blow away the older months' cache entries.
+            _oi_df, _oi_errs = _fetch_monthly_concat(_Q_OI_MONTHS)
             if _oi_df.empty:
+                _err_summary = (
+                    "; ".join(f"{m}: {e}" for m, e in _oi_errs)
+                    if _oi_errs else "empty")
                 st.info(
-                    f"Per-market OI query (Q2) returned no data: "
-                    f"`{_oi_err or 'empty'}`"
+                    f"Per-market OI returned no data: `{_err_summary}`"
                 )
             else:
                 _oi_df = _oi_df.copy()
@@ -9221,19 +9283,26 @@ if __name__ == "__main__":
                         "lifetime OI shown explicitly; remaining 61 "
                         "long-tail markets rolled into **Others**. "
                         "OI snapshot table has gaps in early rows. "
-                        f"Source: Allium query [`{_Q_OI}`]"
-                        f"(https://app.allium.so/analyze/queries/{_Q_OI})."
+                        "Source: 9 monthly Allium queries (2025-10 → "
+                        "2026-06) concatenated client-side to bypass "
+                        "the 2000-row response cap — see "
+                        "`_Q_OI_MONTHS` in stocks_dashboard.py for the "
+                        "list."
                     ),
                     col_aggs={c: "last" for c in _oi_ordered},
                     legend_label="markets",
                 )
 
             # ── Chart 1c: Per-market daily volume (stacked area) ────
-            _vol_df, _vol_err = _allium.fetch_allium_query_results(_Q_VOL)
+            # Same monthly-split + concat pattern as the OI chart.
+            _vol_df, _vol_errs = _fetch_monthly_concat(_Q_VOL_MONTHS)
             if _vol_df.empty:
+                _err_summary = (
+                    "; ".join(f"{m}: {e}" for m, e in _vol_errs)
+                    if _vol_errs else "empty")
                 st.info(
-                    f"Per-market volume query (Q3) returned no data: "
-                    f"`{_vol_err or 'empty'}`"
+                    f"Per-market volume returned no data: "
+                    f"`{_err_summary}`"
                 )
             else:
                 _vol_df = _vol_df.copy()
@@ -9322,14 +9391,11 @@ if __name__ == "__main__":
                         "Daily perp volume per RWA market on "
                         "Hyperliquid, stacked. **Top 12** markets by "
                         "lifetime volume shown explicitly; remaining "
-                        "61 rolled into **Others**.  \n"
-                        "**Note:** Allium currently caps this query at "
-                        "**2000 rows** (latest date ~2026-02-15). "
-                        "Remove the `LIMIT` clause from the SQL on "
-                        "Allium's side to unlock the full ~17,500-row "
-                        "history. Source: Allium query "
-                        f"[`{_Q_VOL}`]"
-                        f"(https://app.allium.so/analyze/queries/{_Q_VOL})."
+                        "61 rolled into **Others**. Source: 9 monthly "
+                        "Allium queries (2025-10 → 2026-06) "
+                        "concatenated client-side to bypass the 2000-"
+                        "row response cap — see `_Q_VOL_MONTHS` in "
+                        "stocks_dashboard.py for the list."
                     ),
                     col_aggs={c: "sum" for c in _vol_ordered},
                     legend_label="markets",

@@ -8650,7 +8650,7 @@ if __name__ == "__main__":
                     "will populate this view."
                 )
             else:
-                _treas_chain_cols = [
+                _treas_chain_cols_all = [
                     c for c in _treas_mc_by_chain.columns
                     if c.startswith("mc_") and c.endswith("_usd")
                 ]
@@ -8659,7 +8659,34 @@ if __name__ == "__main__":
                 def _latest_treas_mc(col, _df=_treas_mc_by_chain):
                     s = _df[col].dropna()
                     return float(s.iloc[-1]) if len(s) else 0.0
-                _treas_chain_cols.sort(key=_latest_treas_mc, reverse=True)
+                _treas_chain_cols_all.sort(key=_latest_treas_mc, reverse=True)
+
+                # Cap visible bands at top 10 chains by current MC; sum
+                # the long tail into one `mc_others_usd` band so the
+                # chart stays readable. 20+ stacked bands on a single
+                # area chart compress everything past rank ~8 into an
+                # unreadable strip at the top — user flagged this.
+                _TOP_N_CHAINS = 10
+                _top_cols = _treas_chain_cols_all[:_TOP_N_CHAINS]
+                _tail_cols = _treas_chain_cols_all[_TOP_N_CHAINS:]
+                _treas_mc_by_chain = _treas_mc_by_chain.copy()
+                if _tail_cols:
+                    _treas_mc_by_chain["mc_others_usd"] = (
+                        _treas_mc_by_chain[_tail_cols].ffill().fillna(0)
+                                                       .sum(axis=1).values)
+                    _treas_mc_by_chain = _treas_mc_by_chain.drop(
+                        columns=_tail_cols)
+                    # `Others` lives at the END of the legend / TOP of
+                    # the stack — easy to skip visually if not relevant.
+                    _treas_chain_cols = _top_cols + ["mc_others_usd"]
+                else:
+                    _treas_chain_cols = _top_cols
+                _tail_chain_labels = [
+                    _PER_CHAIN_LABEL.get(c[len("mc_"):-len("_usd")],
+                                          c[len("mc_"):-len("_usd")]
+                                          .replace("_", " ").title())
+                    for c in _tail_cols
+                ]
 
                 def _build_treas_mc_by_chain_fig(df_view):
                     fig = go.Figure()
@@ -8667,9 +8694,14 @@ if __name__ == "__main__":
                                 if c in df_view.columns]
                     for col in present:
                         ch_safe = col[len("mc_"):-len("_usd")]
-                        label = _PER_CHAIN_LABEL.get(
-                            ch_safe, ch_safe.replace("_", " ").title())
-                        color = _PER_CHAIN_COLOR.get(ch_safe, "#888888")
+                        if ch_safe == "others":
+                            label = (f"Others ({len(_tail_cols)})"
+                                      if _tail_cols else "Others")
+                            color = "#888888"
+                        else:
+                            label = _PER_CHAIN_LABEL.get(
+                                ch_safe, ch_safe.replace("_", " ").title())
+                            color = _PER_CHAIN_COLOR.get(ch_safe, "#888888")
                         y = df_view[col].ffill().fillna(0.0)
                         fig.add_trace(go.Scatter(
                             x=df_view["date"], y=y, name=label,
@@ -8713,13 +8745,19 @@ if __name__ == "__main__":
                     raw_filename="tokenized_treasuries_mc_by_chain",
                     caption=(
                         "Per-chain MC summed across every treasury "
-                        "token deployed on that chain. **Ethereum** "
-                        "is the long-time dominant chain (BUIDL / "
-                        "OUSG / USTB / VBILL / JTRSY / ULTRA / etc. "
-                        "all launched here first). **Stellar** carries "
-                        "Ondo (OUSG + USDY), Spiko USTBL, and "
-                        "WisdomTree WTGXX — not BUIDL. **Aptos** is "
-                        "the largest BUIDL chain outside Ethereum.  \n"
+                        "token deployed on that chain — **top 10 "
+                        "chains by current MC** shown explicitly; "
+                        "the rest are rolled into **Others** "
+                        "("
+                        + (", ".join(_tail_chain_labels)
+                            if _tail_chain_labels else "none")
+                        + "). **Ethereum** is the long-time dominant "
+                        "chain (BUIDL / OUSG / USTB / VBILL / JTRSY / "
+                        "ULTRA / etc. all launched here first). "
+                        "**Stellar** carries Ondo (OUSG + USDY), Spiko "
+                        "USTBL, and WisdomTree WTGXX — not BUIDL. "
+                        "**Aptos** is the largest BUIDL chain outside "
+                        "Ethereum.  \n"
                         "**Methodology note:** this chart sums each "
                         "token's DefiLlama per-chain TVL; the by-token "
                         "chart above uses CoinGecko's MC aggregate for "

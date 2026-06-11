@@ -2347,7 +2347,24 @@ class TokenGroupMetricsPuller(DataPuller):
             return None
 
     def _fetch_token_overview_mc(self, headers: dict, address: str) -> float | None:
-        """Current Solana-only market cap from Birdeye Token Overview."""
+        """Current Solana-only market cap from Birdeye Token Overview.
+        Thin wrapper around _fetch_token_overview that drops the holder
+        count — kept for back-compat with callers that only need MC."""
+        data = self._fetch_token_overview(headers, address)
+        return data.get("market_cap") if data else None
+
+    def _fetch_token_overview(
+            self, headers: dict, address: str) -> dict | None:
+        """One Birdeye /defi/token_overview call → both marketCap and
+        holder count. Returns `{"market_cap": float|None, "holder":
+        int|None}` on success, None on transport/HTTP error.
+
+        The endpoint returns holder counts ONLY for Solana — for every
+        other chain we tested (Eth/BSC/Arb/Avax/Optimism/Polygon/Aptos)
+        the `holder` field comes back missing or 0. That's why the
+        treasuries by-chain holder coverage is Solana-only via this
+        path; cross-chain coverage will land via a Dune/Allium query
+        in a follow-up."""
         try:
             r = requests.get(
                 f"{self.settings.birdeye_base_url}/defi/token_overview",
@@ -2356,9 +2373,13 @@ class TokenGroupMetricsPuller(DataPuller):
             r.raise_for_status()
             d = r.json().get("data") or {}
             mc = d.get("marketCap", d.get("market_cap"))
-            return float(mc) if mc is not None else None
+            holder = d.get("holder")
+            return {
+                "market_cap": float(mc) if mc is not None else None,
+                "holder": int(holder) if holder is not None else None,
+            }
         except Exception as exc:
-            self.logger.warning("%s Token Overview MC fetch failed (%s): %s",
+            self.logger.warning("%s Token Overview fetch failed (%s): %s",
                                 self.GROUP_LABEL, address[:8], exc)
             return None
 
@@ -2736,8 +2757,12 @@ class TokenGroupMetricsPuller(DataPuller):
                 chain      = self._token_chain(tok)
                 if idx > 0:
                     time.sleep(0.1)   # gentle pacing for large groups
-                mc = self._fetch_token_overview_mc(
+                ov = self._fetch_token_overview(
                     self._birdeye_headers(address, chain), address)
+                if ov is None:
+                    continue
+                mc = ov.get("market_cap")
+                holder = ov.get("holder")
                 if mc is not None:
                     # Write to BOTH the legacy chain-agnostic col (Solana-only
                     # historically) AND the per-chain col. The per-chain col is
@@ -2749,6 +2774,19 @@ class TokenGroupMetricsPuller(DataPuller):
                     if chain.lower() == "solana":
                         col_legacy = self._mc_col(token_name)
                         mc_cols_by_date.setdefault(today, {})[col_legacy] = mc
+                if holder is not None and holder > 0:
+                    # Holder count per (token, chain). Birdeye only fills
+                    # this on Solana — every other chain returns 0/None,
+                    # which we filter out so the col isn't created. Cross-
+                    # chain coverage will come via a Dune/Allium query.
+                    safe_t = (token_name.lower()
+                                        .replace("-", "_")
+                                        .replace(" ", "_"))
+                    ch_safe = _chain_safe(chain)
+                    h_col = f"holders_{safe_t}_{ch_safe}"
+                    mc_cols_by_date.setdefault(today, {})[h_col] = holder
+                    if h_col not in mc_cols:
+                        mc_cols.append(h_col)
             all_dates.update(mc_cols_by_date.keys())
         elif self.MARKET_CAP_SOURCE == "coingecko" and self.COINGECKO_IDS:
             for idx, tok in enumerate(self.TOKENS):
@@ -6789,7 +6827,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v67-cg-stale-carryforward"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v68-birdeye-holder-count"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────
@@ -8829,6 +8867,133 @@ if __name__ == "__main__":
                     col_aggs={c: "last" for c in _treas_chain_cols},
                     legend_label="chains",
                 )
+
+            # ── Chart 3: Solana holder count by token ──────────────
+            # Birdeye's /defi/token_overview includes a `holder` field
+            # ONLY on Solana — every other chain returns 0 or None.
+            # So this chart is Solana-only; cross-chain coverage is
+            # blocked on the upstream Dune/Allium follow-up.
+            #
+            # Token Overview is a snapshot, not a history. The puller
+            # writes holders_<sym>_solana per pull; over time, daily
+            # data accumulates into a time series. Aggregation uses
+            # 'last' because holder count isn't a flow (you can't sum
+            # daily snapshots — Mon's 7 holders + Tue's 7 holders = 14
+            # is wrong).
+            st.divider()
+            _treas_p = treasury_pullers[0] if treasury_pullers else None
+            _treas_df = (_treas_p.get_latest()
+                          if _treas_p is not None else None)
+            if _treas_df is None or _treas_df.empty:
+                st.info(
+                    "Holder counts pending — Solana holder counts "
+                    "land on the next pull (every 4h)."
+                )
+            else:
+                _treas_df = _treas_df.copy()
+                _treas_df["date"] = pd.to_datetime(_treas_df["date"],
+                                                    errors="coerce")
+                _sol_holder_cols = sorted([
+                    c for c in _treas_df.columns
+                    if c.startswith("holders_") and c.endswith("_solana")
+                    and _treas_df[c].notna().any()
+                    and float(_treas_df[c].fillna(0).max() or 0) > 0
+                ])
+                if not _sol_holder_cols:
+                    st.info(
+                        "No Solana holder counts in the latest pull "
+                        "yet — next puller run (v68+) will write the "
+                        "`holders_<sym>_solana` cols via Birdeye's "
+                        "token_overview `holder` field."
+                    )
+                else:
+                    # Sort largest-first so the biggest token anchors
+                    # the bottom of the stack.
+                    def _latest_holder_count(col, _df=_treas_df):
+                        s = _df[col].dropna()
+                        return float(s.iloc[-1]) if len(s) else 0.0
+                    _sol_holder_cols.sort(key=_latest_holder_count,
+                                            reverse=True)
+
+                    # Per-token color picked from the renderer's stable
+                    # palette so the same token reads the same across
+                    # MC and holder charts.
+                    _PALETTE = [
+                        "#4285F4", "#10B981", "#F97316", "#A78BFA",
+                        "#EF4444", "#EC4899", "#14B8A6", "#FACC15",
+                        "#F472B6", "#22D3EE", "#F87171", "#84CC16",
+                    ]
+
+                    def _build_treas_holders_fig(df_view):
+                        fig = go.Figure()
+                        present = [c for c in _sol_holder_cols
+                                    if c in df_view.columns]
+                        for i, col in enumerate(reversed(present)):
+                            sym = col[len("holders_"):-len("_solana")]
+                            label = sym.upper()
+                            color = _PALETTE[
+                                (len(present) - 1 - i) % len(_PALETTE)]
+                            y = df_view[col].ffill().fillna(0)
+                            fig.add_trace(go.Scatter(
+                                x=df_view["date"], y=y, name=label,
+                                mode="lines",
+                                line=dict(color=color, width=0.9),
+                                stackgroup="holders",
+                                customdata=y.map(lambda v: f"{int(v or 0):,}"),
+                                hovertemplate=f"{label}: %{{customdata}}<extra></extra>",
+                            ))
+                        totals = (df_view[present].ffill().fillna(0)
+                                                 .sum(axis=1))
+                        fig.add_trace(go.Scatter(
+                            x=df_view["date"], y=totals, name="Total",
+                            mode="lines",
+                            line=dict(width=0, color="rgba(0,0,0,0)"),
+                            showlegend=False, stackgroup=None,
+                            customdata=totals.map(lambda v: f"{int(v):,}"),
+                            hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+                        ))
+                        y_max = float(totals.max() or 0)
+                        fig.update_layout(
+                            height=380, hovermode="x unified",
+                            margin=dict(t=10, b=10, l=10, r=10),
+                            showlegend=False,
+                            yaxis=dict(tickformat=",",
+                                        showgrid=True, rangemode="tozero",
+                                        range=[0, y_max * 1.10] if y_max > 0 else None),
+                        )
+                        return fig
+
+                    _holders_raw = _treas_df[
+                        ["date"] + _sol_holder_cols].copy()
+                    _holders_raw["total"] = (
+                        _treas_df[_sol_holder_cols].ffill().fillna(0)
+                                                  .sum(axis=1).values)
+                    _chart_dwm_simple(
+                        "Solana Holder Count (by token)",
+                        source_df=_treas_df[
+                            ["date"] + _sol_holder_cols].copy(),
+                        build_fig=_build_treas_holders_fig,
+                        raw_df=_holders_raw.sort_values(
+                            "date", ascending=False),
+                        raw_key="asset_treas_holders_solana",
+                        raw_filename="tokenized_treasuries_holders_solana",
+                        caption=(
+                            "Per-token Solana holder count, stacked. "
+                            "Source: Birdeye `/defi/token_overview` "
+                            "(the `holder` field), snapshot-per-pull. "
+                            "**Solana only** — Birdeye doesn't return "
+                            "holder counts on Ethereum / BSC / Aptos "
+                            "/ Arbitrum / Avalanche / Optimism / "
+                            "Polygon for these contracts. Cross-chain "
+                            "coverage is blocked on the upstream "
+                            "Dune / Allium query follow-up."
+                        ),
+                        # Holder count = snapshot, not flow; weekly/
+                        # monthly take the LAST snapshot of the period.
+                        col_aggs={c: "last" for c in _sol_holder_cols},
+                        fmt_mode="count",
+                        legend_label="tokens",
+                    )
             st.stop()
 
         # Other asset verticals: placeholder until specs land.

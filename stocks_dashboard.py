@@ -8997,8 +8997,350 @@ if __name__ == "__main__":
             st.stop()
 
         if selected_asset == "RWA perps":
+            # ── Section 1: Hyperliquid historical (Allium) ──────────
+            # 3 user-built queries against Allium's hyperliquid.*
+            # tables, scoped to perp_dex='xyz' (the HIP-3 umbrella
+            # hosting all 73 RWA perp markets). Daily series from
+            # 2025-10-13 onward; OI null before 2025-11-20 (per-row
+            # gap in the underlying snapshot table).
+            import allium as _allium
+            _Q_AGG  = "AAdTLRmNwAdpff0JQcdq"   # daily vol+OI umbrella
+            _Q_OI   = "8DiueFXlG6RWaVgZSYSH"   # per-market daily OI
+            _Q_VOL  = "YWHDBceQJPGtHXkWxrFN"   # per-market daily volume
+
+            _agg_df, _agg_err = _allium.fetch_allium_query_results(_Q_AGG)
+            if _agg_df.empty:
+                st.warning(
+                    "Hyperliquid umbrella query (Q1) returned no data. "
+                    f"Reason: `{_agg_err or 'empty'}`"
+                )
+            else:
+                _agg_df = _agg_df.copy()
+                _agg_df["date"] = pd.to_datetime(_agg_df["date"],
+                                                  errors="coerce")
+                _agg_df = (_agg_df.sort_values("date")
+                                   .reset_index(drop=True))
+
+                # ── Headline metrics from the latest Allium row ─────
+                _latest = _agg_df.iloc[-1]
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric(
+                    "Latest daily volume",
+                    _fmt_usd(float(_latest.get("total_volume_usd") or 0)),
+                )
+                _oi_latest = _latest.get("total_open_interest_usd")
+                m2.metric(
+                    "Latest open interest",
+                    _fmt_usd(float(_oi_latest or 0))
+                    if pd.notna(_oi_latest) else "—",
+                )
+                m3.metric(
+                    "Daily trades",
+                    f"{int(_latest.get('total_trades') or 0):,}",
+                )
+                m4.metric(
+                    "Active markets",
+                    f"{int(_latest.get('active_markets') or 0):,}",
+                )
+                st.divider()
+
+                # ── Chart 1a: Daily Total Volume + OI (dual-axis) ───
+                # Dual-axis: bars = daily volume (left $), line = OI
+                # (right $). OI is null pre-2025-11-20 so the line
+                # starts ~5 weeks after the bars do.
+                def _build_agg_fig(df_view):
+                    fig = go.Figure()
+                    fig.add_trace(go.Bar(
+                        x=df_view["date"],
+                        y=df_view["total_volume_usd"],
+                        name="Volume",
+                        marker_color="#4285F4", opacity=0.85,
+                        customdata=df_view["total_volume_usd"].map(_fmt_usd),
+                        hovertemplate="Volume: %{customdata}<extra></extra>",
+                    ))
+                    fig.add_trace(go.Scatter(
+                        x=df_view["date"],
+                        y=df_view["total_open_interest_usd"],
+                        name="Open Interest",
+                        mode="lines+markers",
+                        line=dict(color="#10B981", width=1.5),
+                        marker=dict(color="#10B981", size=4),
+                        yaxis="y2",
+                        customdata=df_view["total_open_interest_usd"].map(
+                            lambda v: _fmt_usd(v) if pd.notna(v) else "—"),
+                        hovertemplate="OI: %{customdata}<extra></extra>",
+                    ))
+                    fig.update_layout(
+                        height=400, hovermode="x unified",
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        showlegend=False,
+                        yaxis=dict(tickprefix="$", tickformat="~s",
+                                    showgrid=True, rangemode="tozero"),
+                        yaxis2=dict(overlaying="y", side="right",
+                                    tickprefix="$", tickformat="~s",
+                                    showgrid=False, rangemode="tozero"),
+                    )
+                    return fig
+
+                _chart_dwm_simple(
+                    "Daily Volume + Open Interest (xyz umbrella)",
+                    source_df=_agg_df,
+                    build_fig=_build_agg_fig,
+                    raw_df=_agg_df.sort_values("date", ascending=False),
+                    raw_key="rwa_perp_hl_agg",
+                    raw_filename="hyperliquid_rwa_perps_aggregate",
+                    caption=(
+                        "Daily perp activity for the **xyz** HIP-3 DEX "
+                        "on Hyperliquid (all 73 RWA markets aggregated). "
+                        "Volume (left axis, bars) is a flow; Open "
+                        "Interest (right axis, line) is a stock. "
+                        "OI is null before 2025-11-20 — Allium's "
+                        "snapshot table didn't carry the field on "
+                        "earlier rows. Source: Allium query "
+                        f"[`{_Q_AGG}`]"
+                        f"(https://app.allium.so/analyze/queries/{_Q_AGG})."
+                    ),
+                    col_aggs={
+                        "total_volume_usd":         "sum",
+                        "total_open_interest_usd":  "last",
+                        "total_trades":             "sum",
+                        "active_markets":           "last",
+                    },
+                    skip_yaxis_format=True,  # dual-axis: preserve per-axis tickprefix
+                    legend_entries=[
+                        ("Volume",        "#4285F4"),
+                        ("Open Interest", "#10B981"),
+                    ],
+                )
+
+            # ── Chart 1b: Per-market daily OI (stacked area) ────────
+            _oi_df, _oi_err = _allium.fetch_allium_query_results(_Q_OI)
+            if _oi_df.empty:
+                st.info(
+                    f"Per-market OI query (Q2) returned no data: "
+                    f"`{_oi_err or 'empty'}`"
+                )
+            else:
+                _oi_df = _oi_df.copy()
+                _oi_df["date"] = pd.to_datetime(_oi_df["date"],
+                                                  errors="coerce")
+                _oi_df["open_interest_usd"] = (
+                    pd.to_numeric(_oi_df["open_interest_usd"],
+                                   errors="coerce").fillna(0))
+                # Strip xyz: prefix for cleaner legend labels.
+                _oi_df["market"] = _oi_df["coin"].str.replace(
+                    "xyz:", "", regex=False)
+                # Pivot long → wide
+                _oi_wide = (_oi_df.pivot_table(
+                    index="date", columns="market",
+                    values="open_interest_usd", aggfunc="sum")
+                    .fillna(0))
+                # Top-12 + Others
+                _OI_TOP_N = 12
+                _totals = (_oi_wide.sum(axis=0)
+                                    .sort_values(ascending=False))
+                _top = list(_totals.head(_OI_TOP_N).index)
+                _tail = [c for c in _totals.index if c not in _top]
+                if _tail:
+                    _oi_wide["Others"] = _oi_wide[_tail].sum(axis=1)
+                    _oi_wide = _oi_wide.drop(columns=_tail)
+                _latest_oi = _oi_wide.iloc[-1] if len(_oi_wide) else pd.Series()
+                _oi_ordered = sorted(
+                    list(_oi_wide.columns),
+                    key=lambda c: float(_latest_oi.get(c, 0) or 0),
+                    reverse=True)
+                _oi_wide = _oi_wide.reset_index()
+
+                _PALETTE = [
+                    "#4285F4", "#10B981", "#F97316", "#A78BFA",
+                    "#EF4444", "#EC4899", "#14B8A6", "#FACC15",
+                    "#F472B6", "#22D3EE", "#F87171", "#84CC16",
+                ]
+                _oi_colors, _ci = {}, 0
+                for c in _oi_ordered:
+                    if c == "Others":
+                        _oi_colors[c] = "#888888"
+                    else:
+                        _oi_colors[c] = _PALETTE[_ci % len(_PALETTE)]
+                        _ci += 1
+
+                def _build_oi_fig(df_view):
+                    fig = go.Figure()
+                    for col in reversed(_oi_ordered):
+                        if col not in df_view.columns:
+                            continue
+                        y = df_view[col].fillna(0)
+                        fig.add_trace(go.Scatter(
+                            x=df_view["date"], y=y, name=col,
+                            mode="lines",
+                            line=dict(color=_oi_colors[col], width=0.9),
+                            stackgroup="hl_oi",
+                            customdata=y.map(_fmt_usd),
+                            hovertemplate=f"{col}: %{{customdata}}<extra></extra>",
+                        ))
+                    present = [c for c in _oi_ordered
+                                if c in df_view.columns]
+                    tot = df_view[present].fillna(0).sum(axis=1)
+                    fig.add_trace(go.Scatter(
+                        x=df_view["date"], y=tot, name="Total",
+                        mode="lines",
+                        line=dict(width=0, color="rgba(0,0,0,0)"),
+                        showlegend=False, stackgroup=None,
+                        customdata=tot.map(_fmt_usd),
+                        hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+                    ))
+                    y_max = float(tot.max() or 0)
+                    fig.update_layout(
+                        height=400, hovermode="x unified",
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        showlegend=False,
+                        yaxis=dict(tickprefix="$", tickformat="~s",
+                                    showgrid=True, rangemode="tozero",
+                                    range=[0, y_max * 1.10] if y_max > 0 else None),
+                    )
+                    return fig
+
+                _oi_raw = _oi_wide.copy()
+                _oi_raw["Total"] = (_oi_wide[_oi_ordered].fillna(0)
+                                                          .sum(axis=1).values)
+                _chart_dwm_simple(
+                    "Open Interest by Market (top 12 + Others)",
+                    source_df=_oi_wide,
+                    build_fig=_build_oi_fig,
+                    raw_df=_oi_raw.sort_values("date", ascending=False),
+                    raw_key="rwa_perp_hl_oi_by_mkt",
+                    raw_filename="hyperliquid_rwa_oi_by_market",
+                    caption=(
+                        "Daily open interest per RWA perp market on "
+                        "Hyperliquid, stacked. **Top 12** markets by "
+                        "lifetime OI shown explicitly; remaining 61 "
+                        "long-tail markets rolled into **Others**. "
+                        "OI snapshot table has gaps in early rows. "
+                        f"Source: Allium query [`{_Q_OI}`]"
+                        f"(https://app.allium.so/analyze/queries/{_Q_OI})."
+                    ),
+                    col_aggs={c: "last" for c in _oi_ordered},
+                    legend_label="markets",
+                )
+
+            # ── Chart 1c: Per-market daily volume (stacked area) ────
+            _vol_df, _vol_err = _allium.fetch_allium_query_results(_Q_VOL)
+            if _vol_df.empty:
+                st.info(
+                    f"Per-market volume query (Q3) returned no data: "
+                    f"`{_vol_err or 'empty'}`"
+                )
+            else:
+                _vol_df = _vol_df.copy()
+                _vol_df["date"] = pd.to_datetime(_vol_df["date"],
+                                                   errors="coerce")
+                _vol_df["volume_usd"] = (
+                    pd.to_numeric(_vol_df["volume_usd"],
+                                   errors="coerce").fillna(0))
+                _vol_df["market"] = _vol_df["coin"].str.replace(
+                    "xyz:", "", regex=False)
+                _vol_wide = (_vol_df.pivot_table(
+                    index="date", columns="market",
+                    values="volume_usd", aggfunc="sum")
+                    .fillna(0))
+                _VOL_TOP_N = 12
+                _vtotals = (_vol_wide.sum(axis=0)
+                                      .sort_values(ascending=False))
+                _vtop = list(_vtotals.head(_VOL_TOP_N).index)
+                _vtail = [c for c in _vtotals.index if c not in _vtop]
+                if _vtail:
+                    _vol_wide["Others"] = _vol_wide[_vtail].sum(axis=1)
+                    _vol_wide = _vol_wide.drop(columns=_vtail)
+                _latest_vol = (_vol_wide.iloc[-1]
+                               if len(_vol_wide) else pd.Series())
+                _vol_ordered = sorted(
+                    list(_vol_wide.columns),
+                    key=lambda c: float(_latest_vol.get(c, 0) or 0),
+                    reverse=True)
+                _vol_wide = _vol_wide.reset_index()
+
+                _vol_colors, _ci = {}, 0
+                for c in _vol_ordered:
+                    if c == "Others":
+                        _vol_colors[c] = "#888888"
+                    else:
+                        _vol_colors[c] = _PALETTE[_ci % len(_PALETTE)]
+                        _ci += 1
+
+                def _build_vol_fig(df_view):
+                    fig = go.Figure()
+                    for col in reversed(_vol_ordered):
+                        if col not in df_view.columns:
+                            continue
+                        y = df_view[col].fillna(0)
+                        fig.add_trace(go.Scatter(
+                            x=df_view["date"], y=y, name=col,
+                            mode="lines",
+                            line=dict(color=_vol_colors[col], width=0.9),
+                            stackgroup="hl_vol",
+                            customdata=y.map(_fmt_usd),
+                            hovertemplate=f"{col}: %{{customdata}}<extra></extra>",
+                        ))
+                    present = [c for c in _vol_ordered
+                                if c in df_view.columns]
+                    tot = df_view[present].fillna(0).sum(axis=1)
+                    fig.add_trace(go.Scatter(
+                        x=df_view["date"], y=tot, name="Total",
+                        mode="lines",
+                        line=dict(width=0, color="rgba(0,0,0,0)"),
+                        showlegend=False, stackgroup=None,
+                        customdata=tot.map(_fmt_usd),
+                        hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+                    ))
+                    y_max = float(tot.max() or 0)
+                    fig.update_layout(
+                        height=400, hovermode="x unified",
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        showlegend=False,
+                        yaxis=dict(tickprefix="$", tickformat="~s",
+                                    showgrid=True, rangemode="tozero",
+                                    range=[0, y_max * 1.10] if y_max > 0 else None),
+                    )
+                    return fig
+
+                _vol_raw = _vol_wide.copy()
+                _vol_raw["Total"] = (_vol_wide[_vol_ordered].fillna(0)
+                                                              .sum(axis=1).values)
+                _chart_dwm_simple(
+                    "Volume by Market (top 12 + Others)",
+                    source_df=_vol_wide,
+                    build_fig=_build_vol_fig,
+                    raw_df=_vol_raw.sort_values("date", ascending=False),
+                    raw_key="rwa_perp_hl_vol_by_mkt",
+                    raw_filename="hyperliquid_rwa_volume_by_market",
+                    caption=(
+                        "Daily perp volume per RWA market on "
+                        "Hyperliquid, stacked. **Top 12** markets by "
+                        "lifetime volume shown explicitly; remaining "
+                        "61 rolled into **Others**.  \n"
+                        "**Note:** Allium currently caps this query at "
+                        "**2000 rows** (latest date ~2026-02-15). "
+                        "Remove the `LIMIT` clause from the SQL on "
+                        "Allium's side to unlock the full ~17,500-row "
+                        "history. Source: Allium query "
+                        f"[`{_Q_VOL}`]"
+                        f"(https://app.allium.so/analyze/queries/{_Q_VOL})."
+                    ),
+                    col_aggs={c: "sum" for c in _vol_ordered},
+                    legend_label="markets",
+                )
+
+            st.divider()
+            st.markdown("## Hyperliquid live snapshot (Birdeye)")
+            st.caption(
+                "Current-state view sourced from the Birdeye "
+                "`/perps/v1/token/list` endpoint. Snapshot per pull — "
+                "complements the historical view above with up-to-the-"
+                "minute long/short skew, leverage, and bias per market."
+            )
+
             # Birdeye Hyperliquid perps — the `xyz:` prefix scopes the
-            # ~70 RWA / tokenized-asset markets out of Hyperliquid's
+            # ~73 RWA / tokenized-asset markets out of Hyperliquid's
             # ~300-perp total universe. Each /perps/v1/token/list call
             # returns CURRENT open interest (snapshot, not history) so
             # this view is "as-of-now" until daily snapshots accumulate

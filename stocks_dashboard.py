@@ -2415,6 +2415,19 @@ class TokenGroupMetricsPuller(DataPuller):
                 out[date] = mc   # last reading of the day wins
             if out:
                 _CG_MC_CACHE[cg_id] = (now, out)
+            else:
+                # Diagnostic logging — USYC kept showing MISSING across
+                # 3 consecutive pulls even though /coins/hashnote-usyc/
+                # market_chart returns 466 points when called directly.
+                # If we land here, the response WAS valid HTTP-200 JSON
+                # but `market_caps` was empty or every entry was None.
+                # Knowing which CG slugs hit this lets us narrow the
+                # bug next time (maybe CG returns empty for a specific
+                # `days` value, or there's a regional / billing quirk).
+                self.logger.warning(
+                    "%s CoinGecko MC empty (cg_id=%s, caps_len=%d) — "
+                    "endpoint returned 200 but no usable market_caps",
+                    self.GROUP_LABEL, cg_id, len(caps))
             return out
 
     def _fetch_coingecko_vol(self, cg_id: str) -> dict[str, float]:
@@ -2630,6 +2643,8 @@ class TokenGroupMetricsPuller(DataPuller):
         # only fills genuine gaps.
         _seed = _load_mc_seed()
         if _seed:
+            from datetime import datetime as _dt
+            today_str = _dt.utcnow().strftime("%Y-%m-%d")
             for tok in self.TOKENS:
                 token_name = tok[0]
                 address    = tok[1] if len(tok) > 1 else ""
@@ -2647,6 +2662,22 @@ class TokenGroupMetricsPuller(DataPuller):
                 for c in (col_legacy, col_chain):
                     if c not in mc_cols:
                         mc_cols.append(c)
+                # Carry-forward: write the LATEST seed value to TODAY
+                # for tokens whose live source doesn't fill the gap.
+                # ULTRA = Wellington Ultra Short Treasury — Birdeye
+                # doesn't index its 4 contracts (Token Overview returns
+                # all-None for ULTRA's Sol/Eth/Arb/Avax addrs), so
+                # without this the col is NULL after the seed's last
+                # date (2026-06-09 from the rwa.xyz CSV). Other seeded
+                # tokens get whatever DL/CG provide today and the
+                # `setdefault` here is a no-op for them.
+                if ser:
+                    latest_seed_date = max(ser.keys())
+                    latest_seed_mc = ser[latest_seed_date]
+                    if today_str > latest_seed_date:
+                        bucket = mc_cols_by_date.setdefault(today_str, {})
+                        bucket.setdefault(col_legacy, latest_seed_mc)
+                        bucket.setdefault(col_chain,  latest_seed_mc)
 
         if self.DEFILLAMA_PROJECT_SLUG:
             # Project-level aggregate (e.g. Ondo Global Markets — one
@@ -6741,7 +6772,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v65-treasury-birdeye-snapshot"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v66-ultra-seed-carryforward-usyc-debug"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────

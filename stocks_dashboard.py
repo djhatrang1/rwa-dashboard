@@ -5266,8 +5266,17 @@ def init_pullers(settings: Settings, db: CacheDB) -> List[DataPuller]:
         for pname, label, tokens in _STABLECOIN_GROUPS
     ]
     treasury_pullers = [
+        # market_cap_source="birdeye_overview" enables the per-(token,
+        # chain) Birdeye Token Overview snapshot loop at fetch-time, so
+        # tokens whose seed history ends (e.g. ULTRA, last seed date
+        # 2026-06-09) or are entirely unmapped on DL (BENJI, CUMIU,
+        # etc.) get today's `marketCap = price × on-chain supply`
+        # written to `mc_<token>_<chain>_usd`. DL / CG paths still run
+        # alongside via `setdefault` — Birdeye only fills today's row;
+        # DL fills the full historical series where available.
         _make_stock_group_puller(pname, label, tokens,
                                  group="treasuries",
+                                 market_cap_source="birdeye_overview",
                                  defillama_tokens=_TREASURY_DEFILLAMA,
                                  coingecko_per_token_ids=_TREASURY_COINGECKO,
                                  skip_volume=True)(settings, db)
@@ -6732,7 +6741,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v64-ultra-birdeye-multichain-seeded"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v65-treasury-birdeye-snapshot"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────

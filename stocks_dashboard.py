@@ -9163,6 +9163,228 @@ if __name__ == "__main__":
                         format="%.1fx"),
                 },
             )
+
+            # ── Section 2: Blockworks Solana RWA perps (historical) ────
+            # Same `blockworks.fetch_perp_dex_data()` fetcher the Solana
+            # dashboard's Perp DEXs vertical uses, but filtered to the 4
+            # RWA asset classes (Commodity / Equity / Index / FX) —
+            # crypto perps belong on the Solana page, not here.
+            #
+            # Queries 4625-4628 are per-asset-class daily series with
+            # single-underscore-prefixed `symbol` rows (_XAU / _TSLA /
+            # _SP500 / _EUR / etc.). The asset-class filter keeps single-
+            # underscore names and drops "Total" + double-underscore
+            # sub-categories.
+            import blockworks as _blockworks
+            st.divider()
+            st.markdown("## Solana RWA Perp Markets (Blockworks)")
+            st.caption(
+                "Per-asset-class historical breakdown of RWA perp "
+                "activity on Solana DEXs (Drift / Jupiter / Flash "
+                "Trade / GMTrade / Pacifica / Phoenix / Bullet). "
+                "Source: [Blockworks Research]("
+                + _blockworks.DASHBOARD_URL + ") via the public "
+                "execution endpoint. Cached 4h. Crypto perps are "
+                "omitted here — they live on the Solana dashboard's "
+                "Perp DEXs vertical."
+            )
+            _bw_data = _blockworks.fetch_perp_dex_data()
+            if not _bw_data:
+                st.warning(
+                    "Blockworks scrape returned no execution IDs — "
+                    "either the page moved or the structure changed. "
+                    "Retry on the next page load (4h cache)."
+                )
+            else:
+                # 18-hue palette mirroring the Solana dashboard's per-
+                # asset palette so the same ticker (XAU on Commodity,
+                # TSLA on Equity, etc.) reads in distinct colors.
+                _RWA_PERP_PALETTE = [
+                    "#4285F4", "#EF4444", "#10B981", "#F97316",
+                    "#A78BFA", "#06B6D4", "#EC4899", "#FBBF24",
+                    "#14B8A6", "#1E40AF", "#84CC16", "#FB7185",
+                    "#9333EA", "#0EA5E9", "#F59E0B", "#22C55E",
+                    "#E11D48", "#7C3AED",
+                ]
+
+                # ── Inline helpers (mirrored from solana_dashboard's
+                # _render_perp_dexs but trimmed for the RWA-only case)
+                def _asset_class_filter(s):
+                    """Keep single-underscore-prefixed asset-class
+                    symbol rows; drop "Total" + double-underscore
+                    crypto sub-categories."""
+                    return (isinstance(s, str)
+                            and s.startswith("_")
+                            and not s.startswith("__")
+                            and s != "Total")
+
+                def _pivot_rwa(df, metric_col):
+                    """Long → wide pivot for queries 4625-4628.
+                    Returns date × symbol with NaN where the symbol
+                    didn't trade. Empty df if metric col is absent."""
+                    if (metric_col not in df.columns
+                            or "symbol" not in df.columns):
+                        return pd.DataFrame()
+                    sub = df[df[metric_col].notna()
+                              & df["symbol"].apply(_asset_class_filter)]
+                    if sub.empty:
+                        return pd.DataFrame()
+                    wide = (sub.pivot_table(index="date",
+                                              columns="symbol",
+                                              values=metric_col,
+                                              aggfunc="sum")
+                                .sort_index().reset_index())
+                    return wide.rename(columns={
+                        c: c.lstrip("_") for c in wide.columns
+                        if c != "date"
+                    })
+
+                def _sort_by_latest(wide):
+                    """Largest band at the bottom of the stack —
+                    anchored by latest non-NaN value desc."""
+                    if wide.empty or len(wide.columns) <= 1:
+                        return []
+                    cols = [c for c in wide.columns if c != "date"]
+                    latest = wide.iloc[-1].fillna(0)
+                    return sorted(cols,
+                                    key=lambda c: float(latest.get(c, 0) or 0),
+                                    reverse=True)
+
+                def _build_rwa_stack(wide, fmt_kind="currency"):
+                    """Stacked-area builder. Plotly's inline legend
+                    suppressed; _chart_dwm_simple auto-extracts the
+                    (name, color) entries from the daily fig per the
+                    cardinal chart rule (3-tier legend below)."""
+                    ordered = _sort_by_latest(wide)
+                    fig = go.Figure()
+                    if not ordered:
+                        return fig
+                    color_for = {n: _RWA_PERP_PALETTE[i % len(_RWA_PERP_PALETTE)]
+                                  for i, n in enumerate(ordered)}
+                    totals = (wide[ordered].ffill().fillna(0)
+                                            .sum(axis=1))
+                    for col in reversed(ordered):
+                        color = color_for[col]
+                        y = wide[col].ffill().fillna(0)
+                        fig.add_trace(go.Scatter(
+                            x=wide["date"], y=y, name=col,
+                            mode="lines",
+                            line=dict(color=color, width=0.9),
+                            stackgroup="rwa_perps",
+                            customdata=(
+                                y.map(_fmt_usd) if fmt_kind == "currency"
+                                else y.map(lambda v: f"{int(v):,}")
+                            ),
+                            hovertemplate=f"{col}: %{{customdata}}<extra></extra>",
+                        ))
+                    fig.add_trace(go.Scatter(
+                        x=wide["date"], y=totals, name="Total",
+                        mode="lines",
+                        line=dict(width=0, color="rgba(0,0,0,0)"),
+                        showlegend=False, stackgroup=None,
+                        customdata=(
+                            totals.map(_fmt_usd) if fmt_kind == "currency"
+                            else totals.map(lambda v: f"{int(v):,}")
+                        ),
+                        hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+                    ))
+                    y_max = float(totals.max() or 0)
+                    fig.update_layout(
+                        height=360, hovermode="x unified",
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        showlegend=False,
+                        yaxis=dict(
+                            tickprefix="$" if fmt_kind == "currency" else "",
+                            tickformat="~s",
+                            showgrid=True, rangemode="tozero",
+                            range=[0, y_max * 1.10] if y_max > 0 else None,
+                        ),
+                    )
+                    return fig
+
+                # ── Render 4 asset classes × 2 metrics (Vol + OI) ────
+                # Layout: 2-col grid per metric; metric=vol uses sum
+                # aggregation for D/W/M (flow); metric=oi uses last
+                # (stock).
+                _ASSET_CLASSES = [
+                    ("Commodity perps", 4625),
+                    ("Equity perps",    4626),
+                    ("Index perps",     4627),
+                    ("FX perps",        4628),
+                ]
+
+                def _render_grid(metric_prefix, agg_rule, key_suffix,
+                                  section_title, caption):
+                    st.subheader(section_title)
+                    st.caption(caption)
+                    metric_col = f"{metric_prefix}_market_symbol"
+                    for row_start in range(0, len(_ASSET_CLASSES), 2):
+                        cols = st.columns(2, gap="medium")
+                        for col, (title, qid) in zip(
+                                cols, _ASSET_CLASSES[row_start: row_start + 2]):
+                            df_q = _bw_data.get(qid)
+                            if df_q is None or df_q.empty:
+                                with col:
+                                    st.info(
+                                        f"{title}: no data for query {qid}.")
+                                continue
+                            wide = _pivot_rwa(df_q, metric_col)
+                            if wide.empty:
+                                with col:
+                                    st.info(
+                                        f"{title}: pivoted result empty.")
+                                continue
+                            _raw = wide.copy()
+                            _ord = _sort_by_latest(wide)
+                            _raw["Total"] = (wide[_ord].fillna(0)
+                                                       .sum(axis=1))
+                            with col:
+                                _chart_dwm_simple(
+                                    title,
+                                    source_df=wide,
+                                    build_fig=lambda df_view, _kind=metric_prefix: (
+                                        _build_rwa_stack(df_view,
+                                          fmt_kind=(
+                                            "currency"
+                                            if _kind in ("vol", "oi")
+                                            else "count"))),
+                                    raw_df=_raw.sort_values(
+                                        "date", ascending=False),
+                                    raw_key=(f"rwa_perp_bw_"
+                                              f"{qid}_{key_suffix}"),
+                                    raw_filename=(
+                                        f"rwa_perp_bw_"
+                                        f"{title.lower().replace(' ','_')}"
+                                        f"_{key_suffix}"),
+                                    col_aggs={c: agg_rule for c in _ord},
+                                    legend_label="symbols",
+                                )
+
+                # Volume — flow metric → SUM across periods.
+                _render_grid(
+                    metric_prefix="vol",
+                    agg_rule="sum",
+                    key_suffix="vol",
+                    section_title="Volume by RWA asset class",
+                    caption=(
+                        "Daily perp volume per symbol on each RWA "
+                        "asset class (Solana DEXs only). "
+                        "Source: Blockworks queries 4625-4628."
+                    ),
+                )
+                st.divider()
+                # Open Interest — stock metric → LAST across periods.
+                _render_grid(
+                    metric_prefix="oi",
+                    agg_rule="last",
+                    key_suffix="oi",
+                    section_title="Open Interest by RWA asset class",
+                    caption=(
+                        "Per-symbol open interest on each RWA asset "
+                        "class. OI is a stock not a flow → Weekly / "
+                        "Monthly tabs take the period-end (last) value."
+                    ),
+                )
             st.stop()
 
         # Other asset verticals: placeholder until specs land.

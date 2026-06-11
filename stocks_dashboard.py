@@ -9009,15 +9009,29 @@ if __name__ == "__main__":
             #
             # Per-market OI + per-market volume queries hit the row
             # cap when run as a single multi-month query (~17,500 rows
-            # ÷ 73 markets × ~240 days). User split each into 9
-            # month-scoped queries (2025-10 → 2026-06) so each one
-            # returns ≤ ~2,200 rows / month and stays under the cap.
-            # We fetch all 9 sequentially (cached per-month for 4h)
-            # and concat — same result as one un-LIMITed query.
+            # ÷ 73 markets × ~240 days). User split each into one
+            # month-scoped query per month (≤ ~2,200 rows/month under
+            # the cap). Past months are immutable — once a month
+            # rolls over and the data is fully written, the rows
+            # never change — so we snapshot them to disk under
+            # `allium_seeds/allium_hl_{oi,vol}_<YYYY-MM>.csv` and
+            # load from disk instead of re-hitting Allium every 4h.
+            # Only the current month (and any future month) hits
+            # Allium live. Same pattern as the mc_seed_*.json files
+            # for Birdeye-only market caps.
+            #
+            # Maintenance: when a month rolls over, run
+            # `scripts/snapshot_allium_hl.py` to add the new
+            # past-month CSV.
+            import os as _os
             import allium as _allium
             _Q_AGG  = "AAdTLRmNwAdpff0JQcdq"   # daily vol+OI umbrella
 
-            # Per-market daily OI — 9 monthly queries, 2025-10 → 2026-06.
+            # Per-market daily OI — one Allium query per month.
+            # The CSV-snapshot loader looks for a file at
+            # allium_seeds/allium_hl_oi_<month>.csv; if present, it
+            # bypasses Allium entirely. Add a new (month, query_id)
+            # tuple here AND a fresh CSV snapshot when extending.
             _Q_OI_MONTHS: list[tuple[str, str]] = [
                 ("2025-10", "X245492iOjb732UetWSB"),
                 ("2025-11", "Y0dQpQr4hlIAB3OcHskc"),
@@ -9042,28 +9056,62 @@ if __name__ == "__main__":
                 ("2026-06", "4llrBGWuqueGZmjIc96n"),
             ]
 
+            _SEED_DIR = _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)),
+                "allium_seeds")
+
             def _fetch_monthly_concat(
-                months: list[tuple[str, str]]
-            ) -> tuple[pd.DataFrame, list[tuple[str, str]]]:
-                """Run each month's Allium query (each cached
-                independently for 4h), concat the rows, and return
-                (combined_df, list_of_(month, error)) for any month
-                that failed. An empty-but-no-error month is silently
-                skipped — happens naturally for current/future months
-                where the data hasn't materialised yet."""
+                months: list[tuple[str, str]],
+                metric: str,
+            ) -> tuple[pd.DataFrame, list[tuple[str, str]],
+                        list[str], list[str]]:
+                """Resolve each month's data preferring disk-snapshot
+                over live Allium fetch. `metric` ∈ {"oi", "vol"} —
+                drives the seed filename.
+
+                Returns (combined_df, errors, seeded_months,
+                live_months) so the caller can surface which months
+                hit Allium vs disk in a caption.
+
+                Months WITH a seed file at
+                `allium_seeds/allium_hl_<metric>_<month>.csv` load
+                instantly from disk (immutable past-month data).
+                Months WITHOUT a seed fall back to live Allium —
+                that's the current month and any newly-added month
+                pending its first snapshot. Each live month is
+                cached for 4h via st.cache_data inside
+                fetch_allium_query_results."""
                 frames: list[pd.DataFrame] = []
                 errs: list[tuple[str, str]] = []
+                seeded: list[str] = []
+                live: list[str] = []
                 for _month, _qid in months:
+                    _path = _os.path.join(
+                        _SEED_DIR,
+                        f"allium_hl_{metric}_{_month}.csv")
+                    if _os.path.exists(_path):
+                        try:
+                            _df = pd.read_csv(_path)
+                            if not _df.empty:
+                                frames.append(_df)
+                                seeded.append(_month)
+                            continue
+                        except Exception as _exc:
+                            # Corrupted seed — fall through to live.
+                            errs.append(
+                                (_month, f"seed read failed: {_exc}"))
+                    # No seed (or seed unreadable) — fetch live.
                     _df, _err = _allium.fetch_allium_query_results(_qid)
                     if _err:
                         errs.append((_month, _err))
                         continue
                     if not _df.empty:
                         frames.append(_df)
+                        live.append(_month)
                 if not frames:
-                    return pd.DataFrame(), errs
+                    return pd.DataFrame(), errs, seeded, live
                 _out = pd.concat(frames, ignore_index=True)
-                return _out, errs
+                return _out, errs, seeded, live
 
             _agg_df, _agg_err = _allium.fetch_allium_query_results(_Q_AGG)
             if _agg_df.empty:
@@ -9176,10 +9224,11 @@ if __name__ == "__main__":
                 )
 
             # ── Chart 1b: Per-market daily OI (stacked area) ────────
-            # Fetch + concat 9 monthly queries (Oct-2025 → Jun-2026).
-            # Each month is cached separately so adding a new month
-            # later doesn't blow away the older months' cache entries.
-            _oi_df, _oi_errs = _fetch_monthly_concat(_Q_OI_MONTHS)
+            # Past months load from disk (immutable seeds); only the
+            # current month hits Allium live (cached 4h via
+            # st.cache_data).
+            _oi_df, _oi_errs, _oi_seeded, _oi_live = \
+                _fetch_monthly_concat(_Q_OI_MONTHS, metric="oi")
             if _oi_df.empty:
                 _err_summary = (
                     "; ".join(f"{m}: {e}" for m, e in _oi_errs)
@@ -9283,19 +9332,22 @@ if __name__ == "__main__":
                         "lifetime OI shown explicitly; remaining 61 "
                         "long-tail markets rolled into **Others**. "
                         "OI snapshot table has gaps in early rows. "
-                        "Source: 9 monthly Allium queries (2025-10 → "
-                        "2026-06) concatenated client-side to bypass "
-                        "the 2000-row response cap — see "
-                        "`_Q_OI_MONTHS` in stocks_dashboard.py for the "
-                        "list."
+                        "Source: Allium per-month queries — "
+                        f"**{len(_oi_seeded)} months from disk** "
+                        f"(seeded), **{len(_oi_live)} live**"
+                        f"{f' ({_oi_live[0]})' if len(_oi_live) == 1 else ''}"
+                        ". Past months loaded from "
+                        "`allium_seeds/allium_hl_oi_<month>.csv`; "
+                        "current month hits Allium and is cached 4h."
                     ),
                     col_aggs={c: "last" for c in _oi_ordered},
                     legend_label="markets",
                 )
 
             # ── Chart 1c: Per-market daily volume (stacked area) ────
-            # Same monthly-split + concat pattern as the OI chart.
-            _vol_df, _vol_errs = _fetch_monthly_concat(_Q_VOL_MONTHS)
+            # Same seed-first pattern as the OI chart.
+            _vol_df, _vol_errs, _vol_seeded, _vol_live = \
+                _fetch_monthly_concat(_Q_VOL_MONTHS, metric="vol")
             if _vol_df.empty:
                 _err_summary = (
                     "; ".join(f"{m}: {e}" for m, e in _vol_errs)
@@ -9391,11 +9443,14 @@ if __name__ == "__main__":
                         "Daily perp volume per RWA market on "
                         "Hyperliquid, stacked. **Top 12** markets by "
                         "lifetime volume shown explicitly; remaining "
-                        "61 rolled into **Others**. Source: 9 monthly "
-                        "Allium queries (2025-10 → 2026-06) "
-                        "concatenated client-side to bypass the 2000-"
-                        "row response cap — see `_Q_VOL_MONTHS` in "
-                        "stocks_dashboard.py for the list."
+                        "61 rolled into **Others**. Source: Allium "
+                        "per-month queries — "
+                        f"**{len(_vol_seeded)} months from disk** "
+                        f"(seeded), **{len(_vol_live)} live**"
+                        f"{f' ({_vol_live[0]})' if len(_vol_live) == 1 else ''}"
+                        ". Past months loaded from "
+                        "`allium_seeds/allium_hl_vol_<month>.csv`; "
+                        "current month hits Allium and is cached 4h."
                     ),
                     col_aggs={c: "sum" for c in _vol_ordered},
                     legend_label="markets",

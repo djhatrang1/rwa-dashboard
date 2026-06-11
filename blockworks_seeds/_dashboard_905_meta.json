@@ -1,0 +1,163 @@
+[
+  {
+    "viz_id": "8907",
+    "query_id": "4594",
+    "type": "timeseries",
+    "slug": "perp-dexs-futures-notional-volume-2",
+    "title": "Perp DEXs: Futures Notional Volume"
+  },
+  {
+    "viz_id": "8908",
+    "query_id": "4594",
+    "type": "timeseries",
+    "slug": "perp-dexs-futures-notional-open-interest-2",
+    "title": "Perp DEXs: Futures Notional Open Interest"
+  },
+  {
+    "viz_id": "8909",
+    "query_id": "4594",
+    "type": "timeseries",
+    "slug": "perp-dexs-futures-trade-counts",
+    "title": "Perp DEXs: Futures Trade Counts"
+  },
+  {
+    "viz_id": "8910",
+    "query_id": "4594",
+    "type": "timeseries",
+    "slug": "perp-dexs-futures-liquidation-volume",
+    "title": "Perp DEXs: Futures Liquidation Volume"
+  },
+  {
+    "viz_id": "8912",
+    "query_id": "4594",
+    "type": "counter",
+    "slug": "perp-dexs-latest-days-open-interest",
+    "title": "Perp DEXs: Latest Day's Open Interest"
+  },
+  {
+    "viz_id": "8915",
+    "query_id": "4594",
+    "type": "counter",
+    "slug": "perp-dexs-latest-days-volume",
+    "title": "Perp DEXs: Latest Day's Volume"
+  },
+  {
+    "viz_id": "8916",
+    "query_id": "4594",
+    "type": "timeseries",
+    "slug": "perp-dexs-futures-average-trade-size",
+    "title": "Perp DEXs: Futures Average Trade Size"
+  },
+  {
+    "viz_id": "8917",
+    "query_id": "4594",
+    "type": "timeseries",
+    "slug": "perp-dexs-futures-turnover-ratio",
+    "title": "Perp DEXs: Futures Turnover Ratio"
+  },
+  {
+    "viz_id": "8922",
+    "query_id": "4595",
+    "type": "timeseries",
+    "slug": "perp-dexs-latest-days-open-interest-2",
+    "title": "Perp DEXs: Latest Day's Open Interest"
+  },
+  {
+    "viz_id": "8927",
+    "query_id": "4600",
+    "type": "table",
+    "slug": "perp-dexs-exchange-activity-table-2",
+    "title": "Perp DEXs: Exchange Activity Table"
+  },
+  {
+    "viz_id": "8928",
+    "query_id": "4601",
+    "type": "table",
+    "slug": "perp-dexs-market-activity-table-2",
+    "title": "Perp DEXs: Market Activity Table"
+  },
+  {
+    "viz_id": "8969",
+    "query_id": "4617",
+    "type": "timeseries",
+    "slug": "perp-dexs-futures-market-listings-2",
+    "title": "Perp DEXs: Futures Market Listings"
+  },
+  {
+    "viz_id": "8970",
+    "query_id": "4617",
+    "type": "timeseries",
+    "slug": "perp-dexs-futures-market-listing-changes",
+    "title": "Perp DEXs: Futures Market Listing Changes"
+  },
+  {
+    "viz_id": "8988",
+    "query_id": "4625",
+    "type": "timeseries",
+    "slug": "perp-dexs-commodities-futures-notional-volume-3",
+    "title": "Perp DEXs: Commodities - Futures Notional Volume"
+  },
+  {
+    "viz_id": "8989",
+    "query_id": "4625",
+    "type": "timeseries",
+    "slug": "perp-dexs-commodities-futures-notional-open-interest-3",
+    "title": "Perp DEXs: Commodities - Futures Notional Open Interest"
+  },
+  {
+    "viz_id": "8998",
+    "query_id": "4626",
+    "type": "timeseries",
+    "slug": "perp-dexs-stocks-futures-notional-volume-2",
+    "title": "Perp DEXs: Stocks - Futures Notional Volume"
+  },
+  {
+    "viz_id": "8999",
+    "query_id": "4626",
+    "type": "timeseries",
+    "slug": "perp-dexs-stocks-futures-notional-open-interest-2",
+    "title": "Perp DEXs: Stocks - Futures Notional Open Interest"
+  },
+  {
+    "viz_id": "9008",
+    "query_id": "4627",
+    "type": "timeseries",
+    "slug": "perp-dexs-indices-futures-notional-volume",
+    "title": "Perp DEXs: Indices - Futures Notional Volume"
+  },
+  {
+    "viz_id": "9009",
+    "query_id": "4627",
+    "type": "timeseries",
+    "slug": "perp-dexs-solana-indices-futures-notional-open-interest",
+    "title": "Perp DEXs: Indices - Futures Notional Open Interest"
+  },
+  {
+    "viz_id": "9018",
+    "query_id": "4628",
+    "type": "timeseries",
+    "slug": "perp-dexs-fx-futures-notional-volume",
+    "title": "Perp DEXs: FX - Futures Notional Volume"
+  },
+  {
+    "viz_id": "9019",
+    "query_id": "4628",
+    "type": "timeseries",
+    "slug": "perp-dexs-fx-futures-notional-open-interest",
+    "title": "Perp DEXs: FX - Futures Notional Open Interest"
+  },
+  {
+    "viz_id": "9028",
+    "query_id": "4630",
+    "type": "timeseries",
+    "slug": "perp-dexs-futures-revenue-2",
+    "title": "Perp DEXs: Futures Revenue"
+  },
+  {
+    "viz_id": "9030",
+    "query_id": "4631",
+    "type": "table",
+    "slug": "perp-dexs-financial-activity-table-2",
+    "title": "Perp DEXs: Financial Activity Table"
+  }
+]

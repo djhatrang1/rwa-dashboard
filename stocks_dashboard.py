@@ -2825,6 +2825,23 @@ class TokenGroupMetricsPuller(DataPuller):
                         mc_cols.append(col)
                     for d, mc in cg_mc_data.items():
                         mc_cols_by_date.setdefault(d, {})[col] = mc
+                    # Carry-forward: extend the latest CG value to TODAY
+                    # if CG's daily series is stale (e.g. USYC stopped
+                    # updating at 2026-06-05 even though hashnote-usyc
+                    # /coins endpoint still returns 200 — CG just hasn't
+                    # refreshed). Without this, mc_<sym>_cg_usd is None
+                    # for the last several days and the chart's render
+                    # ffill works visually but the raw-data CSV download
+                    # shows None for the gap. Token's whose CG series
+                    # IS current (BUIDL, JTRSY, etc.) hit the
+                    # `setdefault` no-op since today is already filled.
+                    from datetime import datetime as _dt
+                    today_str = _dt.utcnow().strftime("%Y-%m-%d")
+                    latest_cg_date = max(cg_mc_data.keys())
+                    if today_str > latest_cg_date:
+                        latest_cg_mc = cg_mc_data[latest_cg_date]
+                        mc_cols_by_date.setdefault(today_str, {}) \
+                                       .setdefault(col, latest_cg_mc)
                 # Volume
                 cg_vol_data = self._fetch_coingecko_vol(cg_id)
                 if cg_vol_data:
@@ -6772,7 +6789,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v66-ultra-seed-carryforward-usyc-debug"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v67-cg-stale-carryforward"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────

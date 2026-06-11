@@ -8996,6 +8996,175 @@ if __name__ == "__main__":
                     )
             st.stop()
 
+        if selected_asset == "RWA perps":
+            # Birdeye Hyperliquid perps — the `xyz:` prefix scopes the
+            # ~70 RWA / tokenized-asset markets out of Hyperliquid's
+            # ~300-perp total universe. Each /perps/v1/token/list call
+            # returns CURRENT open interest (snapshot, not history) so
+            # this view is "as-of-now" until daily snapshots accumulate
+            # via the cron into a time series.
+            import birdeye_perps as _bp
+
+            _bp_data, _bp_err = _bp.fetch_token_list()
+            if _bp_err:
+                st.info(
+                    f"Birdeye Hyperliquid perps fetch failed: "
+                    f"`{_bp_err}`. Retrying on the next page load "
+                    "(4h cache TTL)."
+                )
+                st.stop()
+            if not _bp_data:
+                st.info("No perp markets returned by Birdeye.")
+                st.stop()
+            # Filter to RWA markets only (xyz:* prefix).
+            _rwa = [t for t in _bp_data if _bp.is_rwa(t.get("token"))]
+            for t in _rwa:
+                t["category"] = _bp.categorize(t.get("token"))
+                t["display"]  = t.get("token", "")[len("xyz:"):]
+            _df = pd.DataFrame(_rwa)
+            if _df.empty:
+                st.info("No xyz:* RWA markets in the response.")
+                st.stop()
+            _df["open_interest"] = pd.to_numeric(_df["open_interest"],
+                                                  errors="coerce").fillna(0)
+            _df["long_io"] = pd.to_numeric(_df["long_io"],
+                                            errors="coerce").fillna(0)
+            _df["short_io"] = pd.to_numeric(_df["short_io"],
+                                              errors="coerce").fillna(0)
+
+            # ── Headline metrics ────────────────────────────────────
+            _total_oi = float(_df["open_interest"].sum())
+            _long_total = float(_df["long_io"].sum())
+            _short_total = float(_df["short_io"].sum())
+            _net_bias = (_long_total - _short_total) / _total_oi if _total_oi else 0
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total RWA OI", _fmt_usd(_total_oi))
+            m2.metric("Markets", f"{len(_df):,}")
+            m3.metric("Long / Short Split",
+                      f"{_long_total/_total_oi*100:.1f}% / "
+                      f"{_short_total/_total_oi*100:.1f}%"
+                      if _total_oi else "—")
+            m4.metric("Net Bias",
+                      "Long-heavy" if _net_bias > 0.05
+                      else "Short-heavy" if _net_bias < -0.05
+                      else "Neutral",
+                      delta=f"{_net_bias*100:+.2f}%")
+            st.divider()
+
+            # ── Chart 1: OI by category (stacked bars per category) ─
+            _by_cat = (_df.groupby("category")["open_interest"].sum()
+                        .sort_values(ascending=False).reset_index())
+            _CAT_COLORS = {
+                "Indices":     "#4285F4",
+                "US Equities": "#10B981",
+                "Commodities": "#F97316",
+                "FX":          "#A78BFA",
+                "Other RWA":   "#888888",
+            }
+            st.subheader("Open Interest by Category")
+            st.caption(
+                "Total OI across all 70 RWA perp markets on "
+                "Hyperliquid, grouped by underlying asset class. "
+                "Source: Birdeye `/perps/v1/token/list` (snapshot, "
+                "not a time series — daily snapshots will accumulate "
+                "into a trend chart as the cron runs)."
+            )
+            fig_cat = go.Figure()
+            fig_cat.add_trace(go.Bar(
+                x=_by_cat["category"],
+                y=_by_cat["open_interest"],
+                marker_color=[_CAT_COLORS.get(c, "#888888")
+                                for c in _by_cat["category"]],
+                customdata=_by_cat["open_interest"].map(_fmt_usd),
+                hovertemplate="%{x}: %{customdata}<extra></extra>",
+            ))
+            fig_cat.update_layout(
+                height=360, hovermode="x unified",
+                margin=dict(t=10, b=10, l=10, r=10),
+                showlegend=False,
+                yaxis=dict(tickprefix="$", tickformat="~s",
+                            showgrid=True, rangemode="tozero"),
+            )
+            st.plotly_chart(fig_cat, use_container_width=True)
+
+            st.divider()
+
+            # ── Chart 2: Per-token OI breakdown (top-20 bar) ────────
+            st.subheader("Top RWA Perp Markets by Open Interest")
+            st.caption(
+                "Top 20 markets by current OI. Hover shows long/short "
+                "split per market."
+            )
+            _top = _df.nlargest(20, "open_interest").copy()
+            fig_top = go.Figure()
+            fig_top.add_trace(go.Bar(
+                y=_top["display"],
+                x=_top["open_interest"],
+                orientation="h",
+                marker_color=[_CAT_COLORS.get(c, "#888888")
+                                for c in _top["category"]],
+                customdata=_top.assign(
+                    fmt_oi=_top["open_interest"].map(_fmt_usd),
+                    fmt_long=_top["long_io"].map(_fmt_usd),
+                    fmt_short=_top["short_io"].map(_fmt_usd),
+                )[["fmt_oi", "fmt_long", "fmt_short", "category",
+                    "bias_text"]].values,
+                hovertemplate=(
+                    "%{y} (%{customdata[3]})<br>"
+                    "OI: %{customdata[0]}<br>"
+                    "Long: %{customdata[1]}<br>"
+                    "Short: %{customdata[2]}<br>"
+                    "Bias: %{customdata[4]}<extra></extra>"
+                ),
+            ))
+            fig_top.update_layout(
+                height=520, hovermode="y unified",
+                margin=dict(t=10, b=10, l=10, r=10),
+                showlegend=False,
+                xaxis=dict(tickprefix="$", tickformat="~s",
+                            showgrid=True),
+                yaxis=dict(autorange="reversed"),
+            )
+            st.plotly_chart(fig_top, use_container_width=True)
+
+            st.divider()
+
+            # ── Chart 3: Full market table ──────────────────────────
+            st.subheader("All RWA Perp Markets")
+            st.caption(
+                "Complete sortable table of the 70 RWA perps on "
+                "Hyperliquid. Click column headers to sort."
+            )
+            _table = (_df[["display", "category", "open_interest",
+                            "long_io", "short_io", "leverage",
+                            "bias_text"]]
+                       .rename(columns={
+                           "display":      "Symbol",
+                           "category":     "Category",
+                           "open_interest":"Open Interest",
+                           "long_io":      "Long OI",
+                           "short_io":     "Short OI",
+                           "leverage":     "Avg Leverage",
+                           "bias_text":    "Bias",
+                       })
+                       .sort_values("Open Interest", ascending=False)
+                       .reset_index(drop=True))
+            st.dataframe(
+                _table,
+                use_container_width=True, hide_index=True, height=480,
+                column_config={
+                    "Open Interest": st.column_config.NumberColumn(
+                        format="$%.0f"),
+                    "Long OI": st.column_config.NumberColumn(
+                        format="$%.0f"),
+                    "Short OI": st.column_config.NumberColumn(
+                        format="$%.0f"),
+                    "Avg Leverage": st.column_config.NumberColumn(
+                        format="%.1fx"),
+                },
+            )
+            st.stop()
+
         # Other asset verticals: placeholder until specs land.
         st.info(
             f"📊 **{selected_asset}** view is coming soon. "

@@ -8997,18 +8997,25 @@ if __name__ == "__main__":
             st.stop()
 
         if selected_asset == "Private credit":
-            # ── Historical: Tokenized credit value (stacked area) ─────
-            # Source: user-exported CSV from the rwa.xyz chart UI
-            # (the multi-year stacked-area chart on the public credit
-            # page is rendered client-side from rwa.xyz's enterprise
-            # REST API — the daily series is gated). The exported
-            # CSV under `rwa_seeds/credit_market_caps.csv` carries
-            # one row per day from 2021-01-01 onward, one column per
-            # top-50 named asset + an "All Others (N items)" rollup.
+            # ── Historical: Tokenized credit value, split by rwa.xyz's
+            #    distributed-vs-represented classification ─────────────
+            # rwa.xyz tags each credit asset with a tokenization type:
+            #   • Distributed — RWA tokens used as the distribution
+            #     layer; onchain investors subscribe/hold directly
+            #     (Maple's syrupUSDC, Anemoy's JAAA, etc.)
+            #   • Represented — RWA assets that exist primarily off-
+            #     chain and are merely represented onchain (Figure
+            #     HELOC, mid-market loan tokens, etc.)
+            # See `_CREDIT_CLASSIFICATION` in rwa_xyz.py for the full
+            # per-asset mapping (snapshot 2026-06-11: 14 distributed,
+            # 36 represented out of the top 50).
             #
-            # We show top-15 by latest value explicitly and fold the
-            # remaining 36 named assets INTO the existing "All
-            # Others" bucket so the legend stays readable.
+            # We render two separate stacked-area charts using the
+            # same `rwa_seeds/credit_market_caps.csv` export, splitting
+            # the 50 named columns by classification. The "All Others"
+            # long-tail rollup is split between charts proportionally
+            # by rwa.xyz's current aggregate ratio (~19% dist / 81%
+            # repr) — see rwa_xyz.ALL_OTHERS_*_SHARE.
             import rwa_xyz as _rwa
             _hist = _rwa.load_credit_history_seed()
             if _hist is None or _hist.empty:
@@ -9019,112 +9026,154 @@ if __name__ == "__main__":
                 )
                 st.stop()
 
-            _hist_view = _hist.copy()
-            _series_cols = [c for c in _hist_view.columns if c != "date"]
-            # Identify "All Others" rollup col by name prefix.
-            _others_cols = [c for c in _series_cols
-                             if c.lower().startswith("all others")]
-            _named = [c for c in _series_cols if c not in _others_cols]
-            _latest = _hist_view.iloc[-1]
-            _ranked = sorted(
-                _named,
-                key=lambda c: float(_latest.get(c, 0) or 0),
-                reverse=True)
-            _TOP_N = 15
-            _top = _ranked[:_TOP_N]
-            _tail = _ranked[_TOP_N:]
-            # Fold tail tokens into the Others bucket. If the CSV
-            # didn't carry one, create it from scratch.
-            if not _others_cols:
-                _hist_view["All Others"] = 0.0
-                _others_cols = ["All Others"]
-            _others_col = _others_cols[0]
-            if _tail:
-                _hist_view[_others_col] = (
-                    _hist_view[[_others_col] + _tail]
-                        .fillna(0).sum(axis=1))
-            _hist_view = _hist_view.drop(columns=_tail)
-            _hist_ordered = _top + [_others_col]
+            _series_cols = [c for c in _hist.columns if c != "date"]
+            # Identify the long-tail rollup column by name prefix.
+            _others_src_cols = [c for c in _series_cols
+                                if c.lower().startswith("all others")]
+            _named_cols = [c for c in _series_cols
+                            if c not in _others_src_cols]
 
-            # Stable 15-hue palette — same vocabulary as the Paymentscan
-            # + Hyperliquid stacked-area charts. Grey for Others.
+            # Stable palette shared across both charts so the same hue
+            # vocabulary reads consistently when scrolling between them.
             _CR_PALETTE = [
                 "#4285F4", "#10B981", "#F97316", "#A78BFA",
                 "#EF4444", "#EC4899", "#14B8A6", "#FACC15",
                 "#F472B6", "#22D3EE", "#F87171", "#84CC16",
                 "#9333EA", "#FB923C", "#06B6D4",
             ]
-            _cr_colors, _ci = {}, 0
-            for _c in _hist_ordered:
-                if _c == _others_col:
-                    _cr_colors[_c] = "#888888"
-                else:
-                    _cr_colors[_c] = _CR_PALETTE[
-                        _ci % len(_CR_PALETTE)]
-                    _ci += 1
+            _TOP_N = 15
 
-            def _build_credit_hist_fig(df_view):
-                fig = go.Figure()
-                for col in reversed(_hist_ordered):
-                    if col not in df_view.columns:
-                        continue
-                    y = df_view[col].fillna(0)
+            def _render_credit_bucket(
+                bucket: str, label: str, others_share: float,
+                stack_id: str, raw_key: str,
+            ) -> None:
+                """Build + render the stacked-area chart for one bucket
+                (`distributed` or `represented`). Splits the seed's
+                named columns by classification, apportions the long-
+                tail rollup by the supplied share, and routes through
+                `_chart_dwm_simple` for the cardinal chart-rule UX
+                (slider + D/W/M + 📋 + collapsed legend)."""
+                bucket_cols = [c for c in _named_cols
+                                if _rwa.classify_credit_asset(c) == bucket]
+                if not bucket_cols:
+                    st.info(
+                        f"No {label.lower()} assets found in seed — "
+                        "likely a classification refresh is needed.")
+                    return
+                view = _hist[["date"] + bucket_cols].copy()
+                # Apportioned slice of the long-tail rollup.
+                if _others_src_cols:
+                    _src = _hist[_others_src_cols[0]].fillna(0)
+                    view["All Others"] = _src * others_share
+                # Rank bucket columns by latest value; pick top-15 +
+                # fold the rest into Others.
+                _latest = view.iloc[-1]
+                _ranked = sorted(
+                    bucket_cols,
+                    key=lambda c: float(_latest.get(c, 0) or 0),
+                    reverse=True)
+                _top = _ranked[:_TOP_N]
+                _tail = _ranked[_TOP_N:]
+                if "All Others" not in view.columns:
+                    view["All Others"] = 0.0
+                if _tail:
+                    view["All Others"] = (
+                        view[["All Others"] + _tail]
+                            .fillna(0).sum(axis=1))
+                view = view.drop(columns=_tail)
+                ordered = _top + ["All Others"]
+                # Color map
+                colors, ci = {}, 0
+                for c in ordered:
+                    if c == "All Others":
+                        colors[c] = "#888888"
+                    else:
+                        colors[c] = _CR_PALETTE[ci % len(_CR_PALETTE)]
+                        ci += 1
+
+                def _build_fig(df_view, _ordered=ordered, _colors=colors,
+                                _stack_id=stack_id):
+                    fig = go.Figure()
+                    for col in reversed(_ordered):
+                        if col not in df_view.columns:
+                            continue
+                        y = df_view[col].fillna(0)
+                        fig.add_trace(go.Scatter(
+                            x=df_view["date"], y=y, name=col,
+                            mode="lines",
+                            line=dict(color=_colors[col], width=0.9),
+                            stackgroup=_stack_id,
+                            customdata=y.map(_fmt_usd),
+                            hovertemplate=(
+                                f"{col}: %{{customdata}}<extra></extra>"),
+                        ))
+                    present = [c for c in _ordered
+                                 if c in df_view.columns]
+                    tot = df_view[present].fillna(0).sum(axis=1)
                     fig.add_trace(go.Scatter(
-                        x=df_view["date"], y=y, name=col,
+                        x=df_view["date"], y=tot, name="Total",
                         mode="lines",
-                        line=dict(color=_cr_colors[col], width=0.9),
-                        stackgroup="credit_hist",
-                        customdata=y.map(_fmt_usd),
+                        line=dict(width=0, color="rgba(0,0,0,0)"),
+                        showlegend=False, stackgroup=None,
+                        customdata=tot.map(_fmt_usd),
                         hovertemplate=(
-                            f"{col}: %{{customdata}}<extra></extra>"),
+                            "<b>Total: %{customdata}</b><extra></extra>"),
                     ))
-                present = [c for c in _hist_ordered
-                             if c in df_view.columns]
-                tot = df_view[present].fillna(0).sum(axis=1)
-                fig.add_trace(go.Scatter(
-                    x=df_view["date"], y=tot, name="Total",
-                    mode="lines",
-                    line=dict(width=0, color="rgba(0,0,0,0)"),
-                    showlegend=False, stackgroup=None,
-                    customdata=tot.map(_fmt_usd),
-                    hovertemplate=(
-                        "<b>Total: %{customdata}</b><extra></extra>"),
-                ))
-                y_max = float(tot.max() or 0)
-                fig.update_layout(
-                    height=420, hovermode="x unified",
-                    margin=dict(t=10, b=10, l=10, r=10),
-                    showlegend=False,
-                    yaxis=dict(tickprefix="$", tickformat="~s",
-                                showgrid=True, rangemode="tozero",
-                                range=[0, y_max * 1.10]
-                                      if y_max > 0 else None),
-                )
-                return fig
+                    y_max = float(tot.max() or 0)
+                    fig.update_layout(
+                        height=420, hovermode="x unified",
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        showlegend=False,
+                        yaxis=dict(tickprefix="$", tickformat="~s",
+                                    showgrid=True, rangemode="tozero",
+                                    range=[0, y_max * 1.10]
+                                          if y_max > 0 else None),
+                    )
+                    return fig
 
-            _hist_raw = _hist_view.copy()
-            _hist_raw["Total"] = (_hist_view[_hist_ordered]
-                                    .fillna(0).sum(axis=1).values)
-            _chart_dwm_simple(
-                "Tokenized credit value over time",
-                source_df=_hist_view,
-                build_fig=_build_credit_hist_fig,
-                raw_df=_hist_raw.sort_values("date", ascending=False),
-                raw_key="rwa_credit_history",
-                raw_filename="rwa_credit_history",
-                caption=(
-                    "Daily total tokenized-credit value (USD) by "
-                    "asset, stacked. **Top 15** assets by latest "
-                    "value shown explicitly; remaining 36 named "
-                    "assets + the 2,349 long-tail assets all roll "
-                    "into **Others**. Historical seed exported from "
-                    "[rwa.xyz/credit](https://app.rwa.xyz/credit) "
-                    "chart UI (the multi-year series is gated to "
-                    "the enterprise REST API — refresh the export "
-                    "periodically to extend the time axis)."
-                ),
-                col_aggs={c: "last" for c in _hist_ordered},
-                legend_label="assets",
+                raw_df = view.copy()
+                raw_df["Total"] = (view[ordered].fillna(0)
+                                                  .sum(axis=1).values)
+                _named_count = len(bucket_cols)
+                _shown_count = len(_top)
+                _tail_count = len(_tail)
+                _others_pct = int(round(others_share * 100))
+                _chart_dwm_simple(
+                    f"{label} tokenized credit value over time",
+                    source_df=view,
+                    build_fig=_build_fig,
+                    raw_df=raw_df.sort_values("date", ascending=False),
+                    raw_key=raw_key,
+                    raw_filename=raw_key,
+                    caption=(
+                        f"**{label}** assets only, as classified by "
+                        "[rwa.xyz](https://app.rwa.xyz/credit). "
+                        f"Top **{_shown_count}** of "
+                        f"**{_named_count} named assets** shown "
+                        f"explicitly; remaining {_tail_count} named + "
+                        f"~{_others_pct}% of the 2,349-asset long-tail "
+                        "rollup folded into **All Others** "
+                        "(apportionment matches rwa.xyz's current "
+                        "aggregate split). Historical seed exported "
+                        "from the rwa.xyz chart UI; refresh "
+                        "`rwa_seeds/credit_market_caps.csv` "
+                        "periodically to extend the time axis."
+                    ),
+                    col_aggs={c: "last" for c in ordered},
+                    legend_label="assets",
+                )
+
+            _render_credit_bucket(
+                "distributed", "Distributed",
+                _rwa.ALL_OTHERS_DIST_SHARE,
+                stack_id="credit_dist",
+                raw_key="rwa_credit_history_distributed",
+            )
+            _render_credit_bucket(
+                "represented", "Represented",
+                _rwa.ALL_OTHERS_REPR_SHARE,
+                stack_id="credit_repr",
+                raw_key="rwa_credit_history_represented",
             )
             st.stop()
 

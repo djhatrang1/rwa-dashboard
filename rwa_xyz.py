@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Optional
 
 import pandas as pd
 import streamlit as st
@@ -94,3 +95,104 @@ def load_history_seed(slug: str = "credit") -> pd.DataFrame:
 def load_credit_history_seed() -> pd.DataFrame:
     """Convenience wrapper for the Tokenized Credit historical CSV."""
     return load_history_seed("credit")
+
+
+# ── Per-asset distributed-vs-represented classification ────────────────
+# rwa.xyz tags every credit asset with `tokenization_types`:
+#   ['Onchain Distributed'] — RWA tokens using the blockchain as a
+#      distribution layer. Onchain investors can subscribe, hold, and
+#      manage the asset directly through their wallets / custodians.
+#   ['Onchain Represented'] — RWA assets that exist primarily off-chain
+#      and are merely represented onchain (e.g. Figure HELOC tokens are
+#      a wrapper around the off-chain HELOC pool — investors don't
+#      transact in the wrapper).
+#
+# We extracted the mapping for the top-50 credit assets (= the 50
+# named columns in `rwa_seeds/credit_market_caps.csv`) directly from
+# `app.rwa.xyz/_next/data/<buildId>/credit.json`. The classification
+# changes only when rwa.xyz reclassifies an asset OR when a new asset
+# enters the top 50 — both are rare. Refresh by re-running the probe
+# inside the rwa.xyz scraper module (on the WIP branch) or by hand-
+# checking the credit.json output.
+#
+# Snapshot: 2026-06-11 — 14 distributed, 36 represented, 0 unmatched.
+_CREDIT_CLASSIFICATION: dict[str, str] = {
+    "ASENA FIF - Single Tranche": "represented",
+    "Apollo Diversified Credit Securitize Fund": "distributed",
+    "Berkeley Square Emerging Markets NPA Portfolio 1": "represented",
+    "Berkeley Square Emerging Markets NPA Portfolio 2": "represented",
+    "Berkeley Square Emerging Markets Portfolio 1": "represented",
+    "Berkeley Square Emerging Markets Portfolio 2": "represented",
+    "Blockstream Mining Note 2": "distributed",
+    "EU / LatAm PoS Financing Senior Secured Term Loan": "represented",
+    "FIS-FLB1-Aviation2025-1": "represented",
+    "FIS-FLB1-CRE2025-1": "represented",
+    "FalconX Credit Vault": "distributed",
+    "Figure HELOC Token": "represented",
+    "First Lien HoldCo PIK Note": "represented",
+    "Galaxy CLO 2025-1 - Class B": "distributed",
+    "Gov't Contractor Financier Senior Secured Term Notes": "represented",
+    "Janus Henderson Anemoy AAA CLO Fund": "distributed",
+    "LatAm Fintech Senior Secured Delayed Draw Term Loan": "represented",
+    "LatAm Middle-Market Lender Senior Secured Term Loan": "represented",
+    "LitFi Firm Post-Settlement Note ": "represented",
+    "Midas mF-ONE": "distributed",
+    "North America Fintech Senior Secured Term Notes": "represented",
+    "North America Legal Receivables Senior Secured Loan": "represented",
+    "North America Neobank Senior Secured Term Loan": "represented",
+    "North America PoS Lender Senior Secured Term Notes": "represented",
+    "North America Real Estate Development Senior Secured Term Loan":
+        "represented",
+    "North America Rent Financing Platform Senior Secured Term Notes":
+        "represented",
+    "North America Third Party Online Merchant Senior Secured Term Notes":
+        "represented",
+    "North American Fintech Senior Secured Delay Draw Term Loan "
+    "Corporate Charge Card for SMBs": "represented",
+    "OnRe Tokenized Reinsurance": "distributed",
+    "PKH Mining Note 2": "distributed",
+    "PRIME": "distributed",
+    "Project Robinson": "represented",
+    "Project Robinson Tranche II": "represented",
+    "Project Robinson Tranche III": "represented",
+    "REACH TOTAL RETURN FIC FIA - Single Tranche": "represented",
+    "REACH TOTAL RETURN FUNDO DE INVESTIMENTO EM AÇÕES - Single Tranche":
+        "represented",
+    "Reach Referenciado DI FI RF - Single Tranche": "represented",
+    "Securitize AAA CLO Tokenized Fund, Ltd": "distributed",
+    "Singapore Fintech Convertible Notes": "represented",
+    "South American Consumer PoS Lender Senior Secured Term Loan":
+        "represented",
+    "Stable Return SP": "distributed",
+    "Syrup USDC": "distributed",
+    "Syrup USDT": "distributed",
+    "US Buy Now, Pay Later Finance Provider Senior Secured Term Notes":
+        "represented",
+    "VERT's 12th Debenture - Single Tranche": "represented",
+    "VERT's 94th CRA – 1st tranche": "represented",
+    "VERT's 94th CRA – 2nd tranche": "represented",
+    "VERT's FIDC Byx Mozart - Senior": "represented",
+    "VuMe Bond 2030": "represented",
+    "sUSDat": "distributed",
+}
+
+
+def classify_credit_asset(name: str) -> Optional[str]:
+    """Return 'distributed' / 'represented' / None for an asset name
+    from the credit seed CSV. None means the name isn't in our cached
+    classification — either it's the 'All Others' rollup column, or
+    it's a new top-50 entrant we haven't refreshed for yet."""
+    if not isinstance(name, str):
+        return None
+    return _CREDIT_CLASSIFICATION.get(name)
+
+
+# Default "All Others" apportionment between the two buckets, used when
+# the long-tail rollup is split across the two charts. Derived from
+# rwa.xyz's snapshot aggregates (Distributed $5.36B / Represented
+# $23.28B = ~18.7% / 81.3%) — same proportion applied historically as
+# a constant since we lack per-day platform-level splits in the seed.
+# Refresh together with _CREDIT_CLASSIFICATION when reclassification
+# occurs.
+ALL_OTHERS_DIST_SHARE = 0.187
+ALL_OTHERS_REPR_SHARE = 0.813

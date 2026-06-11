@@ -8996,6 +8996,138 @@ if __name__ == "__main__":
                     )
             st.stop()
 
+        if selected_asset == "Private credit":
+            # ── Historical: Tokenized credit value (stacked area) ─────
+            # Source: user-exported CSV from the rwa.xyz chart UI
+            # (the multi-year stacked-area chart on the public credit
+            # page is rendered client-side from rwa.xyz's enterprise
+            # REST API — the daily series is gated). The exported
+            # CSV under `rwa_seeds/credit_market_caps.csv` carries
+            # one row per day from 2021-01-01 onward, one column per
+            # top-50 named asset + an "All Others (N items)" rollup.
+            #
+            # We show top-15 by latest value explicitly and fold the
+            # remaining 36 named assets INTO the existing "All
+            # Others" bucket so the legend stays readable.
+            import rwa_xyz as _rwa
+            _hist = _rwa.load_credit_history_seed()
+            if _hist is None or _hist.empty:
+                st.warning(
+                    "rwa.xyz credit history seed missing or unreadable. "
+                    "Drop the latest export at "
+                    "`rwa_seeds/credit_market_caps.csv`."
+                )
+                st.stop()
+
+            _hist_view = _hist.copy()
+            _series_cols = [c for c in _hist_view.columns if c != "date"]
+            # Identify "All Others" rollup col by name prefix.
+            _others_cols = [c for c in _series_cols
+                             if c.lower().startswith("all others")]
+            _named = [c for c in _series_cols if c not in _others_cols]
+            _latest = _hist_view.iloc[-1]
+            _ranked = sorted(
+                _named,
+                key=lambda c: float(_latest.get(c, 0) or 0),
+                reverse=True)
+            _TOP_N = 15
+            _top = _ranked[:_TOP_N]
+            _tail = _ranked[_TOP_N:]
+            # Fold tail tokens into the Others bucket. If the CSV
+            # didn't carry one, create it from scratch.
+            if not _others_cols:
+                _hist_view["All Others"] = 0.0
+                _others_cols = ["All Others"]
+            _others_col = _others_cols[0]
+            if _tail:
+                _hist_view[_others_col] = (
+                    _hist_view[[_others_col] + _tail]
+                        .fillna(0).sum(axis=1))
+            _hist_view = _hist_view.drop(columns=_tail)
+            _hist_ordered = _top + [_others_col]
+
+            # Stable 15-hue palette — same vocabulary as the Paymentscan
+            # + Hyperliquid stacked-area charts. Grey for Others.
+            _CR_PALETTE = [
+                "#4285F4", "#10B981", "#F97316", "#A78BFA",
+                "#EF4444", "#EC4899", "#14B8A6", "#FACC15",
+                "#F472B6", "#22D3EE", "#F87171", "#84CC16",
+                "#9333EA", "#FB923C", "#06B6D4",
+            ]
+            _cr_colors, _ci = {}, 0
+            for _c in _hist_ordered:
+                if _c == _others_col:
+                    _cr_colors[_c] = "#888888"
+                else:
+                    _cr_colors[_c] = _CR_PALETTE[
+                        _ci % len(_CR_PALETTE)]
+                    _ci += 1
+
+            def _build_credit_hist_fig(df_view):
+                fig = go.Figure()
+                for col in reversed(_hist_ordered):
+                    if col not in df_view.columns:
+                        continue
+                    y = df_view[col].fillna(0)
+                    fig.add_trace(go.Scatter(
+                        x=df_view["date"], y=y, name=col,
+                        mode="lines",
+                        line=dict(color=_cr_colors[col], width=0.9),
+                        stackgroup="credit_hist",
+                        customdata=y.map(_fmt_usd),
+                        hovertemplate=(
+                            f"{col}: %{{customdata}}<extra></extra>"),
+                    ))
+                present = [c for c in _hist_ordered
+                             if c in df_view.columns]
+                tot = df_view[present].fillna(0).sum(axis=1)
+                fig.add_trace(go.Scatter(
+                    x=df_view["date"], y=tot, name="Total",
+                    mode="lines",
+                    line=dict(width=0, color="rgba(0,0,0,0)"),
+                    showlegend=False, stackgroup=None,
+                    customdata=tot.map(_fmt_usd),
+                    hovertemplate=(
+                        "<b>Total: %{customdata}</b><extra></extra>"),
+                ))
+                y_max = float(tot.max() or 0)
+                fig.update_layout(
+                    height=420, hovermode="x unified",
+                    margin=dict(t=10, b=10, l=10, r=10),
+                    showlegend=False,
+                    yaxis=dict(tickprefix="$", tickformat="~s",
+                                showgrid=True, rangemode="tozero",
+                                range=[0, y_max * 1.10]
+                                      if y_max > 0 else None),
+                )
+                return fig
+
+            _hist_raw = _hist_view.copy()
+            _hist_raw["Total"] = (_hist_view[_hist_ordered]
+                                    .fillna(0).sum(axis=1).values)
+            _chart_dwm_simple(
+                "Tokenized credit value over time",
+                source_df=_hist_view,
+                build_fig=_build_credit_hist_fig,
+                raw_df=_hist_raw.sort_values("date", ascending=False),
+                raw_key="rwa_credit_history",
+                raw_filename="rwa_credit_history",
+                caption=(
+                    "Daily total tokenized-credit value (USD) by "
+                    "asset, stacked. **Top 15** assets by latest "
+                    "value shown explicitly; remaining 36 named "
+                    "assets + the 2,349 long-tail assets all roll "
+                    "into **Others**. Historical seed exported from "
+                    "[rwa.xyz/credit](https://app.rwa.xyz/credit) "
+                    "chart UI (the multi-year series is gated to "
+                    "the enterprise REST API — refresh the export "
+                    "periodically to extend the time axis)."
+                ),
+                col_aggs={c: "last" for c in _hist_ordered},
+                legend_label="assets",
+            )
+            st.stop()
+
         if selected_asset == "RWA perps":
             # ── Section 1: Hyperliquid historical (Allium) ──────────
             # User-built queries against Allium's hyperliquid.* tables,

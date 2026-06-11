@@ -9106,7 +9106,12 @@ if __name__ == "__main__":
                         "total_trades":             "sum",
                         "active_markets":           "last",
                     },
-                    skip_yaxis_format=True,  # dual-axis: preserve per-axis tickprefix
+                    # NOTE: do NOT set skip_yaxis_format=True here.
+                    # Both axes are USD, so _apply_b_format_to_yaxes
+                    # correctly formats both as "$1.5B / $300M / etc."
+                    # The flag exists to preserve per-axis prefixes when
+                    # the axes carry DIFFERENT units (e.g. left=$, right=
+                    # count for the Solana stablecoin payments chart).
                     legend_entries=[
                         ("Volume",        "#4285F4"),
                         ("Open Interest", "#10B981"),

@@ -6624,7 +6624,16 @@ _TIME_LABELS = {"D": "Daily", "W": "Weekly", "M": "Monthly",
                  "Q": "Quarterly", "Y": "Yearly"}
 _TIME_OPTIONS = ["D", "W", "M", "Q", "Y"]
 _MODE_OPTIONS = ("abs", "cum", "pct")
-_MODE_LABELS = {"abs": "Abs", "cum": "Cum", "pct": "%"}
+# Icon-only labels — Blockworks-style chart-type icons. Single-glyph
+# each so all three fit comfortably even in half-page columns
+# (lending 2-col layout). Semantics:
+#   ▥ — vertical bars → "absolute" daily/period values
+#   Σ — Greek sigma (sum) → "cumulative" running total
+#   % — percentage → 100% share-of-row
+# The widget's help-tooltip carries the long-form names.
+_MODE_LABELS = {"abs": "▥", "cum": "Σ", "pct": "%"}
+_MODE_TOOLTIP = ("Display mode: ▥ absolute · Σ cumulative · "
+                  "% percentage of total")
 
 
 def _get_chart_mode_time(raw_key: str,
@@ -6688,27 +6697,36 @@ def _render_chart_toolbar(raw_key: str, stacked: bool,
     # control cluster.
     st.markdown("""
     <style>
-    /* Shared button-cluster look: 32px tall, dark fill, 1px border,
-       8px radius. Padding kept tight (6-8px) so 3 buttons + 'Daily'
-       selectbox both fit in half-page columns (lending 2-col layout
-       is the constraint). */
-    div.dwm-toolbar div[data-baseweb="segmented-control"] {
+    /* Selector scoping: the segmented_control's stElementContainer
+       gets a class `st-key-dwm_mode_<raw_key>` from the widget's
+       `key`. Same for the selectbox → `st-key-dwm_time_<raw_key>`.
+       This is the ONLY reliable way to target widgets by toolbar
+       role — the `div.dwm-toolbar` wrapper from st.markdown is a
+       sibling of the widget DOM, not an ancestor.
+       — flex-nowrap on the button-group prevents the 3 icon
+         buttons from stacking vertically when the column is tight
+         (Streamlit default flex-wrap: wrap kicks in at <90px). */
+    [class*="st-key-dwm_mode_"] div[data-baseweb="button-group"] {
         background: rgba(30,30,30,0.6) !important;
         border-radius: 8px !important;
+        flex-wrap: nowrap !important;
+        width: auto !important;
+        min-width: 0 !important;
     }
-    div.dwm-toolbar div[data-baseweb="segmented-control"] button {
-        padding: 0 8px !important;
+    [class*="st-key-dwm_mode_"] div[data-baseweb="button-group"] button {
+        padding: 0 6px !important;
         height: 32px !important;
         min-height: 32px !important;
-        font-size: 12px !important;
+        font-size: 14px !important;
+        line-height: 1 !important;
+        min-width: 0 !important;
+        flex-shrink: 0 !important;
     }
-    /* Selectbox: collapse Streamlit's outer wrapper margin and
-       match the same 32px height + radius + background. The inner
-       BaseWeb select control sets its own background — override. */
-    div.dwm-toolbar div[data-testid="stSelectbox"] {
+    /* Selectbox: 32px height + radius + bg to match segmented_control. */
+    [class*="st-key-dwm_time_"] > div {
         margin-top: 0 !important;
     }
-    div.dwm-toolbar div[data-testid="stSelectbox"] > div > div {
+    [class*="st-key-dwm_time_"] div[data-testid="stSelectbox"] > div > div {
         height: 32px !important;
         min-height: 32px !important;
         font-size: 12px !important;
@@ -6716,10 +6734,7 @@ def _render_chart_toolbar(raw_key: str, stacked: bool,
         border-radius: 8px !important;
         border: 1px solid rgba(255,255,255,0.08) !important;
     }
-    /* BaseWeb select pads the value text + chevron — tighten so
-       the visible text sits flush with the segmented-control text
-       baseline. */
-    div.dwm-toolbar div[data-testid="stSelectbox"] div[role="combobox"] {
+    [class*="st-key-dwm_time_"] div[role="combobox"] {
         padding: 0 8px !important;
         min-height: 32px !important;
     }
@@ -6751,7 +6766,7 @@ def _render_chart_toolbar(raw_key: str, stacked: bool,
     # 90px, time 81px, spacer 257px, btn 22px — selectbox truncates
     # "Daily" → "D…" at half-page (acceptable; cluster stays tight).
     col_mode, col_time, _spacer, col_raw = st.columns(
-        [2.2, 2.0, 5.3, 0.5])
+        [2.0, 2.0, 5.5, 0.5])
     with col_mode:
         # segmented_control needs Streamlit >= 1.38. Fall back to
         # st.radio (horizontal) on older versions so cloud deploys
@@ -6763,6 +6778,7 @@ def _render_chart_toolbar(raw_key: str, stacked: bool,
                 format_func=lambda v: _MODE_LABELS[v],
                 key=f"dwm_mode_{raw_key}",
                 label_visibility="collapsed",
+                help=_MODE_TOOLTIP,
             )
         else:
             st.radio(
@@ -6771,6 +6787,7 @@ def _render_chart_toolbar(raw_key: str, stacked: bool,
                 horizontal=True,
                 key=f"dwm_mode_{raw_key}",
                 label_visibility="collapsed",
+                help=_MODE_TOOLTIP,
             )
     with col_time:
         st.selectbox(

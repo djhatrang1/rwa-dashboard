@@ -6678,24 +6678,50 @@ def _render_chart_toolbar(raw_key: str, stacked: bool,
         st.session_state[f"dwm_mode_{raw_key}"] = "abs"
 
     mode_opts = list(_MODE_OPTIONS) if stacked else ["abs", "cum"]
-    # CSS scoped to .dwm-toolbar shrinks the widgets to single-line
-    # height so they fit comfortably even in half-page columns
-    # (used by the 2-column lending/per-asset layout). Also styles
-    # the inline 📋 button to match the prior transparent
-    # borderless look that the absolute-positioned variant had.
+    # CSS scoped to .dwm-toolbar — make the segmented_control and
+    # the selectbox visually match: same height, same border, same
+    # background, same font-size, same border-radius. Out of the
+    # box Streamlit ships them as two distinct widget families with
+    # very different chrome (segmented has thin 1px dividers + 0
+    # padding, selectbox has 40px height + rounded card look).
+    # Forcing both to a single shared style makes them read as one
+    # control cluster.
     st.markdown("""
     <style>
+    /* Shared button-cluster look: 32px tall, dark fill, 1px border,
+       8px radius. Padding kept tight (6-8px) so 3 buttons + 'Daily'
+       selectbox both fit in half-page columns (lending 2-col layout
+       is the constraint). */
+    div.dwm-toolbar div[data-baseweb="segmented-control"] {
+        background: rgba(30,30,30,0.6) !important;
+        border-radius: 8px !important;
+    }
     div.dwm-toolbar div[data-baseweb="segmented-control"] button {
-        padding: 2px 8px !important;
-        min-height: 28px !important;
+        padding: 0 8px !important;
+        height: 32px !important;
+        min-height: 32px !important;
         font-size: 12px !important;
     }
+    /* Selectbox: collapse Streamlit's outer wrapper margin and
+       match the same 32px height + radius + background. The inner
+       BaseWeb select control sets its own background — override. */
     div.dwm-toolbar div[data-testid="stSelectbox"] {
         margin-top: 0 !important;
     }
     div.dwm-toolbar div[data-testid="stSelectbox"] > div > div {
-        min-height: 28px !important;
+        height: 32px !important;
+        min-height: 32px !important;
         font-size: 12px !important;
+        background: rgba(30,30,30,0.6) !important;
+        border-radius: 8px !important;
+        border: 1px solid rgba(255,255,255,0.08) !important;
+    }
+    /* BaseWeb select pads the value text + chevron — tighten so
+       the visible text sits flush with the segmented-control text
+       baseline. */
+    div.dwm-toolbar div[data-testid="stSelectbox"] div[role="combobox"] {
+        padding: 0 8px !important;
+        min-height: 32px !important;
     }
     /* Inline 📋 button — transparent, right-aligned, borderless.
        Distinct key prefix so the global st-key-raw_* absolute-
@@ -6707,9 +6733,9 @@ def _render_chart_toolbar(raw_key: str, stacked: bool,
         background: transparent !important; border: none !important;
         box-shadow: none !important;
         color: rgba(255,255,255,0.65) !important;
-        min-height: 0 !important; height: auto !important;
-        padding: 2px 4px !important; font-size: 18px; line-height: 1;
-        margin-top: 4px !important;
+        min-height: 0 !important; height: 32px !important;
+        padding: 0 8px !important; font-size: 18px; line-height: 1;
+        margin-top: 0 !important;
     }
     [class*="st-key-dwm_raw_inline_"] button:hover {
         color: rgba(255,255,255,0.95) !important;
@@ -6725,7 +6751,7 @@ def _render_chart_toolbar(raw_key: str, stacked: bool,
     # 90px, time 81px, spacer 257px, btn 22px — selectbox truncates
     # "Daily" → "D…" at half-page (acceptable; cluster stays tight).
     col_mode, col_time, _spacer, col_raw = st.columns(
-        [2.0, 1.8, 5.7, 0.5])
+        [2.2, 2.0, 5.3, 0.5])
     with col_mode:
         # segmented_control needs Streamlit >= 1.38. Fall back to
         # st.radio (horizontal) on older versions so cloud deploys

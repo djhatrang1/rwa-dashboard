@@ -473,8 +473,14 @@ _LENDING_TOP_N = 10  # tokens in the stack; rest aggregated into "Others"
 @st.cache_data(ttl=3600, show_spinner=False)
 def _fetch_solana_lending_catalog() -> _pd.DataFrame:
     """List of all Solana lending+CDP protocols from DefiLlama /protocols,
-    sorted by current Solana supply desc. Cached 1h (catalog moves slowly,
-    new protocols don't appear daily)."""
+    sorted by current GROSS Solana supply desc. Cached 1h (catalog moves
+    slowly, new protocols don't appear daily).
+
+    GROSS supply = chainTvls.Solana (net deposits) + chainTvls.Solana-
+    borrowed (outstanding borrow). Matches the supply convention every
+    lending UI uses and keeps this catalog consistent with the gross-
+    supply charts above it. The chainTvls payload on /protocols
+    exposes both fields as live scalars so no extra calls are needed."""
     try:
         r = _requests.get("https://api.llama.fi/protocols", timeout=30)
         r.raise_for_status()
@@ -490,11 +496,15 @@ def _fetch_solana_lending_catalog() -> _pd.DataFrame:
         if (p.get("category") not in LENDING_CATS
                 or "Solana" not in (p.get("chains") or [])):
             continue
+        ct = p.get("chainTvls") or {}
+        net = float(ct.get("Solana", 0) or 0)
+        bor = float(ct.get("Solana-borrowed", 0) or 0)
         rows.append({
             "slug":     p.get("slug"),
             "name":     p.get("name"),
             "category": p.get("category"),
-            "supply":   float((p.get("chainTvls") or {}).get("Solana", 0) or 0),
+            "supply":   net + bor,   # gross deposits, consistent with charts
+            "borrow":   bor,
         })
     return _pd.DataFrame(rows).sort_values("supply", ascending=False).reset_index(drop=True)
 
@@ -937,11 +947,16 @@ def _render_lending() -> None:
     st.divider()
     st.subheader("Kamino Lend — by asset")
     st.caption(
-        "Per-asset supply and borrow within Kamino's Solana markets. "
-        "DefiLlama doesn't split Kamino into Main / JLP / Altcoin "
-        "sub-markets, but its `tokensInUsd` field gives a per-token "
-        "daily breakdown — top 8 assets by combined supply+borrow are "
-        "shown, the rest aggregated as 'Others'."
+        "Per-asset gross supply (= net + borrowed) and borrow within "
+        "Kamino's Solana markets, sourced from DefiLlama "
+        "`/protocol/kamino-lend` chainTvls.tokensInUsd. Top 20 assets "
+        "by combined supply+borrow shown, rest aggregated as 'Others'. "
+        "\n\n**Cross-check vs Kamino's own API**: DefiLlama's "
+        "`kamino-lend` slug aggregates the Main + JLP + Altcoin sub-"
+        "markets but lags Kamino's full multi-market roster (Ethena, "
+        "Maple, Figure, OnRe, Solstice, etc.) by ~13% — Kamino's "
+        "public API at `api.kamino.finance` reports ~$2.3B latest "
+        "gross supply vs DefiLlama's ~$2.0B."
     )
     _render_protocol_asset_breakdown("kamino-lend", "Kamino Lend")
 
@@ -959,14 +974,22 @@ def _render_lending() -> None:
     st.divider()
     with st.expander(f"All Solana lending protocols ({len(catalog)})",
                      expanded=False):
-        st.caption("Sortable. Click column headers to re-sort.")
+        st.caption("Sortable. Click column headers to re-sort. "
+                    "Supply column is **gross deposits** (= net + "
+                    "borrowed), matching the charts above and the "
+                    "convention every lending UI uses.")
         cat_disp = catalog.copy()
-        cat_disp["Supply"] = cat_disp["supply"].map(lambda v: f"${v/1e6:.2f}M")
+        cat_disp["Gross Supply"] = cat_disp["supply"].map(
+            lambda v: f"${v/1e6:.2f}M")
+        cat_disp["Borrow"] = cat_disp["borrow"].map(
+            lambda v: f"${v/1e6:.2f}M")
         cat_disp = cat_disp.rename(columns={
-            "name": "Name", "category": "Category", "slug": "DefiLlama slug",
+            "name": "Name", "category": "Category",
+            "slug": "DefiLlama slug",
         })
         st.dataframe(
-            cat_disp[["Name", "Category", "Supply", "DefiLlama slug"]],
+            cat_disp[["Name", "Category", "Gross Supply", "Borrow",
+                       "DefiLlama slug"]],
             use_container_width=True, hide_index=True, height=520,
         )
 

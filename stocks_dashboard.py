@@ -6548,14 +6548,18 @@ from contextlib import contextmanager
 def _resample_dwm(df: pd.DataFrame, period: str,
                   col_aggs: dict | None = None,
                   default_agg: str = "sum") -> pd.DataFrame:
-    """Aggregate a daily DataFrame to weekly ('W') or monthly ('M').
+    """Aggregate a daily DataFrame to a coarser time bucket. Accepted
+    periods: 'D' (no-op pass-through), 'W' (weekly), 'M' (monthly),
+    'Q' (quarterly), 'Y' (yearly). 'D' is supported so callers can
+    blindly pass whatever the user picked from the new D/W/M/Q/Y
+    dropdown without special-casing daily.
 
     Per-column aggregation rule: explicit `col_aggs[col]` wins; otherwise
     infers by column name (vol_* / *_volume_* → sum; mc_* / price_* /
     *_market_cap* / *_supply* / usd → last; everything else → default_agg).
 
     Used by _chart_dwm_frame so each chart can keep one source DataFrame
-    and the tabs just toggle the granularity.
+    and the toolbar just toggles the granularity.
 
     Accepts either a 'date' or 'day' time-axis column. If 'day' is
     present (Dune query convention) it's used in place of 'date' and
@@ -6563,7 +6567,9 @@ def _resample_dwm(df: pd.DataFrame, period: str,
     to rename."""
     if df is None or df.empty:
         return df
-    if period not in ("W", "M"):
+    if period == "D":
+        return df
+    if period not in ("W", "M", "Q", "Y"):
         return df
     date_col = "date" if "date" in df.columns else (
         "day" if "day" in df.columns else None)
@@ -6597,6 +6603,186 @@ def _resample_dwm(df: pd.DataFrame, period: str,
               .rename(columns={period_col: date_col}))
 
 
+# ── Display-mode + time-unit toolbar ──────────────────────────────────
+#
+# Replaces the old D/W/M tabs. Two persistent controls per chart:
+#   • mode ∈ {"abs", "cum", "pct"} — display transformation
+#   • time ∈ {"D", "W", "M", "Q", "Y"} — bucket size
+#
+# State is keyed by chart's unique `raw_key`, so each chart remembers
+# its own setting independently. Defaults to ("abs", "D") which
+# matches the prior Daily-tab behavior — old call sites render the
+# same chart they did before until the user touches a control.
+#
+# Layout follows the Blockworks pattern: 3 small mode buttons on the
+# left, time-unit dropdown to their right, 📋 raw-data button pinned
+# top-right via the existing CSS rule.
+
+_TIME_LABELS = {"D": "Daily", "W": "Weekly", "M": "Monthly",
+                 "Q": "Quarterly", "Y": "Yearly"}
+_TIME_OPTIONS = ["D", "W", "M", "Q", "Y"]
+_MODE_OPTIONS = ("abs", "cum", "pct")
+_MODE_LABELS = {"abs": "Abs", "cum": "Cum", "pct": "%"}
+
+
+def _get_chart_mode_time(raw_key: str,
+                          stacked: bool) -> tuple[str, str]:
+    """Read current (mode, time) for a chart from session state, with
+    sensible defaults. `stacked` is forwarded so we can guard against
+    a stale 'pct' selection on a non-stacked chart (e.g. caller flipped
+    stacked=True → False between deploys); coerced back to 'abs'."""
+    mode = st.session_state.get(f"dwm_mode_{raw_key}", "abs")
+    time = st.session_state.get(f"dwm_time_{raw_key}", "D")
+    if mode not in _MODE_OPTIONS:
+        mode = "abs"
+    if time not in _TIME_OPTIONS:
+        time = "D"
+    if mode == "pct" and not stacked:
+        mode = "abs"
+    return mode, time
+
+
+def _render_chart_toolbar(raw_key: str, stacked: bool) -> None:
+    """Render the mode + time-unit toolbar. State writes go to
+    `st.session_state[f"dwm_mode_{raw_key}"]` and `dwm_time_{raw_key}`
+    via the widget keys, so the toolbar re-reads its own current state
+    on the next rerun without us juggling on_change callbacks.
+
+    `stacked` controls whether the "%" mode is offered. Non-stacked
+    (single-series) charts hide it because 100% of one series is
+    meaningless.
+
+    Layout: a 3-column row inside the chartwrap container. Left
+    column gets the mode radio (horizontal, label hidden); middle
+    column gets the time-unit selectbox; right column is empty so the
+    raw-data 📋 button (pinned top-right via the existing
+    `st-key-raw_*` CSS rule) has room.
+    """
+    # Initialize state on first render so the widgets pick up the
+    # default ("abs", "D") instead of None.
+    st.session_state.setdefault(f"dwm_mode_{raw_key}", "abs")
+    st.session_state.setdefault(f"dwm_time_{raw_key}", "D")
+    # Coerce stale 'pct' on non-stacked charts BEFORE rendering the
+    # radio so the selection doesn't render the disallowed option.
+    if (not stacked
+            and st.session_state[f"dwm_mode_{raw_key}"] == "pct"):
+        st.session_state[f"dwm_mode_{raw_key}"] = "abs"
+
+    mode_opts = list(_MODE_OPTIONS) if stacked else ["abs", "cum"]
+    # Compact toolbar: segmented_control for mode (renders as button
+    # group, matches the Blockworks icon-row look) + selectbox for
+    # time. Wider toolbar columns so charts in a 2-column layout
+    # (lending stack + per-asset breakdown) still fit the controls
+    # in one row instead of vertically stacking.
+    #
+    # CSS scoped to .dwm-toolbar: shrinks the segmented_control
+    # buttons and the selectbox to single-line height; otherwise
+    # Streamlit's default 40px buttons crowd them out at half-width
+    # column sizes.
+    st.markdown("""
+    <style>
+    div.dwm-toolbar div[data-baseweb="segmented-control"] button {
+        padding: 2px 8px !important;
+        min-height: 28px !important;
+        font-size: 12px !important;
+    }
+    div.dwm-toolbar div[data-testid="stSelectbox"] {
+        margin-top: 0 !important;
+    }
+    div.dwm-toolbar div[data-testid="stSelectbox"] > div > div {
+        min-height: 28px !important;
+        font-size: 12px !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    st.markdown('<div class="dwm-toolbar">', unsafe_allow_html=True)
+    # Wide mode + time columns, tiny spacer — the 📋 button is
+    # absolute-positioned via the chartwrap CSS, doesn't need a real
+    # column to land in. Keeps the segmented_control on one row even
+    # at half-page (2-column lending layout) widths.
+    col_mode, col_time, _spacer = st.columns([4.0, 3.0, 1.0])
+    with col_mode:
+        st.segmented_control(
+            "Display mode", options=mode_opts,
+            format_func=lambda v: _MODE_LABELS[v],
+            key=f"dwm_mode_{raw_key}",
+            label_visibility="collapsed",
+        )
+    with col_time:
+        st.selectbox(
+            "Time unit", options=_TIME_OPTIONS,
+            format_func=lambda v: _TIME_LABELS[v],
+            key=f"dwm_time_{raw_key}",
+            label_visibility="collapsed",
+        )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+def _apply_chart_mode(df: pd.DataFrame, mode: str,
+                      col_aggs: dict | None) -> pd.DataFrame:
+    """Apply the cum/pct transformation to a daily-or-resampled df.
+    Returns the (possibly mutated) df. 'abs' is a no-op pass-through.
+
+    Cumulative — cumsum() per numeric column. Skips columns marked
+    'last' in `col_aggs` (stock-like values: TVL, MC, balances —
+    running a sum over them is meaningless). For unlabeled columns,
+    cumsums by default; callers that care about stock vs flow should
+    pass `col_aggs`.
+
+    Percentage — each row's numeric columns rescale to share-of-row,
+    in 0..100 (NOT 0..1). NaN rows propagate as NaN (chart suppresses
+    them). The y-axis post-processing (separate helper) flips to a
+    "%" tick suffix when this mode is active.
+    """
+    if df is None or df.empty or mode == "abs":
+        return df
+    date_col = ("date" if "date" in df.columns
+                else ("day" if "day" in df.columns else None))
+    if date_col is None:
+        return df
+    # Identify which columns participate. Numeric only; skip the
+    # date column and any non-numeric metadata.
+    value_cols = [c for c in df.columns
+                   if c != date_col
+                   and pd.api.types.is_numeric_dtype(df[c])]
+    if not value_cols:
+        return df
+    out = df.copy()
+    if mode == "cum":
+        # Skip stock-like cols per col_aggs hint ('last'). Without a
+        # hint, default to cumsum (treat as flow).
+        for c in value_cols:
+            agg = (col_aggs or {}).get(c)
+            if agg == "last":
+                continue
+            out[c] = out[c].fillna(0).cumsum()
+        return out
+    if mode == "pct":
+        # Row totals over the participating value columns. Where the
+        # row total is 0 (or NaN), preserve NaN so the chart renders
+        # an empty bar instead of a misleading 0% / NaN%.
+        totals = out[value_cols].sum(axis=1)
+        with pd.option_context("mode.use_inf_as_na", True):
+            for c in value_cols:
+                out[c] = (out[c] / totals) * 100.0
+            out[value_cols] = out[value_cols].where(totals > 0)
+        return out
+    return df
+
+
+def _apply_pct_yaxis(fig) -> "go.Figure":
+    """Override every y-axis on a fig for percentage-mode display.
+    Replaces tickprefix='$' with ticksuffix='%', drops the SI '~s'
+    formatter, pins the range to 0-100. Idempotent."""
+    fig.update_yaxes(
+        tickprefix="", ticksuffix="%",
+        tickformat=",.0f",
+        range=[0, 100], autorange=False,
+        rangemode="normal",
+    )
+    return fig
+
+
 def _chart_dwm_simple(title: str, source_df: pd.DataFrame,
                       build_fig, *,
                       raw_df: pd.DataFrame, raw_key: str,
@@ -6607,11 +6793,27 @@ def _chart_dwm_simple(title: str, source_df: pd.DataFrame,
                       fmt_mode: str = "currency",
                       skip_yaxis_format: bool = False,
                       legend_entries: list[tuple[str, str]] | None = None,
-                      legend_label: str = "series") -> None:
-    """One-shot wrapper around _chart_dwm_frame for the common pattern of
-    one source DataFrame + one build_fig closure that handles Daily,
-    Weekly, and Monthly. Calls build_fig(df_view) three times — once for
-    daily, twice for the resampled weekly/monthly views.
+                      legend_label: str = "series",
+                      stacked: bool = False) -> None:
+    """Render `title` + caption + the mode-and-time-unit toolbar + a
+    single chart built by `build_fig` against the user's currently-
+    selected slice. State is per-chart (keyed by `raw_key`) and
+    defaults to ("abs", "D"), so without user interaction every
+    existing chart renders the same Daily/Absolute view it did
+    before this toolbar shipped.
+
+    Toolbar:
+      • Display mode — Abs / Cum / % (% only when stacked=True)
+      • Time unit    — Daily / Weekly / Monthly / Quarterly / Yearly
+
+    Transforms applied in order: resample to time unit → apply mode
+    transformation → hand to `build_fig`. Percentage mode also
+    post-processes the returned figure to switch the y-axis from $
+    to %.
+
+    `stacked=True` — opt-in flag for multi-series stacked charts that
+    want to expose the % toggle. Single-series and non-stacked
+    multi-series charts leave this at False.
 
     `skip_yaxis_format` is forwarded to _chart so dual-axis charts
     (left $ + right count) can preserve their per-axis tickprefix
@@ -6625,38 +6827,33 @@ def _chart_dwm_simple(title: str, source_df: pd.DataFrame,
     work (e.g. Bar trace with per-bar marker.color list, or you want
     a different label/order than the trace order).
 
-    The legend renders AFTER the tabs via the 3-tier `_legend()`
+    The legend renders BELOW the chart via the 3-tier `_legend()`
     dispatcher (0–1 hides, 2–5 inline, 6+ collapsed expander).
-    `legend_label` is the noun for the expander header
-    ("Legend (N <label>)") — only used when >5 entries.
-
-    Saves callers the with-block dance for charts that don't need
-    per-tab specialization.
     """
-    # Build daily fig ONCE so we can auto-extract legend entries from
-    # it without duplicating the build work. Reused for tab_d render.
-    daily_fig = build_fig(source_df)
-    if legend_entries is None:
-        legend_entries = _legend_entries_from_fig(daily_fig)
-    with _chart_dwm_frame(title, raw_df=raw_df, raw_key=raw_key,
-                          raw_fmt=raw_fmt, raw_filename=raw_filename,
-                          caption=caption,
-                          legend_entries=legend_entries,
-                          legend_label=legend_label) as (tab_d, tab_w, tab_m):
-        with tab_d:
-            _chart(daily_fig, use_container_width=True,
-                   fmt_mode=fmt_mode,
-                   skip_yaxis_format=skip_yaxis_format)
-        with tab_w:
-            _chart(build_fig(_resample_dwm(source_df, "W",
-                                           col_aggs=col_aggs)),
-                   use_container_width=True, fmt_mode=fmt_mode,
-                   skip_yaxis_format=skip_yaxis_format)
-        with tab_m:
-            _chart(build_fig(_resample_dwm(source_df, "M",
-                                           col_aggs=col_aggs)),
-                   use_container_width=True, fmt_mode=fmt_mode,
-                   skip_yaxis_format=skip_yaxis_format)
+    st.subheader(title)
+    if caption:
+        st.caption(caption)
+    with st.container(key=f"chartwrap_{raw_key}"):
+        if st.button("📋", key=f"raw_{raw_key}",
+                     help="View raw data"):
+            _raw_data_modal(raw_df, raw_fmt, raw_filename or raw_key)
+        _render_chart_toolbar(raw_key, stacked=stacked)
+        mode, time_unit = _get_chart_mode_time(raw_key, stacked=stacked)
+        # Pipeline: resample → mode transform → build_fig.
+        df_view = _resample_dwm(source_df, time_unit, col_aggs=col_aggs)
+        df_view = _apply_chart_mode(df_view, mode, col_aggs=col_aggs)
+        fig = build_fig(df_view)
+        if mode == "pct":
+            _apply_pct_yaxis(fig)
+        if legend_entries is None:
+            legend_entries = _legend_entries_from_fig(fig)
+        # Percentage mode replaces $ y-ticks with % — bypass the
+        # b-format pass so it doesn't re-add a $ prefix on top.
+        _chart(fig, use_container_width=True,
+                fmt_mode=fmt_mode,
+                skip_yaxis_format=(skip_yaxis_format or mode == "pct"))
+    if legend_entries:
+        _legend(legend_entries, label=legend_label)
 
 
 @contextmanager
@@ -6666,52 +6863,62 @@ def _chart_dwm_frame(title: str, *, raw_df: pd.DataFrame, raw_key: str,
                      caption: str | None = None,
                      legend_entries: list[tuple[str, str]] | None = None,
                      legend_label: str = "series",
-                     legend_from_fig: "go.Figure | None" = None):
-    """Render `title` (subheader) + optional `caption`, then yield a tuple
-    of (tab_daily, tab_weekly, tab_monthly) inside a container that
-    auto-pins the 📋 raw-data button to the tab row's right edge via the
-    existing global CSS (`[class*="st-key-chartwrap_"]` / `_raw_`).
+                     legend_from_fig: "go.Figure | None" = None,
+                     stacked: bool = False):
+    """Direct-frame variant of _chart_dwm_simple — yields three
+    tab-like containers `(tab_active, tab_dummy, tab_dummy)` for
+    backwards compatibility with the old `(tab_d, tab_w, tab_m)`
+    callsites. ONLY `tab_active` actually renders to screen; the two
+    dummies are no-op containers so existing callers that write a
+    fig to all three see exactly one rendered chart (matching the
+    user's current time-unit selection).
 
-    Caller is responsible for resampling the data per tab — use
-    `_resample_dwm(df, "W"/"M")` for the standard sum/last aggregation.
+    `stacked` controls whether the "%" mode is offered, same as
+    `_chart_dwm_simple`. Defaults False.
 
-    `legend_entries` (recommended): pre-computed [(name, hex_color), ...]
-    pairs for the chart. When supplied, the helper renders the legend
-    AFTER the tabs via the 3-tier `_legend()` dispatcher (0–1 hides,
-    2–5 inline, 6+ collapsed expander). The chart's `fig.update_layout`
-    must set `showlegend=False` so Plotly's inline legend doesn't
-    double-render.
-
-    Usage:
-        with _chart_dwm_frame("My Chart", raw_df=raw, raw_key="my_key",
-                              caption="…",
-                              legend_entries=[("USDC", "#2775ca"),
-                                               ("USDT", "#26a17b")],
-                              legend_label="stablecoins") as (tab_d, tab_w, tab_m):
-            with tab_d:
-                _chart(build_fig(df_daily), use_container_width=True)
-            ...
+    Migration note: callers can replace their three with-blocks with
+    a single `if time == "D": ...` style branch using
+    `_get_chart_mode_time(raw_key, stacked)` and `_resample_dwm`
+    inline. The yielded-triple shim is for the old code path and
+    will be cleaned up after the toolbar lands on every chart.
     """
     st.subheader(title)
     if caption:
         st.caption(caption)
-    # Container key MUST start with `chartwrap_` and the button key MUST
-    # start with `raw_` — the global CSS at the bottom of main() pins
-    # any `st-key-raw_*` button absolutely to top-right of its
-    # `st-key-chartwrap_*` ancestor, landing it on the tab row.
+    # Resolve current state ONCE so all 3 callbacks the caller fires
+    # see the same (mode, time_unit). The toolbar widget rerender
+    # below could race with this; reading first keeps the dummy
+    # branches blank during the transient mid-rerun state.
+    mode, time_unit = _get_chart_mode_time(raw_key, stacked=stacked)
+    # Map the user's selected time unit onto WHICH of the 3 yielded
+    # tabs the caller wrote into. The old API only knew D/W/M, so
+    # Q + Y both fall back to M-active.
+    active_idx = {"D": 0, "W": 1, "M": 2, "Q": 2, "Y": 2}[time_unit]
     with st.container(key=f"chartwrap_{raw_key}"):
         if st.button("📋", key=f"raw_{raw_key}",
                      help="View raw data"):
             _raw_data_modal(raw_df, raw_fmt, raw_filename or raw_key)
-        tabs = st.tabs(["Daily", "Weekly", "Monthly"])
-        yield tabs[0], tabs[1], tabs[2]
-    # Legend AFTER the tabs (single shared instance for all 3 D/W/M
-    # views — Plotly's per-tab legend would otherwise re-render 3×
-    # which Streamlit treats as duplicate-key DOM nodes).
+        _render_chart_toolbar(raw_key, stacked=stacked)
+        # Active container is a real st.container; the inactive ones
+        # are empty containers that get cleared after the yield so
+        # they never render to screen. This preserves the 3-yield
+        # API without painting 3 charts.
+        active = st.container()
+        inactive_1 = st.empty()
+        inactive_2 = st.empty()
+        slots = [active if i == active_idx else
+                  (inactive_1 if i == 1 else inactive_2)
+                  for i in range(3)]
+        yield slots[0], slots[1], slots[2]
+        # Wipe the inactive containers post-yield so any inline write
+        # the caller did inside them disappears from the DOM. (st.empty
+        # only retains the LAST element rendered into it, so we
+        # explicitly clear.)
+        if active_idx != 1:
+            inactive_1.empty()
+        if active_idx != 2:
+            inactive_2.empty()
     if legend_entries is None and legend_from_fig is not None:
-        # Auto-extract from caller's figure. Same path
-        # `_chart_dwm_simple` uses internally; direct-frame callers
-        # opt in by passing legend_from_fig=daily_fig.
         legend_entries = _legend_entries_from_fig(legend_from_fig)
     if legend_entries:
         _legend(legend_entries, label=legend_label)

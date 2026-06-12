@@ -819,6 +819,7 @@ def _build_lending_stack(metric: str, protocols: list[tuple[str, str]],
             raw_key=f"{raw_key_prefix}_{metric}",
             raw_filename=f"{raw_key_prefix}_{metric}",
             col_aggs=_aggs,
+            stacked=True,
         )
     else:
         # Backward compat for callers without chart_title.
@@ -1195,7 +1196,7 @@ def _build_foreign_l1_group_charts(group_label: str, pullers: list) -> None:
             f"{group_label} — Aggregated Market Cap",
             source_df=_mc_source,
             build_fig=_build_fl1_mc_fig,
-            raw_df=_mc_raw, raw_key=f"fl1_mc_{_safe_group}",
+            raw_df=_mc_raw, raw_key=f"fl1_mc_{_safe_group}", stacked=True,
             raw_filename=f"foreign_l1_{_safe_group}_market_cap",
             col_aggs={f"mc_{s}": "last" for s in frames},
         )
@@ -1244,7 +1245,7 @@ def _build_foreign_l1_group_charts(group_label: str, pullers: list) -> None:
             f"{group_label} — Aggregated Daily Volume",
             source_df=_vol_source,
             build_fig=_build_fl1_vol_fig,
-            raw_df=_vol_raw, raw_key=f"fl1_vol_{_safe_group}",
+            raw_df=_vol_raw, raw_key=f"fl1_vol_{_safe_group}", stacked=True,
             raw_filename=f"foreign_l1_{_safe_group}_volume",
             col_aggs={f"vol_{s}": "sum" for s in frames},
         )
@@ -2381,7 +2382,7 @@ def _render_dflow_prediction_section() -> None:
             source_df=wide[["day"] + symbols].copy(),
             build_fig=_build_dfl_bal_fig,
             raw_df=_raw_bal,
-            raw_key="pm_dfl_token_balance",
+            raw_key="pm_dfl_token_balance", stacked=True,
             raw_filename="pm_dfl_token_balance",
             col_aggs={s: "last" for s in symbols},
         )
@@ -2771,7 +2772,7 @@ def _render_perp_dexs() -> None:
             source_df=vol_wide,
             build_fig=lambda df_view: _build_perp_stack(df_view),
             raw_df=_raw.sort_values("date", ascending=False),
-            raw_key="perp_dex_vol_by_dex",
+            raw_key="perp_dex_vol_by_dex", stacked=True,
             raw_filename="solana_perp_dex_volume_by_dex",
             caption=(
                 "Daily on-chain perpetual-futures notional volume per "
@@ -2793,7 +2794,7 @@ def _render_perp_dexs() -> None:
             source_df=oi_wide,
             build_fig=lambda df_view: _build_perp_stack(df_view),
             raw_df=_raw_oi.sort_values("date", ascending=False),
-            raw_key="perp_dex_oi_by_dex",
+            raw_key="perp_dex_oi_by_dex", stacked=True,
             raw_filename="solana_perp_dex_oi_by_dex",
             caption=(
                 "Daily open interest per DEX. OI is a stock not a "
@@ -3164,6 +3165,7 @@ def _render_dex_stacked_chart(seed_file: str, title: str, caption: str,
         col_aggs={c: agg for c in ordered},
         legend_label=legend_label,
         fmt_mode=fmt_mode,
+        stacked=True,
     )
 
 
@@ -3490,7 +3492,7 @@ def _render_payments() -> None:
         source_df=wide,
         build_fig=_build_payments_fig,
         raw_df=raw_df.sort_values("date", ascending=False),
-        raw_key="payments_by_chain",
+        raw_key="payments_by_chain", stacked=True,
         raw_filename="paymentscan_volume_by_chain",
         caption=(
             "Daily card-payment volume in USD per settlement chain, "
@@ -3773,7 +3775,7 @@ def _render_payments() -> None:
             source_df=_spc_df,
             build_fig=_build_spc_fig,
             raw_df=_spc_raw,
-            raw_key="sd_stable_pay_by_cat",
+            raw_key="sd_stable_pay_by_cat", stacked=True,
             raw_filename="sol_stable_payments_by_category",
             raw_fmt={c: "${:,.0f}" for c in _cats + ["Total"]},
             caption=(
@@ -3888,7 +3890,7 @@ def _render_payments() -> None:
                     source_df=_psol_wide,
                     build_fig=_build_psol_fig,
                     raw_df=_psol_raw.sort_values("date", ascending=False),
-                    raw_key="sd_ps_solana_issuers",
+                    raw_key="sd_ps_solana_issuers", stacked=True,
                     raw_filename="sol_paymentscan_solana_issuers",
                     raw_fmt={c: "${:,.0f}"
                               for c in _psol_ordered + ["Total"]},

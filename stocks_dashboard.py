@@ -6520,7 +6520,26 @@ def inject_chartwrap_css() -> None:
         <style>
         /* Raw-data icons — pinned to each chart's tab row, far right, borderless */
         .st-key-combined_chart,
-        [class*="st-key-chartwrap_"] { position: relative; }
+        [class*="st-key-chartwrap_"] {
+            position: relative;
+            /* Streamlit's st.container(key=...) injects horizontal
+               padding via its emotion-cache wrapper. That padding
+               pushes the toolbar + chart inward while the st.subheader
+               title and st.caption (rendered as siblings OUTSIDE the
+               container) remain flush at the page's text margin —
+               producing the visible "indent" of the chart vs its own
+               header. Zero the horizontal padding on chartwraps so the
+               toolbar/chart left edge aligns with the title above it.
+               Vertical padding is preserved so the chart still breathes
+               from its caption. */
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+        }
+        [class*="st-key-chartwrap_"] > [data-testid="stVerticalBlock"],
+        [class*="st-key-chartwrap_"] [data-testid="stVerticalBlockBorderWrapper"] {
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+        }
         [class*="st-key-raw_"] {
             position: absolute; top: 8px; right: 0; z-index: 5;
             width: auto !important; min-height: 0 !important;
@@ -7378,7 +7397,16 @@ if __name__ == "__main__":
         }}
         /* Raw-data icons — pinned to each chart's tab row, far right, borderless */
         .st-key-combined_chart,
-        [class*="st-key-chartwrap_"] {{ position: relative; }}
+        [class*="st-key-chartwrap_"] {{
+            position: relative;
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+        }}
+        [class*="st-key-chartwrap_"] > [data-testid="stVerticalBlock"],
+        [class*="st-key-chartwrap_"] [data-testid="stVerticalBlockBorderWrapper"] {{
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+        }}
         [class*="st-key-raw_"] {{
             position: absolute; top: 8px; right: 0; z-index: 5;
             width: auto !important; min-height: 0 !important;

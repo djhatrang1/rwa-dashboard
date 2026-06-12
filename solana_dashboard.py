@@ -3561,26 +3561,56 @@ def _render_payments() -> None:
     st.divider()
     st.markdown("### Solana stablecoin payments (Allium)")
 
+    # Each payments chart is backed by a PAIR of Allium queries:
+    #   HIST  — the original deep-history query (2020-10-21 → ~2026-04).
+    #           Hits Allium's 2000-row cap, so it stops updating once the
+    #           cap fills with daily rows. We keep it as the historical
+    #           baseline because anything before the new query's 180-day
+    #           window has to come from somewhere.
+    #   180D  — a rolling last-180-days query, ~165 rows. Comfortably
+    #           under cap and always fresh.
+    # Concat HIST + 180D and `drop_duplicates(subset="date", keep="last")`
+    # so the 180D rows always win on overlapping dates (they're the
+    # authoritative current snapshot; the HIST rows for the same dates
+    # are stale-but-not-meaningfully-different).
+    def _payments_concat(hist_qid: str, new_qid: str):
+        """Fetch both queries, concat by date, NEW wins on overlap.
+        Returns (combined_df, list_of_error_strings)."""
+        _hist, _hist_err = _allium.fetch_allium_query_results(
+            hist_qid, revision="v3")
+        _new,  _new_err  = _allium.fetch_allium_query_results(
+            new_qid, revision="v1")
+        errs = [e for e in (_hist_err, _new_err) if e]
+        parts = []
+        for _df in (_hist, _new):
+            if not _df.empty:
+                _df = _df.copy()
+                _df["date"] = _pd.to_datetime(_df["date"], errors="coerce")
+                parts.append(_df)
+        if not parts:
+            return _pd.DataFrame(), errs
+        combined = (_pd.concat(parts, ignore_index=True)
+                      .drop_duplicates(subset="date", keep="last")
+                      .sort_values("date")
+                      .reset_index(drop=True))
+        return combined, errs
+
     # ── Daily volume + transfer count overlay ────────────────────────────
-    # revision bumped v1 → v2 after the user re-edited the Allium query;
-    # invalidates the 4h @st.cache_data so the next page-load fetches
-    # the updated query result instead of returning the stale cached one.
-    _spv_df, _spv_err = _allium.fetch_allium_query_results(
-        "mE86r6b8d6RYWwvTfq2p", revision="v2")
+    # HIST = mE86r6b8d6RYWwvTfq2p (2020-10-21 → ~2026-04, capped at 2000)
+    # 180D = 9dp6fsEJEz68MeqmRoy7 (rolling last-180-days, ~165 rows)
+    _spv_df, _spv_errs = _payments_concat(
+        "mE86r6b8d6RYWwvTfq2p", "9dp6fsEJEz68MeqmRoy7")
     if _spv_df.empty:
         st.subheader("Daily Volume + Transfer Count")
         st.caption(
-            "Source: Allium query "
-            "[`mE86r6b8d6RYWwvTfq2p`]"
-            "(https://app.allium.so/analyze/queries/mE86r6b8d6RYWwvTfq2p)."
+            "Source: Allium queries [`mE86r6b8d6RYWwvTfq2p`]"
+            "(https://app.allium.so/analyze/queries/mE86r6b8d6RYWwvTfq2p)"
+            " + [`9dp6fsEJEz68MeqmRoy7`]"
+            "(https://app.allium.so/analyze/queries/9dp6fsEJEz68MeqmRoy7)."
         )
-        st.info(f"No data. Reason: `{_spv_err or 'empty'}`")
+        st.info(f"No data. Errors: `{'; '.join(_spv_errs) or 'empty'}`")
     else:
-        _spv_df = _spv_df.copy()
-        _spv_df["date"] = _pd.to_datetime(_spv_df["date"],
-                                          errors="coerce")
-        _spv_df = _spv_df.sort_values("date").reset_index(drop=True)
-
+        # _payments_concat already returns a sorted, date-parsed frame.
         def _build_spv_fig(df_view):
             fig = _go.Figure()
             fig.add_trace(_go.Bar(
@@ -3625,8 +3655,15 @@ def _render_payments() -> None:
             caption=(
                 "Daily Solana stablecoin payment volume (USD, left "
                 "axis) and transfer count (right axis). Source: "
-                "Allium query [`mE86r6b8d6RYWwvTfq2p`]"
-                "(https://app.allium.so/analyze/queries/mE86r6b8d6RYWwvTfq2p)."
+                "two Allium queries concatenated — "
+                "[`mE86r6b8d6RYWwvTfq2p`]"
+                "(https://app.allium.so/analyze/queries/mE86r6b8d6RYWwvTfq2p) "
+                "for deep history (2020-10-21 → ~2026-04, capped at "
+                "2000 rows) + "
+                "[`9dp6fsEJEz68MeqmRoy7`]"
+                "(https://app.allium.so/analyze/queries/9dp6fsEJEz68MeqmRoy7) "
+                "for the rolling last-180-days fresh data. The 180-day "
+                "query's rows always win on overlapping dates."
             ),
             col_aggs={"total_volume_usd": "sum",
                        "transfer_count":   "sum"},
@@ -3635,20 +3672,20 @@ def _render_payments() -> None:
 
     st.divider()
     # ── Daily volume by flow category (stacked area) ─────────────────────
-    _spc_df, _spc_err = _allium.fetch_allium_query_results(
-        "mR8Xtm7pKCv1C0VVvb6E", revision="v2")
+    # HIST = mR8Xtm7pKCv1C0VVvb6E (2020-10-21 → ~2026-04, capped at 2000)
+    # 180D = 4XE51HRbSyTvKMFQQxwp (rolling last-180-days, ~165 rows)
+    _spc_df, _spc_errs = _payments_concat(
+        "mR8Xtm7pKCv1C0VVvb6E", "4XE51HRbSyTvKMFQQxwp")
     if _spc_df.empty:
         st.subheader("Daily Volume by Flow Category")
         st.caption(
-            "Source: Allium query [`mR8Xtm7pKCv1C0VVvb6E`]"
-            "(https://app.allium.so/analyze/queries/mR8Xtm7pKCv1C0VVvb6E)."
+            "Source: Allium queries [`mR8Xtm7pKCv1C0VVvb6E`]"
+            "(https://app.allium.so/analyze/queries/mR8Xtm7pKCv1C0VVvb6E)"
+            " + [`4XE51HRbSyTvKMFQQxwp`]"
+            "(https://app.allium.so/analyze/queries/4XE51HRbSyTvKMFQQxwp)."
         )
-        st.info(f"No data. Reason: `{_spc_err or 'empty'}`")
+        st.info(f"No data. Errors: `{'; '.join(_spc_errs) or 'empty'}`")
     else:
-        _spc_df = _spc_df.copy()
-        _spc_df["date"] = _pd.to_datetime(_spc_df["date"],
-                                          errors="coerce")
-        _spc_df = _spc_df.sort_values("date").reset_index(drop=True)
         _CAT_LABEL = {
             "c2c_volume":     "C2C",
             "c2b_volume":     "C2B",
@@ -3719,9 +3756,14 @@ def _render_payments() -> None:
                 "four flow categories: **C2C** (consumer-to-consumer), "
                 "**C2B** (consumer-to-business), **B2C** (business-to-"
                 "consumer), **B2B/I2C** (business-to-business / "
-                "institutional-to-consumer). Source: Allium query "
+                "institutional-to-consumer). Source: two Allium "
+                "queries concatenated — "
                 "[`mR8Xtm7pKCv1C0VVvb6E`]"
-                "(https://app.allium.so/analyze/queries/mR8Xtm7pKCv1C0VVvb6E)."
+                "(https://app.allium.so/analyze/queries/mR8Xtm7pKCv1C0VVvb6E) "
+                "for deep history (capped at 2000 rows) + "
+                "[`4XE51HRbSyTvKMFQQxwp`]"
+                "(https://app.allium.so/analyze/queries/4XE51HRbSyTvKMFQQxwp) "
+                "for the rolling last-180-days fresh data."
             ),
             col_aggs={c: "sum" for c in _cats},
         )

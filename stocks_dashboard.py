@@ -6691,7 +6691,14 @@ def _render_chart_toolbar(raw_key: str, stacked: bool,
             and st.session_state[f"dwm_mode_{raw_key}"] == "pct"):
         st.session_state[f"dwm_mode_{raw_key}"] = "abs"
 
-    mode_opts = list(_MODE_OPTIONS) if stacked else ["abs", "cum"]
+    # Always render 3 buttons so the layout doesn't shift between
+    # stacked / non-stacked charts. On non-stacked charts the % button
+    # gets greyed out + pointer-events disabled via the per-widget CSS
+    # rule emitted further down (search for `_no_pct`). Blockworks-
+    # style: same toolbar shape everywhere, disabled state telegraphs
+    # "not applicable here" without making the user hunt for a missing
+    # control.
+    mode_opts = list(_MODE_OPTIONS)
     # CSS scoped to .dwm-toolbar — make the segmented_control and
     # the selectbox visually match: same height, same border, same
     # background, same font-size, same border-radius. Out of the
@@ -6786,6 +6793,30 @@ def _render_chart_toolbar(raw_key: str, stacked: bool,
     }
     </style>
     """, unsafe_allow_html=True)
+    # Per-widget disable rule for the % button on non-stacked charts.
+    # Scoped by EXACT class name (no wildcard) so it targets only this
+    # toolbar — neighboring stacked charts on the same page keep their
+    # % button fully active. The 3rd button in the data-baseweb group
+    # is the pct option (mode_opts order: abs, cum, pct).
+    # Why CSS rather than dropping the option entirely: keeping all 3
+    # buttons rendered preserves the toolbar width across chart kinds
+    # — without this, removing the 3rd button leaves an 8px gap inside
+    # col_mode that propagates as visual space before col_time.
+    # Defensive guards remain: _get_chart_mode_time + the pre-render
+    # block above both coerce a stale 'pct' back to 'abs', so even if
+    # a user keyboard-activates the disabled button the chart still
+    # renders in abs mode on the next rerun.
+    if not stacked:
+        st.markdown(f"""
+        <style>
+        .st-key-dwm_mode_{raw_key} div[data-baseweb="button-group"]
+            button:nth-child(3) {{
+            opacity: 0.32 !important;
+            pointer-events: none !important;
+            cursor: not-allowed !important;
+        }}
+        </style>
+        """, unsafe_allow_html=True)
     st.markdown('<div class="dwm-toolbar">', unsafe_allow_html=True)
     # Tight left cluster + wide spacer + tiny raw button column.
     # Ratios sized so the column widths sit close to the widget

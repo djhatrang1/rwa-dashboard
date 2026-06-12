@@ -6620,9 +6620,14 @@ def _resample_dwm(df: pd.DataFrame, period: str,
 # left, time-unit dropdown to their right, 📋 raw-data button pinned
 # top-right via the existing CSS rule.
 
-_TIME_LABELS = {"D": "Daily", "W": "Weekly", "M": "Monthly",
-                 "Q": "Quarterly", "Y": "Yearly"}
+# Single-letter time labels so the dropdown stays compact at any
+# screen width. Long-form names land in the widget's help-tooltip.
+_TIME_LABELS = {"D": "D", "W": "W", "M": "M", "Q": "Q", "Y": "Y"}
+_TIME_LONGFORM = {"D": "Daily", "W": "Weekly", "M": "Monthly",
+                   "Q": "Quarterly", "Y": "Yearly"}
 _TIME_OPTIONS = ["D", "W", "M", "Q", "Y"]
+_TIME_TOOLTIP = ("Time unit: D daily · W weekly · M monthly · "
+                  "Q quarterly · Y yearly")
 _MODE_OPTIONS = ("abs", "cum", "pct")
 # Icon-only labels — Blockworks-style chart-type icons. Single-glyph
 # each so all three fit comfortably even in half-page columns
@@ -6703,14 +6708,37 @@ def _render_chart_toolbar(raw_key: str, stacked: bool,
        This is the ONLY reliable way to target widgets by toolbar
        role — the `div.dwm-toolbar` wrapper from st.markdown is a
        sibling of the widget DOM, not an ancestor.
+
+       max-width clamps the widgets to compact sizes regardless of
+       the column width they sit in — at full-page width the column
+       can be 180+px but the widget stays at its content size so
+       the cluster reads identically narrow at every screen width.
        — flex-nowrap on the button-group prevents the 3 icon
          buttons from stacking vertically when the column is tight
          (Streamlit default flex-wrap: wrap kicks in at <90px). */
+    /* Right-align the segmented-control inside its column so the
+       widget sits flush against the column gap (next to the
+       selectbox) instead of being left-padded by unused column
+       width. Without this, a 2-icon segmented control in a 135px
+       column would leave 75px of empty space between itself and
+       the time selectbox. Targets the stElementContainer (the
+       div with the st-key-* class), forcing it to flex layout so
+       its child widget flows toward the right edge. */
+    [class*="st-key-dwm_mode_"] {
+        display: flex !important;
+        justify-content: flex-end !important;
+        width: 100% !important;
+    }
+    [class*="st-key-dwm_mode_"] [data-testid="stButtonGroup"] {
+        width: auto !important;
+        flex: 0 0 auto !important;
+    }
     [class*="st-key-dwm_mode_"] div[data-baseweb="button-group"] {
         background: rgba(30,30,30,0.6) !important;
         border-radius: 8px !important;
         flex-wrap: nowrap !important;
         width: auto !important;
+        max-width: 120px !important;
         min-width: 0 !important;
     }
     [class*="st-key-dwm_mode_"] div[data-baseweb="button-group"] button {
@@ -6722,9 +6750,15 @@ def _render_chart_toolbar(raw_key: str, stacked: bool,
         min-width: 0 !important;
         flex-shrink: 0 !important;
     }
-    /* Selectbox: 32px height + radius + bg to match segmented_control. */
+    /* Selectbox: 32px height + radius + bg to match segmented_control.
+       max-width keeps it compact at full-page width (would
+       otherwise stretch to fill its column = ~180px); single-letter
+       labels fit comfortably in 70px. */
     [class*="st-key-dwm_time_"] > div {
         margin-top: 0 !important;
+    }
+    [class*="st-key-dwm_time_"] div[data-testid="stSelectbox"] {
+        max-width: 90px !important;
     }
     [class*="st-key-dwm_time_"] div[data-testid="stSelectbox"] > div > div {
         height: 32px !important;
@@ -6733,10 +6767,6 @@ def _render_chart_toolbar(raw_key: str, stacked: bool,
         background: rgba(30,30,30,0.6) !important;
         border-radius: 8px !important;
         border: 1px solid rgba(255,255,255,0.08) !important;
-    }
-    [class*="st-key-dwm_time_"] div[role="combobox"] {
-        padding: 0 8px !important;
-        min-height: 32px !important;
     }
     /* Inline 📋 button — transparent, right-aligned, borderless.
        Distinct key prefix so the global st-key-raw_* absolute-
@@ -6760,13 +6790,16 @@ def _render_chart_toolbar(raw_key: str, stacked: bool,
     """, unsafe_allow_html=True)
     st.markdown('<div class="dwm-toolbar">', unsafe_allow_html=True)
     # Tight left cluster + wide spacer + tiny raw button column.
-    # At full-page width (~900px) → mode 180px, time 162px, spacer
-    # ~513px, btn ~45px — "Daily/Weekly/…" all display in full at
-    # 162px. At half-page (2-col lending layout, ~450px) → mode
-    # 90px, time 81px, spacer 257px, btn 22px — selectbox truncates
-    # "Daily" → "D…" at half-page (acceptable; cluster stays tight).
+    # Ratios sized so the column widths sit close to the widget
+    # max-widths (120/75px) — that way the gap between segmented-
+    # control and selectbox is just Streamlit's default column gap
+    # (~16px), instead of the column-width-minus-widget-width
+    # padding that made the cluster look loose at full width.
+    # Single-letter time labels (D/W/M/Q/Y) keep the selectbox at
+    # ~75px regardless of viewport — the cluster reads the same at
+    # any screen width.
     col_mode, col_time, _spacer, col_raw = st.columns(
-        [2.0, 2.0, 5.5, 0.5])
+        [1.5, 1.1, 6.9, 0.5])
     with col_mode:
         # segmented_control needs Streamlit >= 1.38. Fall back to
         # st.radio (horizontal) on older versions so cloud deploys
@@ -6795,6 +6828,7 @@ def _render_chart_toolbar(raw_key: str, stacked: bool,
             format_func=lambda v: _TIME_LABELS[v],
             key=f"dwm_time_{raw_key}",
             label_visibility="collapsed",
+            help=_TIME_TOOLTIP,
         )
     with col_raw:
         if st.button("📋", key=f"dwm_raw_inline_{raw_key}",

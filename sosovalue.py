@@ -117,16 +117,41 @@ def fetch_etf_summary_history(symbol: str = "SOL",
     DataFrame columns: date, total_net_inflow, total_value_traded,
     total_net_assets, cum_net_inflow.
 
-    On success err is None. On failure the live DataFrame is empty
-    and we try the disk seed before giving up — err is
-    `seed-fallback (...)` when the seed served the response."""
+    On success err is None and the returned frame is the MERGED view
+    (live API rows ∪ existing seed). The seed is written back as the
+    same merged frame so historical bootstrap data (see
+    `scripts/bootstrap_sosovalue_seed.py`) survives — the API plan
+    only returns ~30 days, but the seed accumulates every row we've
+    ever seen.
+
+    On failure the live DataFrame is empty and we serve the seed as-is;
+    err is `seed-fallback (...)` when the seed served the response."""
     fn = f"summary_history_{symbol.lower()}_{country_code.lower()}.csv"
     try:
-        df = _fetch_summary_history(symbol, country_code,
-                                     revision=revision)
-        if not df.empty:
-            seed_cache.write_seed_df(df, _SEEDS_DIR, fn)
-        return df, None
+        live = _fetch_summary_history(symbol, country_code,
+                                       revision=revision)
+        if live.empty:
+            # Treat empty live response the same as a failure — fall
+            # back to the seed rather than overwriting it with nothing.
+            fallback = seed_cache.read_seed_df(
+                _SEEDS_DIR, fn, parse_dates=["date"])
+            if not fallback.empty:
+                return fallback, "seed-fallback (empty live response)"
+            return live, None
+        # Concat-and-dedupe with the existing seed. Live rows are the
+        # freshest reading for any overlapping date, so we keep those
+        # (`keep="last"` after putting live AFTER seed in the concat).
+        existing = seed_cache.read_seed_df(
+            _SEEDS_DIR, fn, parse_dates=["date"])
+        if not existing.empty:
+            merged = (pd.concat([existing, live], ignore_index=True)
+                        .sort_values("date")
+                        .drop_duplicates(subset="date", keep="last")
+                        .reset_index(drop=True))
+        else:
+            merged = live
+        seed_cache.write_seed_df(merged, _SEEDS_DIR, fn)
+        return merged, None
     except Exception as exc:
         msg = f"{type(exc).__name__}: {exc}"
         log.warning("SoSoValue summary-history(%s) failed: %s",

@@ -53,7 +53,9 @@ except ImportError:  # pragma: no cover — fine for local SQLite-only runs
 # pydantic-settings only reads env vars / .env, not st.secrets. Copy known keys
 # from st.secrets into os.environ at import time so cloud deploys pick them up
 # without touching any pydantic-settings code paths. No-op locally.
-for _k in ("BIRDEYE_API_KEY", "DATABASE_URL"):
+for _k in ("BIRDEYE_API_KEY", "DATABASE_URL", "ALLIUM_API_KEY",
+            "PAYMENTSCAN_API_KEY", "DUNE_API_KEY",
+            "COINGECKO_API_KEY", "SOSOVALUE_API_KEY"):
     if _k not in os.environ:
         try:
             _v = st.secrets.get(_k)  # type: ignore[attr-defined]
@@ -6702,12 +6704,25 @@ def _render_chart_toolbar(raw_key: str, stacked: bool) -> None:
     # at half-page (2-column lending layout) widths.
     col_mode, col_time, _spacer = st.columns([4.0, 3.0, 1.0])
     with col_mode:
-        st.segmented_control(
-            "Display mode", options=mode_opts,
-            format_func=lambda v: _MODE_LABELS[v],
-            key=f"dwm_mode_{raw_key}",
-            label_visibility="collapsed",
-        )
+        # segmented_control needs Streamlit >= 1.38. Fall back to
+        # st.radio (horizontal) on older versions so cloud deploys
+        # with pinned-older streamlit still render the toolbar.
+        _seg = getattr(st, "segmented_control", None)
+        if _seg is not None:
+            _seg(
+                "Display mode", options=mode_opts,
+                format_func=lambda v: _MODE_LABELS[v],
+                key=f"dwm_mode_{raw_key}",
+                label_visibility="collapsed",
+            )
+        else:
+            st.radio(
+                "Display mode", options=mode_opts,
+                format_func=lambda v: _MODE_LABELS[v],
+                horizontal=True,
+                key=f"dwm_mode_{raw_key}",
+                label_visibility="collapsed",
+            )
     with col_time:
         st.selectbox(
             "Time unit", options=_TIME_OPTIONS,

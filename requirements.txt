@@ -1,5 +1,5 @@
 # ── Core ─────────────────────────────────────────────────────────────────────
-streamlit>=1.36.0
+streamlit>=1.38.0  # 1.38 added st.segmented_control (used in chart toolbar)
 streamlit-autorefresh>=1.0.1
 
 # ── Data ─────────────────────────────────────────────────────────────────────

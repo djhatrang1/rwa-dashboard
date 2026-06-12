@@ -3447,11 +3447,19 @@ def _render_payments() -> None:
             hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
         ))
         y_max = float(tot.max() or 0)
+        # Pin x-axis to actual data range — Plotly's bar autoscale
+        # adds half-a-bar-width padding on each side, which reads as
+        # visible white gutters on the left and right edges of the
+        # chart. autorange=False + ISO date strings defeats it.
+        _xmin = df_view["date"].min().strftime("%Y-%m-%d")
+        _xmax = df_view["date"].max().strftime("%Y-%m-%d")
         fig.update_layout(
             barmode="stack",
             bargap=0.05,   # tiny gap between bars so daily edges read
             height=440, hovermode="x unified", showlegend=False,
             margin=dict(t=10, b=10, l=10, r=10),
+            xaxis=dict(range=[_xmin, _xmax], autorange=False,
+                        type="date"),
             yaxis=dict(showgrid=True, rangemode="tozero",
                         range=[0, y_max * 1.10] if y_max > 0 else None),
         )
@@ -3523,10 +3531,17 @@ def _render_payments() -> None:
                 hovertemplate="Solana: %{customdata}<extra></extra>",
             ))
             y_max = float(y.max() or 0)
+            # Pin x-axis to actual data range — defeats Plotly's
+            # bar-chart half-bar-width autoscale padding that
+            # otherwise shows as white gutters on the left/right.
+            _xmin = df_view["date"].min().strftime("%Y-%m-%d")
+            _xmax = df_view["date"].max().strftime("%Y-%m-%d")
             fig.update_layout(
                 height=400, hovermode="x unified", showlegend=False,
                 bargap=0.05,
                 margin=dict(t=10, b=10, l=10, r=10),
+                xaxis=dict(range=[_xmin, _xmax], autorange=False,
+                            type="date"),
                 yaxis=dict(showgrid=True, rangemode="tozero",
                             range=[0, y_max * 1.10]
                                   if y_max > 0 else None),
@@ -3631,17 +3646,19 @@ def _render_payments() -> None:
                     lambda v: f"{int(v):,}"),
                 hovertemplate="Transfers: %{customdata}<extra></extra>",
             ))
-            # Pin the x-axis to the actual data range — Plotly's bar-
-            # chart autoscale pads ~3 months on each side by default,
-            # which on a 5.6-year series leaves a chunk of blank
-            # canvas before the first bar and after the last.
-            _xmin = df_view["date"].min()
-            _xmax = df_view["date"].max()
+            # Pin the x-axis to the actual data range. Setting `range`
+            # alone isn't enough — Plotly's bar-chart autoscale still
+            # pads half a bar-width-equivalent on each side. Also need
+            # `autorange=False` and ISO-string dates (not pandas
+            # Timestamps) so Plotly treats the range as authoritative.
+            _xmin = df_view["date"].min().strftime("%Y-%m-%d")
+            _xmax = df_view["date"].max().strftime("%Y-%m-%d")
             fig.update_layout(
                 height=400, hovermode="x unified",
                 margin=dict(t=10, b=10, l=10, r=10),
                 showlegend=False,
-                xaxis=dict(range=[_xmin, _xmax]),
+                xaxis=dict(range=[_xmin, _xmax], autorange=False,
+                            type="date"),
                 yaxis=dict(tickprefix="$", tickformat="~s",
                            showgrid=True, rangemode="tozero"),
                 yaxis2=dict(overlaying="y", side="right",
@@ -3739,15 +3756,16 @@ def _render_payments() -> None:
             ))
             y_max = float(tot.max() or 0)
             # Pin x-axis to actual data range — same fix as the
-            # vol+xfer chart above; Plotly's bar autoscale pads ~3
-            # months on each side of the data.
-            _xmin = df_view["date"].min()
-            _xmax = df_view["date"].max()
+            # vol+xfer chart above; need autorange=False + ISO
+            # strings to actually defeat Plotly's bar-chart padding.
+            _xmin = df_view["date"].min().strftime("%Y-%m-%d")
+            _xmax = df_view["date"].max().strftime("%Y-%m-%d")
             fig.update_layout(
                 height=400, hovermode="x unified",
                 margin=dict(t=10, b=10, l=10, r=10),
                 showlegend=False,
-                xaxis=dict(range=[_xmin, _xmax]),
+                xaxis=dict(range=[_xmin, _xmax], autorange=False,
+                            type="date"),
                 yaxis=dict(tickprefix="$", tickformat="~s",
                            showgrid=True, rangemode="tozero",
                            range=[0, y_max * 1.10] if y_max > 0 else None),

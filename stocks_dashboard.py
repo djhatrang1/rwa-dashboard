@@ -6716,18 +6716,17 @@ def _render_chart_toolbar(raw_key: str, stacked: bool,
        — flex-nowrap on the button-group prevents the 3 icon
          buttons from stacking vertically when the column is tight
          (Streamlit default flex-wrap: wrap kicks in at <90px). */
-    /* Left-align the segmented-control so its left edge aligns with
-       the chart title's left margin. Default Streamlit column
-       behavior already left-aligns content, but we make it
-       explicit + force `width: 100%` so the container always
-       starts at the column's left edge (some Streamlit versions
-       shrink-wrap stElementContainer when nested inside flex
-       parents). */
-    [class*="st-key-dwm_mode_"] {
-        display: flex !important;
-        justify-content: flex-start !important;
-        width: 100% !important;
+    /* Force the toolbar row's column gap to exactly 8px, regardless
+       of screen size. Default Streamlit column gap is ~16-32px
+       which leaves the mode-selector and time-selector visibly
+       distant. The chartwrap key prefix scopes this to toolbar
+       rows only — unrelated st.columns layouts keep their
+       default gap. */
+    [class*="st-key-chartwrap_"] [data-testid="stHorizontalBlock"] {
+        gap: 8px !important;
     }
+    /* Left-align the segmented_control + selectbox so they sit at
+       their column's left edge. */
     [class*="st-key-dwm_mode_"] [data-testid="stButtonGroup"] {
         width: auto !important;
         flex: 0 0 auto !important;
@@ -6757,7 +6756,7 @@ def _render_chart_toolbar(raw_key: str, stacked: bool,
         margin-top: 0 !important;
     }
     [class*="st-key-dwm_time_"] div[data-testid="stSelectbox"] {
-        max-width: 90px !important;
+        max-width: 72px !important;
     }
     [class*="st-key-dwm_time_"] div[data-testid="stSelectbox"] > div > div {
         height: 32px !important;
@@ -6798,7 +6797,7 @@ def _render_chart_toolbar(raw_key: str, stacked: bool,
     # ~75px regardless of viewport — the cluster reads the same at
     # any screen width.
     col_mode, col_time, _spacer, col_raw = st.columns(
-        [1.2, 1.0, 7.3, 0.5])
+        [1.0, 1.0, 7.5, 0.5])
     with col_mode:
         # segmented_control needs Streamlit >= 1.38. Fall back to
         # st.radio (horizontal) on older versions so cloud deploys

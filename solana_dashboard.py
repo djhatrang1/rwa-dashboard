@@ -81,7 +81,7 @@ treasury_pullers      = [p for p in pullers if getattr(p, "GROUP", "") == "treas
 # its data source nailed down.
 _VERTICALS = ["SOL token", "Stablecoins", "Lending", "RWA",
               "Foreign L1 tokens", "Prediction Markets", "Perp DEXs",
-              "DEX"]
+              "DEX", "Payments"]
 
 with st.sidebar:
     st.markdown(
@@ -3667,6 +3667,163 @@ def _render_dex() -> None:
     )
 
 
+# ── Payments vertical ──────────────────────────────────────────────────────
+# Live Paymentscan API — same `/chains/daily` endpoint the RWA
+# dashboard's Stablecoin Payments section already uses. The chart
+# here gives Solana's payment activity context vs other chains
+# (e.g. how Solana's share is growing or shrinking over time).
+# Solana's ribbon is highlighted with a stable bright color so it
+# stands out in the stack regardless of where it ranks.
+def _render_payments() -> None:
+    import paymentscan as _ps
+
+    st.markdown("## Payments")
+    st.caption(
+        "Crypto-card payment volume on Paymentscan, by settlement "
+        "**chain**. Source: [Paymentscan `/chains/daily`]"
+        "(https://paymentscan.xyz/api-docs). The chart is the cross-"
+        "chain stack — Solana's ribbon is the bright purple band so "
+        "its share is easy to track even when other chains grow. "
+        "For Solana-only card-issuer breakdown, see the 'Stablecoins' "
+        "vertical → Card issuer panel."
+    )
+
+    df, err = _ps.fetch("chains", "daily")
+    if df.empty:
+        st.warning(
+            f"Paymentscan /chains/daily returned no data. "
+            f"Reason: `{err or 'empty'}`")
+        return
+
+    # Long → wide: one column per chain, indexed by date.
+    df = df.copy()
+    df["date"] = _pd.to_datetime(df["date"], errors="coerce")
+    wide = (df.pivot_table(index="date", columns="chain",
+                            values="volumes", aggfunc="sum")
+              .sort_index()
+              .reset_index())
+    wide = wide.fillna(0)
+
+    # Top-12 chains by latest day's volume — same pattern as the RWA
+    # dashboard's existing chains chart — plus an Others rollup so the
+    # legend stays readable when Paymentscan adds new chains.
+    series = [c for c in wide.columns if c != "date"]
+    latest = wide.iloc[-1]
+    ranked = sorted(series,
+                    key=lambda c: float(latest.get(c, 0) or 0),
+                    reverse=True)
+    TOP_N = 12
+    top = ranked[:TOP_N]
+    tail = ranked[TOP_N:]
+    # Force Solana into the explicit ribbon set even if it ranks
+    # outside the top-N — this is the Solana dashboard, after all.
+    sol_col = next((c for c in series if c.lower() == "solana"), None)
+    if sol_col and sol_col not in top:
+        # Push out the smallest of the current top-N to keep cardinality
+        if top:
+            top[-1] = sol_col
+        else:
+            top.append(sol_col)
+        tail = [c for c in ranked if c not in top]
+    if tail:
+        wide["Others"] = wide[tail].fillna(0).sum(axis=1)
+        wide = wide.drop(columns=tail)
+    ordered = top + (["Others"] if tail else [])
+
+    # Stable palette — 12 hues + grey Others. Solana gets a bright
+    # purple so it pops in the stack at any size.
+    base_palette = [
+        "#4285F4", "#10B981", "#F97316", "#A78BFA",
+        "#EF4444", "#EC4899", "#14B8A6", "#FACC15",
+        "#F472B6", "#22D3EE", "#F87171", "#84CC16",
+    ]
+    colors, ci = {}, 0
+    for c in ordered:
+        if c == "Others":
+            colors[c] = "#888888"
+        elif sol_col and c == sol_col:
+            colors[c] = "#9333EA"   # purple, Solana-brand-ish
+        else:
+            colors[c] = base_palette[ci % len(base_palette)]
+            ci += 1
+
+    def _build_payments_fig(df_view):
+        fig = _go.Figure()
+        for col in reversed(ordered):
+            if col not in df_view.columns:
+                continue
+            y = df_view[col].fillna(0)
+            fig.add_trace(_go.Scatter(
+                x=df_view["date"], y=y, name=col, mode="lines",
+                line=dict(color=colors[col], width=0.9),
+                stackgroup="payments_chain",
+                customdata=y.map(sd._fmt_usd),
+                hovertemplate=f"{col}: %{{customdata}}<extra></extra>",
+            ))
+        present = [c for c in ordered if c in df_view.columns]
+        tot = df_view[present].fillna(0).sum(axis=1)
+        fig.add_trace(_go.Scatter(
+            x=df_view["date"], y=tot, name="Total", mode="lines",
+            line=dict(width=0, color="rgba(0,0,0,0)"),
+            showlegend=False, stackgroup=None,
+            customdata=tot.map(sd._fmt_usd),
+            hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+        ))
+        y_max = float(tot.max() or 0)
+        fig.update_layout(
+            height=440, hovermode="x unified", showlegend=False,
+            margin=dict(t=10, b=10, l=10, r=10),
+            yaxis=dict(showgrid=True, rangemode="tozero",
+                        range=[0, y_max * 1.10] if y_max > 0 else None),
+        )
+        return fig
+
+    raw_df = wide.copy()
+    raw_df["Total"] = wide[ordered].fillna(0).sum(axis=1).values
+
+    # Solana-share headline tile above the chart.
+    if sol_col:
+        sol_latest = float(latest.get(sol_col, 0) or 0)
+        total_latest = sum(float(latest.get(c, 0) or 0) for c in series)
+        share = (sol_latest / total_latest * 100) if total_latest else 0
+        # Top non-Solana chain
+        non_sol = [(c, float(latest.get(c, 0) or 0))
+                    for c in series if c != sol_col]
+        non_sol.sort(key=lambda kv: -kv[1])
+        next_chain, next_vol = non_sol[0] if non_sol else ("—", 0)
+        asof = _pd.to_datetime(latest["date"]).strftime("%Y-%m-%d")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Solana payment volume (latest)",
+                   sd._fmt_usd(sol_latest))
+        m2.metric("Solana share of all-chain volume",
+                   f"{share:.1f}%")
+        m3.metric(f"Next chain ({next_chain.title()})",
+                   sd._fmt_usd(next_vol))
+        m4.metric("Tracked chains",
+                   f"{len(series)}")
+        st.caption(f"As of {asof}.")
+        st.divider()
+
+    sd._chart_dwm_simple(
+        "Payment Volume by Chain",
+        source_df=wide,
+        build_fig=_build_payments_fig,
+        raw_df=raw_df.sort_values("date", ascending=False),
+        raw_key="payments_by_chain",
+        raw_filename="paymentscan_volume_by_chain",
+        caption=(
+            "Daily card-payment volume in USD per settlement chain, "
+            "stacked. Top 12 chains by latest day's volume shown "
+            "explicitly; Solana is force-included even if it ranks "
+            "outside the top 12. Remaining long-tail chains rolled "
+            "into **Others**. Source: [Paymentscan `/chains/daily`]"
+            "(https://paymentscan.xyz/api-docs)."
+        ),
+        col_aggs={c: "sum" for c in ordered},
+        legend_label="chains",
+    )
+
+
 # ── Dispatch ─────────────────────────────────────────────────────────────────
 if vertical == "SOL token":
     _render_sol_token()
@@ -3684,3 +3841,5 @@ elif vertical == "Perp DEXs":
     _render_perp_dexs()
 elif vertical == "DEX":
     _render_dex()
+elif vertical == "Payments":
+    _render_payments()

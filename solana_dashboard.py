@@ -1070,341 +1070,12 @@ def _render_stablecoins() -> None:
                               key_suffix="sd_others",
                               clip_outliers=True)
 
-    # ── Solana stablecoin PAYMENTS (Allium) ──────────────────────────────
-    # Two daily-cadence Allium queries scoped to Solana stablecoin
-    # payment flows (different table from the MC + DEX-volume above —
-    # these are merchant/peer transfers, not exchange / DEX trades).
-    # Source dashboard: same Allium stablecoin-payments collection used
-    # in the RWA dashboard's Stablecoin payments asset vertical, but
-    # filtered server-side to Solana-only here.
-    import allium as _allium
-    st.divider()
-    st.markdown("### Stablecoin Payments — Solana")
-
-    # ── Daily volume + transfer count overlay ────────────────────────────
-    # revision bumped v1 → v2 after the user re-edited the Allium query;
-    # invalidates the 4h @st.cache_data so the next page-load fetches
-    # the updated query result instead of returning the stale cached one.
-    _spv_df, _spv_err = _allium.fetch_allium_query_results(
-        "mE86r6b8d6RYWwvTfq2p", revision="v2")
-    if _spv_df.empty:
-        st.subheader("Daily Volume + Transfer Count")
-        st.caption(
-            "Source: Allium query "
-            "[`mE86r6b8d6RYWwvTfq2p`]"
-            "(https://app.allium.so/analyze/queries/mE86r6b8d6RYWwvTfq2p)."
-        )
-        st.info(f"No data. Reason: `{_spv_err or 'empty'}`")
-    else:
-        _spv_df = _spv_df.copy()
-        _spv_df["date"] = _pd.to_datetime(_spv_df["date"],
-                                          errors="coerce")
-        _spv_df = _spv_df.sort_values("date").reset_index(drop=True)
-
-        # Closure builds the figure for each D/W/M view. Passed
-        # skip_yaxis_format=True through _chart_dwm_simple so
-        # _chart() preserves the per-axis tickprefix instead of
-        # rewriting yaxis2's ticktext to '$N' (transfer count is a
-        # raw integer, not USD).
-        def _build_spv_fig(df_view):
-            fig = _go.Figure()
-            fig.add_trace(_go.Bar(
-                x=df_view["date"], y=df_view["total_volume_usd"],
-                name="Volume (USD)",
-                marker_color="#9945FF", opacity=0.85,
-                customdata=df_view["total_volume_usd"].map(sd._fmt_usd),
-                hovertemplate="Volume: %{customdata}<extra></extra>",
-            ))
-            fig.add_trace(_go.Scatter(
-                x=df_view["date"], y=df_view["transfer_count"],
-                name="Transfer Count",
-                mode="lines+markers",
-                line=dict(color="#14F195", width=1.5),
-                marker=dict(color="#14F195", size=4),
-                yaxis="y2",
-                customdata=df_view["transfer_count"].map(
-                    lambda v: f"{int(v):,}"),
-                hovertemplate="Transfers: %{customdata}<extra></extra>",
-            ))
-            fig.update_layout(
-                height=400, hovermode="x unified",
-                margin=dict(t=10, b=10, l=10, r=10),
-                showlegend=False,
-                yaxis=dict(tickprefix="$", tickformat="~s",
-                           showgrid=True, rangemode="tozero"),
-                yaxis2=dict(overlaying="y", side="right",
-                            showgrid=False, tickformat="~s",
-                            rangemode="tozero"),
-            )
-            return fig
-
-        sd._chart_dwm_simple(
-            "Daily Volume + Transfer Count",
-            source_df=_spv_df,
-            build_fig=_build_spv_fig,
-            raw_df=_spv_df,
-            raw_key="sd_stable_pay_vol_xfer",
-            raw_filename="sol_stable_payments_vol_transfers",
-            raw_fmt={"total_volume_usd": "${:,.0f}",
-                     "transfer_count": "{:,}"},
-            caption=(
-                "Daily Solana stablecoin payment volume (USD, left "
-                "axis) and transfer count (right axis). Source: "
-                "Allium query [`mE86r6b8d6RYWwvTfq2p`]"
-                "(https://app.allium.so/analyze/queries/mE86r6b8d6RYWwvTfq2p)."
-            ),
-            col_aggs={"total_volume_usd": "sum",
-                       "transfer_count":   "sum"},
-            skip_yaxis_format=True,
-        )
-
-    st.divider()
-    # ── Daily volume by flow category (stacked area) ─────────────────────
-    # revision bumped v1 → v2 — see vol+xfer chart above for rationale.
-    _spc_df, _spc_err = _allium.fetch_allium_query_results(
-        "mR8Xtm7pKCv1C0VVvb6E", revision="v2")
-    if _spc_df.empty:
-        st.subheader("Daily Volume by Flow Category")
-        st.caption(
-            "Source: Allium query [`mR8Xtm7pKCv1C0VVvb6E`]"
-            "(https://app.allium.so/analyze/queries/mR8Xtm7pKCv1C0VVvb6E)."
-        )
-        st.info(f"No data. Reason: `{_spc_err or 'empty'}`")
-    else:
-        _spc_df = _spc_df.copy()
-        _spc_df["date"] = _pd.to_datetime(_spc_df["date"],
-                                          errors="coerce")
-        _spc_df = _spc_df.sort_values("date").reset_index(drop=True)
-        _CAT_LABEL = {
-            "c2c_volume":     "C2C",
-            "c2b_volume":     "C2B",
-            "b2c_volume":     "B2C",
-            "b2b_i2c_volume": "B2B / I2C",
-        }
-        _CAT_COLORS = {
-            "C2C":       "#10B981",  # emerald
-            "C2B":       "#4285F4",  # blue
-            "B2C":       "#A78BFA",  # lavender
-            "B2B / I2C": "#F97316",  # orange
-        }
-        _spc_df = _spc_df.rename(columns=_CAT_LABEL)
-        _cats = list(_CAT_LABEL.values())
-        # Stack order computed off the FULL (daily) df so the D/W/M
-        # tabs don't reshuffle band order between granularities.
-        _latest = _spc_df.iloc[-1].fillna(0)
-        _ordered = sorted(_cats,
-                          key=lambda c: float(_latest.get(c, 0) or 0),
-                          reverse=True)
-
-        def _build_spc_fig(df_view):
-            fig = _go.Figure()
-            for cat in reversed(_ordered):
-                if cat not in df_view.columns:
-                    continue
-                color = _CAT_COLORS.get(cat, "#888888")
-                y = df_view[cat].fillna(0)
-                fig.add_trace(_go.Scatter(
-                    x=df_view["date"], y=y, name=cat,
-                    mode="lines",
-                    line=dict(color=color, width=0.9),
-                    stackgroup="spc",
-                    customdata=y.map(sd._fmt_usd),
-                    hovertemplate=f"{cat}: %{{customdata}}<extra></extra>",
-                ))
-            present = [c for c in _ordered if c in df_view.columns]
-            tot = df_view[present].fillna(0).sum(axis=1)
-            fig.add_trace(_go.Scatter(
-                x=df_view["date"], y=tot, name="Total",
-                mode="lines",
-                line=dict(width=0, color="rgba(0,0,0,0)"),
-                showlegend=False, stackgroup=None,
-                customdata=tot.map(sd._fmt_usd),
-                hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
-            ))
-            y_max = float(tot.max() or 0)
-            fig.update_layout(
-                height=400, hovermode="x unified",
-                margin=dict(t=10, b=10, l=10, r=10),
-                showlegend=False,
-                yaxis=dict(tickprefix="$", tickformat="~s",
-                           showgrid=True, rangemode="tozero",
-                           range=[0, y_max * 1.10] if y_max > 0 else None),
-            )
-            return fig
-
-        _spc_raw = _spc_df.copy()
-        _spc_raw["Total"] = (_spc_df[_ordered].fillna(0).sum(axis=1).values)
-        sd._chart_dwm_simple(
-            "Daily Volume by Flow Category",
-            source_df=_spc_df,
-            build_fig=_build_spc_fig,
-            raw_df=_spc_raw,
-            raw_key="sd_stable_pay_by_cat",
-            raw_filename="sol_stable_payments_by_category",
-            raw_fmt={c: "${:,.0f}" for c in _cats + ["Total"]},
-            caption=(
-                "Daily Solana stablecoin payment volume split into "
-                "four flow categories: **C2C** (consumer-to-consumer), "
-                "**C2B** (consumer-to-business), **B2C** (business-to-"
-                "consumer), **B2B/I2C** (business-to-business / "
-                "institutional-to-consumer). Source: Allium query "
-                "[`mR8Xtm7pKCv1C0VVvb6E`]"
-                "(https://app.allium.so/analyze/queries/mR8Xtm7pKCv1C0VVvb6E)."
-            ),
-            col_aggs={c: "sum" for c in _cats},
-        )
-
-    # ── Paymentscan: Solana card-payment volume by card issuer ───────────
-    # Companion view to the Allium charts above — same vertical (payment
-    # flows on Solana stablecoins) but a different lens: who's issuing
-    # the cards being swiped, not what kind of flow it is.
-    #
-    # Limitation we're honest about: Paymentscan's PUBLIC REST API
-    # (https://paymentscan.xyz/api-docs) doesn't expose a chain ×
-    # issuer crosstab. The two query params it supports are
-    # `includeTopups` and `includeOffchainData`; everything else
-    # returns the same global rows regardless of any `chain=` hint.
-    # Their own UI (https://paymentscan.xyz/chains/solana) DOES show
-    # a Solana-filtered per-issuer chart — but it's powered by an
-    # undocumented SolidStart `/_server` action, not the public API.
-    # The user's rule is "no data from sources I don't dictate", so
-    # we stick to the documented endpoints.
-    #
-    # Approach: filter /projects/daily to a hand-curated set of
-    # SOLANA-NATIVE cards (their full /projects volume IS their Solana
-    # volume because they don't operate on other chains). Multi-chain
-    # issuers (KAST / RedotPay / MetaMask / Tria / Bitget Wallet /
-    # Holyheld) are excluded — adding them would overcount Solana's
-    # share because we can't strip the other-chain portion.
-    st.divider()
-    st.markdown("### Stablecoin Payment Cards — Solana Card Issuers")
-    import paymentscan as _ps
-    # Curated as of June 2026 from Paymentscan's project catalogue
-    # and the Solana payment-cards UI (Phantom Cash, Solflare, Solayer
-    # are Solana wallet-issued cards; Cypher is the Cypher Protocol
-    # Solana spending card). Add more here as Solana-only cards
-    # appear in Paymentscan's catalogue.
-    _SOLANA_NATIVE_PROJECTS = ["Phantom Cash", "Solflare", "Solayer",
-                                "Cypher"]
-    # Solana-themed colors so the chart reads visually as "Solana"
-    # — purple/green echo the Solana brand palette used elsewhere
-    # on this dashboard.
-    _SOLANA_PROJECT_COLORS = {
-        "Phantom Cash": "#9945FF",   # phantom purple / Solana brand
-        "Solflare":     "#FFB800",   # solflare amber
-        "Solayer":      "#14F195",   # solana green
-        "Cypher":       "#4285F4",   # blue (cypher protocol brand)
-    }
-    _psol_df, _psol_err = _ps.fetch("projects", "daily")
-    if _psol_df.empty:
-        st.caption(
-            "Source: [Paymentscan /projects/daily]"
-            "(https://paymentscan.xyz/api-docs)."
-        )
-        st.info(f"No data. Reason: `{_psol_err or 'empty'}`")
-    else:
-        # Filter to Solana-native subset, pivot long→wide.
-        _filtered = _psol_df[
-            _psol_df["project"].isin(_SOLANA_NATIVE_PROJECTS)].copy()
-        if _filtered.empty:
-            st.info(
-                "Paymentscan returned data but none of the Solana-native "
-                f"projects ({', '.join(_SOLANA_NATIVE_PROJECTS)}) were "
-                "present. The catalogue may have changed — update "
-                "_SOLANA_NATIVE_PROJECTS in solana_dashboard.py."
-            )
-        else:
-            _filtered["date"] = _pd.to_datetime(_filtered["date"],
-                                                  errors="coerce")
-            _filtered["volumes"] = (_pd.to_numeric(_filtered["volumes"],
-                                                    errors="coerce")
-                                       .fillna(0))
-            _psol_wide = (_filtered.pivot_table(
-                index="date", columns="project",
-                values="volumes", aggfunc="sum")
-                .fillna(0))
-            # Sort bands by lifetime volume desc so the biggest issuer
-            # anchors the bottom of the stack (most readable).
-            _psol_totals = _psol_wide.sum(axis=0).sort_values(ascending=False)
-            _psol_ordered = list(_psol_totals.index)
-            _psol_wide = _psol_wide[_psol_ordered].reset_index()
-
-            def _build_psol_fig(df_view):
-                fig = _go.Figure()
-                # reversed() so largest band draws first → ends up at
-                # the BOTTOM of the stack (Plotly draws first-trace-low).
-                # Plotly's inline legend suppressed; per-series legend
-                # rendered via sd._legend_expander below the chart
-                # (project rule for new charts).
-                for proj in reversed(_psol_ordered):
-                    if proj not in df_view.columns:
-                        continue
-                    color = _SOLANA_PROJECT_COLORS.get(proj, "#888888")
-                    y = df_view[proj].fillna(0)
-                    fig.add_trace(_go.Scatter(
-                        x=df_view["date"], y=y, name=proj,
-                        mode="lines",
-                        line=dict(color=color, width=0.9),
-                        stackgroup="psol",
-                        customdata=y.map(sd._fmt_usd),
-                        hovertemplate=f"{proj}: %{{customdata}}<extra></extra>",
-                    ))
-                present = [c for c in _psol_ordered
-                            if c in df_view.columns]
-                tot = df_view[present].fillna(0).sum(axis=1)
-                fig.add_trace(_go.Scatter(
-                    x=df_view["date"], y=tot, name="Total",
-                    mode="lines",
-                    line=dict(width=0, color="rgba(0,0,0,0)"),
-                    showlegend=False, stackgroup=None,
-                    customdata=tot.map(sd._fmt_usd),
-                    hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
-                ))
-                y_max = float(tot.max() or 0)
-                fig.update_layout(
-                    height=400, hovermode="x unified",
-                    margin=dict(t=10, b=10, l=10, r=10),
-                    showlegend=False,
-                    yaxis=dict(tickprefix="$", tickformat="~s",
-                                showgrid=True, rangemode="tozero",
-                                range=[0, y_max * 1.10] if y_max > 0 else None),
-                )
-                return fig
-
-            _psol_raw = _psol_wide.copy()
-            _psol_raw["Total"] = (_psol_wide[_psol_ordered].fillna(0)
-                                                            .sum(axis=1).values)
-            sd._chart_dwm_simple(
-                "Daily Volume by Solana Card Issuer",
-                source_df=_psol_wide,
-                build_fig=_build_psol_fig,
-                raw_df=_psol_raw.sort_values("date", ascending=False),
-                raw_key="sd_ps_solana_issuers",
-                raw_filename="sol_paymentscan_solana_issuers",
-                raw_fmt={c: "${:,.0f}"
-                          for c in _psol_ordered + ["Total"]},
-                caption=(
-                    "Daily card-payment volume per **Solana-native** "
-                    "card issuer (Phantom Cash, Solflare, Solayer, "
-                    "Cypher). Source: [Paymentscan /projects/daily]"
-                    "(https://paymentscan.xyz/api-docs).  \n"
-                    "**Note:** the Paymentscan public REST API "
-                    "doesn't expose a chain × issuer crosstab, so "
-                    "multi-chain issuers (KAST, RedotPay, MetaMask, "
-                    "Tria, Bitget Wallet, Holyheld, etc.) are excluded "
-                    "here — they DO carry Solana volume, but the "
-                    "endpoint returns their global totals only. For "
-                    "the full Solana-filtered view see Paymentscan's "
-                    "own page: [paymentscan.xyz/chains/solana]"
-                    "(https://paymentscan.xyz/chains/solana)."
-                ),
-                col_aggs={c: "sum" for c in _psol_ordered},
-            )
-            sd._legend_expander(
-                [(c, _SOLANA_PROJECT_COLORS.get(c, "#888888"))
-                 for c in _psol_ordered],
-                label="issuers")
-
+    # The Solana stablecoin payments charts (2 Allium + 1 Paymentscan
+    # card-issuer) moved out to the dedicated "Payments" vertical —
+    # see _render_payments(). They were a sub-section here originally,
+    # but with the Payments vertical now hosting the cross-chain
+    # Paymentscan stack the per-flow Allium views fit more naturally
+    # there alongside the rest of the payment data.
 
 # ── Foreign L1 tokens vertical — grouped by underlying asset class ────────────
 # Group by what the underlying asset IS, not the bridge tech. Same Bitcoin
@@ -3830,6 +3501,341 @@ def _render_payments() -> None:
         col_aggs={c: "sum" for c in ordered},
         legend_label="chains",
     )
+
+    # ── Solana-only daily payment volume (from /chains/daily) ──────────
+    # Same /chains/daily payload as above, filtered to Solana rows
+    # only. Single-series column chart so the Solana trajectory reads
+    # without competition from the chains crowding it in the stack.
+    if sol_col:
+        st.divider()
+        sol_df = df[df["chain"] == sol_col][["date", "volumes",
+                                                "txs", "users"]].copy()
+        sol_df = sol_df.sort_values("date").reset_index(drop=True)
+
+        def _build_sol_only_fig(df_view):
+            fig = _go.Figure()
+            y = df_view["volumes"].fillna(0)
+            fig.add_trace(_go.Bar(
+                x=df_view["date"], y=y,
+                name="Solana",
+                marker_color="#9333EA",   # Solana purple
+                customdata=y.map(sd._fmt_usd),
+                hovertemplate="Solana: %{customdata}<extra></extra>",
+            ))
+            y_max = float(y.max() or 0)
+            fig.update_layout(
+                height=400, hovermode="x unified", showlegend=False,
+                bargap=0.05,
+                margin=dict(t=10, b=10, l=10, r=10),
+                yaxis=dict(showgrid=True, rangemode="tozero",
+                            range=[0, y_max * 1.10]
+                                  if y_max > 0 else None),
+            )
+            return fig
+
+        sd._chart_dwm_simple(
+            "Solana Payment Volume (Paymentscan)",
+            source_df=sol_df,
+            build_fig=_build_sol_only_fig,
+            raw_df=sol_df.sort_values("date", ascending=False),
+            raw_key="payments_solana_only",
+            raw_filename="paymentscan_solana_only_volume",
+            caption=(
+                "Daily Solana card-payment volume (USD). Same "
+                "underlying data as the cross-chain stack above, "
+                "filtered to Solana rows only. Source: [Paymentscan "
+                "`/chains/daily`]"
+                "(https://paymentscan.xyz/api-docs)."
+            ),
+            col_aggs={"volumes": "sum", "txs": "sum", "users": "sum"},
+        )
+
+    # ── Solana stablecoin PAYMENTS (Allium) ──────────────────────────────
+    # Two daily-cadence Allium queries scoped to Solana stablecoin
+    # payment flows (different table from DEX volume — these are
+    # merchant/peer transfers, not exchange trades). Source dashboard:
+    # same Allium stablecoin-payments collection used in the RWA
+    # dashboard's Stablecoin payments asset vertical, filtered
+    # server-side to Solana-only here.
+    import allium as _allium
+    st.divider()
+    st.markdown("### Solana stablecoin payments (Allium)")
+
+    # ── Daily volume + transfer count overlay ────────────────────────────
+    # revision bumped v1 → v2 after the user re-edited the Allium query;
+    # invalidates the 4h @st.cache_data so the next page-load fetches
+    # the updated query result instead of returning the stale cached one.
+    _spv_df, _spv_err = _allium.fetch_allium_query_results(
+        "mE86r6b8d6RYWwvTfq2p", revision="v2")
+    if _spv_df.empty:
+        st.subheader("Daily Volume + Transfer Count")
+        st.caption(
+            "Source: Allium query "
+            "[`mE86r6b8d6RYWwvTfq2p`]"
+            "(https://app.allium.so/analyze/queries/mE86r6b8d6RYWwvTfq2p)."
+        )
+        st.info(f"No data. Reason: `{_spv_err or 'empty'}`")
+    else:
+        _spv_df = _spv_df.copy()
+        _spv_df["date"] = _pd.to_datetime(_spv_df["date"],
+                                          errors="coerce")
+        _spv_df = _spv_df.sort_values("date").reset_index(drop=True)
+
+        def _build_spv_fig(df_view):
+            fig = _go.Figure()
+            fig.add_trace(_go.Bar(
+                x=df_view["date"], y=df_view["total_volume_usd"],
+                name="Volume (USD)",
+                marker_color="#9945FF", opacity=0.85,
+                customdata=df_view["total_volume_usd"].map(sd._fmt_usd),
+                hovertemplate="Volume: %{customdata}<extra></extra>",
+            ))
+            fig.add_trace(_go.Scatter(
+                x=df_view["date"], y=df_view["transfer_count"],
+                name="Transfer Count",
+                mode="lines+markers",
+                line=dict(color="#14F195", width=1.5),
+                marker=dict(color="#14F195", size=4),
+                yaxis="y2",
+                customdata=df_view["transfer_count"].map(
+                    lambda v: f"{int(v):,}"),
+                hovertemplate="Transfers: %{customdata}<extra></extra>",
+            ))
+            fig.update_layout(
+                height=400, hovermode="x unified",
+                margin=dict(t=10, b=10, l=10, r=10),
+                showlegend=False,
+                yaxis=dict(tickprefix="$", tickformat="~s",
+                           showgrid=True, rangemode="tozero"),
+                yaxis2=dict(overlaying="y", side="right",
+                            showgrid=False, tickformat="~s",
+                            rangemode="tozero"),
+            )
+            return fig
+
+        sd._chart_dwm_simple(
+            "Daily Volume + Transfer Count",
+            source_df=_spv_df,
+            build_fig=_build_spv_fig,
+            raw_df=_spv_df,
+            raw_key="sd_stable_pay_vol_xfer",
+            raw_filename="sol_stable_payments_vol_transfers",
+            raw_fmt={"total_volume_usd": "${:,.0f}",
+                     "transfer_count": "{:,}"},
+            caption=(
+                "Daily Solana stablecoin payment volume (USD, left "
+                "axis) and transfer count (right axis). Source: "
+                "Allium query [`mE86r6b8d6RYWwvTfq2p`]"
+                "(https://app.allium.so/analyze/queries/mE86r6b8d6RYWwvTfq2p)."
+            ),
+            col_aggs={"total_volume_usd": "sum",
+                       "transfer_count":   "sum"},
+            skip_yaxis_format=True,
+        )
+
+    st.divider()
+    # ── Daily volume by flow category (stacked area) ─────────────────────
+    _spc_df, _spc_err = _allium.fetch_allium_query_results(
+        "mR8Xtm7pKCv1C0VVvb6E", revision="v2")
+    if _spc_df.empty:
+        st.subheader("Daily Volume by Flow Category")
+        st.caption(
+            "Source: Allium query [`mR8Xtm7pKCv1C0VVvb6E`]"
+            "(https://app.allium.so/analyze/queries/mR8Xtm7pKCv1C0VVvb6E)."
+        )
+        st.info(f"No data. Reason: `{_spc_err or 'empty'}`")
+    else:
+        _spc_df = _spc_df.copy()
+        _spc_df["date"] = _pd.to_datetime(_spc_df["date"],
+                                          errors="coerce")
+        _spc_df = _spc_df.sort_values("date").reset_index(drop=True)
+        _CAT_LABEL = {
+            "c2c_volume":     "C2C",
+            "c2b_volume":     "C2B",
+            "b2c_volume":     "B2C",
+            "b2b_i2c_volume": "B2B / I2C",
+        }
+        _CAT_COLORS = {
+            "C2C":       "#10B981",  # emerald
+            "C2B":       "#4285F4",  # blue
+            "B2C":       "#A78BFA",  # lavender
+            "B2B / I2C": "#F97316",  # orange
+        }
+        _spc_df = _spc_df.rename(columns=_CAT_LABEL)
+        _cats = list(_CAT_LABEL.values())
+        _latest = _spc_df.iloc[-1].fillna(0)
+        _ordered = sorted(_cats,
+                          key=lambda c: float(_latest.get(c, 0) or 0),
+                          reverse=True)
+
+        def _build_spc_fig(df_view):
+            fig = _go.Figure()
+            for cat in reversed(_ordered):
+                if cat not in df_view.columns:
+                    continue
+                color = _CAT_COLORS.get(cat, "#888888")
+                y = df_view[cat].fillna(0)
+                fig.add_trace(_go.Scatter(
+                    x=df_view["date"], y=y, name=cat,
+                    mode="lines",
+                    line=dict(color=color, width=0.9),
+                    stackgroup="spc",
+                    customdata=y.map(sd._fmt_usd),
+                    hovertemplate=f"{cat}: %{{customdata}}<extra></extra>",
+                ))
+            present = [c for c in _ordered if c in df_view.columns]
+            tot = df_view[present].fillna(0).sum(axis=1)
+            fig.add_trace(_go.Scatter(
+                x=df_view["date"], y=tot, name="Total",
+                mode="lines",
+                line=dict(width=0, color="rgba(0,0,0,0)"),
+                showlegend=False, stackgroup=None,
+                customdata=tot.map(sd._fmt_usd),
+                hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+            ))
+            y_max = float(tot.max() or 0)
+            fig.update_layout(
+                height=400, hovermode="x unified",
+                margin=dict(t=10, b=10, l=10, r=10),
+                showlegend=False,
+                yaxis=dict(tickprefix="$", tickformat="~s",
+                           showgrid=True, rangemode="tozero",
+                           range=[0, y_max * 1.10] if y_max > 0 else None),
+            )
+            return fig
+
+        _spc_raw = _spc_df.copy()
+        _spc_raw["Total"] = (_spc_df[_ordered].fillna(0).sum(axis=1).values)
+        sd._chart_dwm_simple(
+            "Daily Volume by Flow Category",
+            source_df=_spc_df,
+            build_fig=_build_spc_fig,
+            raw_df=_spc_raw,
+            raw_key="sd_stable_pay_by_cat",
+            raw_filename="sol_stable_payments_by_category",
+            raw_fmt={c: "${:,.0f}" for c in _cats + ["Total"]},
+            caption=(
+                "Daily Solana stablecoin payment volume split into "
+                "four flow categories: **C2C** (consumer-to-consumer), "
+                "**C2B** (consumer-to-business), **B2C** (business-to-"
+                "consumer), **B2B/I2C** (business-to-business / "
+                "institutional-to-consumer). Source: Allium query "
+                "[`mR8Xtm7pKCv1C0VVvb6E`]"
+                "(https://app.allium.so/analyze/queries/mR8Xtm7pKCv1C0VVvb6E)."
+            ),
+            col_aggs={c: "sum" for c in _cats},
+        )
+
+    # ── HIDDEN: Daily Volume by Solana Card Issuer (Paymentscan) ─────────
+    # User-requested hide-toggle. Code kept in place wrapped in
+    # `if False:` so it's a one-line re-enable when wanted. Original
+    # caveats apply: Paymentscan's public REST doesn't expose a
+    # chain × issuer crosstab, so we hand-curate a Solana-native
+    # project list and filter /projects/daily on that.
+    if False:
+        st.divider()
+        st.markdown("### Solana Card Issuers (Paymentscan)")
+        _SOLANA_NATIVE_PROJECTS = ["Phantom Cash", "Solflare", "Solayer",
+                                    "Cypher"]
+        _SOLANA_PROJECT_COLORS = {
+            "Phantom Cash": "#9945FF",
+            "Solflare":     "#FFB800",
+            "Solayer":      "#14F195",
+            "Cypher":       "#4285F4",
+        }
+        _psol_df, _psol_err = _ps.fetch("projects", "daily")
+        if _psol_df.empty:
+            st.caption(
+                "Source: [Paymentscan /projects/daily]"
+                "(https://paymentscan.xyz/api-docs).")
+            st.info(f"No data. Reason: `{_psol_err or 'empty'}`")
+        else:
+            _filtered = _psol_df[
+                _psol_df["project"].isin(_SOLANA_NATIVE_PROJECTS)].copy()
+            if _filtered.empty:
+                st.info(
+                    "Paymentscan returned data but none of the Solana-"
+                    f"native projects ({', '.join(_SOLANA_NATIVE_PROJECTS)}) "
+                    "were present. Update _SOLANA_NATIVE_PROJECTS."
+                )
+            else:
+                _filtered["date"] = _pd.to_datetime(_filtered["date"],
+                                                      errors="coerce")
+                _filtered["volumes"] = (
+                    _pd.to_numeric(_filtered["volumes"],
+                                    errors="coerce").fillna(0))
+                _psol_wide = (_filtered.pivot_table(
+                    index="date", columns="project",
+                    values="volumes", aggfunc="sum")
+                    .fillna(0))
+                _psol_totals = (_psol_wide.sum(axis=0)
+                                .sort_values(ascending=False))
+                _psol_ordered = list(_psol_totals.index)
+                _psol_wide = _psol_wide[_psol_ordered].reset_index()
+
+                def _build_psol_fig(df_view):
+                    fig = _go.Figure()
+                    for proj in reversed(_psol_ordered):
+                        if proj not in df_view.columns:
+                            continue
+                        color = _SOLANA_PROJECT_COLORS.get(proj, "#888888")
+                        y = df_view[proj].fillna(0)
+                        fig.add_trace(_go.Scatter(
+                            x=df_view["date"], y=y, name=proj,
+                            mode="lines",
+                            line=dict(color=color, width=0.9),
+                            stackgroup="psol",
+                            customdata=y.map(sd._fmt_usd),
+                            hovertemplate=(
+                                f"{proj}: %{{customdata}}<extra></extra>"),
+                        ))
+                    present = [c for c in _psol_ordered
+                                if c in df_view.columns]
+                    tot = df_view[present].fillna(0).sum(axis=1)
+                    fig.add_trace(_go.Scatter(
+                        x=df_view["date"], y=tot, name="Total",
+                        mode="lines",
+                        line=dict(width=0, color="rgba(0,0,0,0)"),
+                        showlegend=False, stackgroup=None,
+                        customdata=tot.map(sd._fmt_usd),
+                        hovertemplate=(
+                            "<b>Total: %{customdata}</b><extra></extra>"),
+                    ))
+                    y_max = float(tot.max() or 0)
+                    fig.update_layout(
+                        height=400, hovermode="x unified",
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        showlegend=False,
+                        yaxis=dict(tickprefix="$", tickformat="~s",
+                                    showgrid=True, rangemode="tozero",
+                                    range=[0, y_max * 1.10]
+                                          if y_max > 0 else None),
+                    )
+                    return fig
+
+                _psol_raw = _psol_wide.copy()
+                _psol_raw["Total"] = (_psol_wide[_psol_ordered]
+                                       .fillna(0).sum(axis=1).values)
+                sd._chart_dwm_simple(
+                    "Daily Volume by Solana Card Issuer",
+                    source_df=_psol_wide,
+                    build_fig=_build_psol_fig,
+                    raw_df=_psol_raw.sort_values("date", ascending=False),
+                    raw_key="sd_ps_solana_issuers",
+                    raw_filename="sol_paymentscan_solana_issuers",
+                    raw_fmt={c: "${:,.0f}"
+                              for c in _psol_ordered + ["Total"]},
+                    caption=(
+                        "Daily card-payment volume per **Solana-native** "
+                        "card issuer. Source: [Paymentscan /projects/daily]"
+                        "(https://paymentscan.xyz/api-docs)."
+                    ),
+                    col_aggs={c: "sum" for c in _psol_ordered},
+                )
+                sd._legend_expander(
+                    [(c, _SOLANA_PROJECT_COLORS.get(c, "#888888"))
+                     for c in _psol_ordered],
+                    label="issuers")
 
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────

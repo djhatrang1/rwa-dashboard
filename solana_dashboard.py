@@ -502,7 +502,21 @@ def _fetch_solana_lending_catalog() -> _pd.DataFrame:
 @st.cache_data(ttl=3600, show_spinner=False)
 def _fetch_solana_lending_history(slug: str) -> _pd.DataFrame:
     """Per-protocol historical supply + borrow on Solana from
-    DefiLlama /protocol/{slug}. Returns DataFrame[date, supply, borrow]."""
+    DefiLlama /protocol/{slug}. Returns DataFrame[date, supply, borrow]
+    where `supply` is GROSS deposits (matches Kamino/Aave/Compound UI
+    semantics: total deposited, not deposits-minus-borrows).
+
+    DefiLlama subtlety: `chainTvls.Solana.tvl` is NET (deposits −
+    borrows), NOT gross supply — the canonical "TVL" definition.
+    `chainTvls.Solana-borrowed.tvl` is the borrow side. To match what
+    users see on the protocol's own UI (and what most lending
+    dashboards label "Supplied"), we sum: gross = net + borrowed.
+
+    SOL on Kamino (2026-06-11) demonstrates the size of the gap:
+      net    = $15.78M  (DefiLlama Solana.tvl[SOL])
+      borrow = $184.76M (DefiLlama Solana-borrowed.tvl[SOL])
+      gross  = $200.5M  ← matches Kamino UI's ~$190M
+    """
     try:
         r = _requests.get(f"https://api.llama.fi/protocol/{slug}", timeout=30)
         r.raise_for_status()
@@ -512,11 +526,14 @@ def _fetch_solana_lending_history(slug: str) -> _pd.DataFrame:
     ct = d.get("chainTvls", {})
     sup_pts = (ct.get("Solana") or {}).get("tvl", []) or []
     bor_pts = (ct.get("Solana-borrowed") or {}).get("tvl", []) or []
-    sup_map = {int(p["date"]): float(p.get("totalLiquidityUSD") or 0) for p in sup_pts}
-    bor_map = {int(p["date"]): float(p.get("totalLiquidityUSD") or 0) for p in bor_pts}
-    all_ts = sorted(set(sup_map) | set(bor_map))
-    rows = [{"date": _pd.to_datetime(t, unit="s"),
-             "supply": sup_map.get(t, 0.0),
+    net_map = {int(p["date"]): float(p.get("totalLiquidityUSD") or 0)
+                for p in sup_pts}
+    bor_map = {int(p["date"]): float(p.get("totalLiquidityUSD") or 0)
+                for p in bor_pts}
+    all_ts = sorted(set(net_map) | set(bor_map))
+    # supply = net + borrow (gross deposits); borrow stays as is.
+    rows = [{"date":   _pd.to_datetime(t, unit="s"),
+             "supply": net_map.get(t, 0.0) + bor_map.get(t, 0.0),
              "borrow": bor_map.get(t, 0.0)} for t in all_ts]
     return _pd.DataFrame(rows)
 
@@ -609,22 +626,28 @@ def _fetch_lending_per_asset_history(slug: str, top_n: int = 20) -> tuple:
         if a and a not in seen:
             top_assets.append(a); seen.add(a)
 
-    # Build wide frame
+    # Build wide frame. `supply_<TOKEN>` is GROSS deposits per token,
+    # not the DefiLlama-default net (deposits − borrows). Mirrors the
+    # convention every lending protocol's UI uses (Kamino, Aave, etc.).
+    # See `_fetch_solana_lending_history` docstring for the SOL example.
     rows: dict[int, dict] = {}
-    for p in sup_pts:
-        ts = int(p["date"]); tokens = p.get("tokens") or {}
-        rows.setdefault(ts, {})
+    all_ts = sorted(set(sup_by_ts) | set(bor_by_ts))
+    for ts in all_ts:
+        sup_tok = sup_by_ts.get(ts, {})
+        bor_tok = bor_by_ts.get(ts, {})
+        row = rows.setdefault(ts, {})
         for a in top_assets:
-            rows[ts][f"supply_{a}"] = float(tokens.get(a, 0) or 0)
-        rows[ts]["supply_others"] = float(sum(
-            v for k, v in tokens.items() if k not in top_assets and v))
-    for p in bor_pts:
-        ts = int(p["date"]); tokens = p.get("tokens") or {}
-        rows.setdefault(ts, {})
-        for a in top_assets:
-            rows[ts][f"borrow_{a}"] = float(tokens.get(a, 0) or 0)
-        rows[ts]["borrow_others"] = float(sum(
-            v for k, v in tokens.items() if k not in top_assets and v))
+            s = float(sup_tok.get(a, 0) or 0)
+            b = float(bor_tok.get(a, 0) or 0)
+            row[f"supply_{a}"] = s + b   # gross
+            row[f"borrow_{a}"] = b
+        # Others bucket — same gross-vs-borrow split for unnamed long-tail.
+        sup_others = sum(float(v or 0) for k, v in sup_tok.items()
+                          if k not in top_assets)
+        bor_others = sum(float(v or 0) for k, v in bor_tok.items()
+                          if k not in top_assets)
+        row["supply_others"] = sup_others + bor_others   # gross
+        row["borrow_others"] = bor_others
 
     wide_rows = []
     for ts in sorted(rows):

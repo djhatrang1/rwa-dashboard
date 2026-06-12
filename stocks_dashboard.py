@@ -6716,17 +6716,16 @@ def _render_chart_toolbar(raw_key: str, stacked: bool,
        — flex-nowrap on the button-group prevents the 3 icon
          buttons from stacking vertically when the column is tight
          (Streamlit default flex-wrap: wrap kicks in at <90px). */
-    /* Right-align the segmented-control inside its column so the
-       widget sits flush against the column gap (next to the
-       selectbox) instead of being left-padded by unused column
-       width. Without this, a 2-icon segmented control in a 135px
-       column would leave 75px of empty space between itself and
-       the time selectbox. Targets the stElementContainer (the
-       div with the st-key-* class), forcing it to flex layout so
-       its child widget flows toward the right edge. */
+    /* Left-align the segmented-control so its left edge aligns with
+       the chart title's left margin. Default Streamlit column
+       behavior already left-aligns content, but we make it
+       explicit + force `width: 100%` so the container always
+       starts at the column's left edge (some Streamlit versions
+       shrink-wrap stElementContainer when nested inside flex
+       parents). */
     [class*="st-key-dwm_mode_"] {
         display: flex !important;
-        justify-content: flex-end !important;
+        justify-content: flex-start !important;
         width: 100% !important;
     }
     [class*="st-key-dwm_mode_"] [data-testid="stButtonGroup"] {
@@ -6799,7 +6798,7 @@ def _render_chart_toolbar(raw_key: str, stacked: bool,
     # ~75px regardless of viewport — the cluster reads the same at
     # any screen width.
     col_mode, col_time, _spacer, col_raw = st.columns(
-        [1.5, 1.1, 6.9, 0.5])
+        [1.2, 1.0, 7.3, 0.5])
     with col_mode:
         # segmented_control needs Streamlit >= 1.38. Fall back to
         # st.radio (horizontal) on older versions so cloud deploys

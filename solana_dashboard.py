@@ -3631,10 +3631,17 @@ def _render_payments() -> None:
                     lambda v: f"{int(v):,}"),
                 hovertemplate="Transfers: %{customdata}<extra></extra>",
             ))
+            # Pin the x-axis to the actual data range — Plotly's bar-
+            # chart autoscale pads ~3 months on each side by default,
+            # which on a 5.6-year series leaves a chunk of blank
+            # canvas before the first bar and after the last.
+            _xmin = df_view["date"].min()
+            _xmax = df_view["date"].max()
             fig.update_layout(
                 height=400, hovermode="x unified",
                 margin=dict(t=10, b=10, l=10, r=10),
                 showlegend=False,
+                xaxis=dict(range=[_xmin, _xmax]),
                 yaxis=dict(tickprefix="$", tickformat="~s",
                            showgrid=True, rangemode="tozero"),
                 yaxis2=dict(overlaying="y", side="right",
@@ -3731,10 +3738,16 @@ def _render_payments() -> None:
                 hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
             ))
             y_max = float(tot.max() or 0)
+            # Pin x-axis to actual data range — same fix as the
+            # vol+xfer chart above; Plotly's bar autoscale pads ~3
+            # months on each side of the data.
+            _xmin = df_view["date"].min()
+            _xmax = df_view["date"].max()
             fig.update_layout(
                 height=400, hovermode="x unified",
                 margin=dict(t=10, b=10, l=10, r=10),
                 showlegend=False,
+                xaxis=dict(range=[_xmin, _xmax]),
                 yaxis=dict(tickprefix="$", tickformat="~s",
                            showgrid=True, rangemode="tozero",
                            range=[0, y_max * 1.10] if y_max > 0 else None),

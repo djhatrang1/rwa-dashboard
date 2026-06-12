@@ -3748,29 +3748,37 @@ def _render_payments() -> None:
             ci += 1
 
     def _build_payments_fig(df_view):
+        # Stacked COLUMNS (vertical bars) instead of stacked area —
+        # discrete daily values read more clearly here than a smoothed
+        # area, especially because Paymentscan volume has high
+        # day-of-week variance.
         fig = _go.Figure()
         for col in reversed(ordered):
             if col not in df_view.columns:
                 continue
             y = df_view[col].fillna(0)
-            fig.add_trace(_go.Scatter(
-                x=df_view["date"], y=y, name=col, mode="lines",
-                line=dict(color=colors[col], width=0.9),
-                stackgroup="payments_chain",
+            fig.add_trace(_go.Bar(
+                x=df_view["date"], y=y, name=col,
+                marker_color=colors[col],
                 customdata=y.map(sd._fmt_usd),
                 hovertemplate=f"{col}: %{{customdata}}<extra></extra>",
             ))
         present = [c for c in ordered if c in df_view.columns]
         tot = df_view[present].fillna(0).sum(axis=1)
+        # Invisible scatter on top to surface a "Total" line in the
+        # hover tooltip for each x (Plotly's bar hover doesn't sum
+        # the stack automatically).
         fig.add_trace(_go.Scatter(
             x=df_view["date"], y=tot, name="Total", mode="lines",
             line=dict(width=0, color="rgba(0,0,0,0)"),
-            showlegend=False, stackgroup=None,
+            showlegend=False,
             customdata=tot.map(sd._fmt_usd),
             hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
         ))
         y_max = float(tot.max() or 0)
         fig.update_layout(
+            barmode="stack",
+            bargap=0.05,   # tiny gap between bars so daily edges read
             height=440, hovermode="x unified", showlegend=False,
             margin=dict(t=10, b=10, l=10, r=10),
             yaxis=dict(showgrid=True, rangemode="tozero",

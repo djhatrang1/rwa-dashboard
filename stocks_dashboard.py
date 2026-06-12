@@ -6644,9 +6644,13 @@ def _get_chart_mode_time(raw_key: str,
     return mode, time
 
 
-def _render_chart_toolbar(raw_key: str, stacked: bool) -> None:
-    """Render the mode + time-unit toolbar. State writes go to
-    `st.session_state[f"dwm_mode_{raw_key}"]` and `dwm_time_{raw_key}`
+def _render_chart_toolbar(raw_key: str, stacked: bool,
+                           raw_df: pd.DataFrame | None = None,
+                           raw_fmt: dict | None = None,
+                           raw_filename: str | None = None) -> None:
+    """Render the mode + time-unit toolbar AND the inline 📋 raw-data
+    button on a single row. State writes go to
+    `st.session_state[f"dwm_mode_{raw_key}"]` / `dwm_time_{raw_key}`
     via the widget keys, so the toolbar re-reads its own current state
     on the next rerun without us juggling on_change callbacks.
 
@@ -6654,11 +6658,14 @@ def _render_chart_toolbar(raw_key: str, stacked: bool) -> None:
     (single-series) charts hide it because 100% of one series is
     meaningless.
 
-    Layout: a 3-column row inside the chartwrap container. Left
-    column gets the mode radio (horizontal, label hidden); middle
-    column gets the time-unit selectbox; right column is empty so the
-    raw-data 📋 button (pinned top-right via the existing
-    `st-key-raw_*` CSS rule) has room.
+    Layout — four columns:
+      [Abs|Cum|%]  [Daily ▾]   <flex spacer>   📋
+
+    Display + time-unit selectors are tight together on the left
+    (Blockworks-style cluster); raw-data button sits on the right
+    edge of the same row. Uses a NEW button key prefix
+    `dwm_raw_inline_*` so the global `st-key-raw_*` absolute-position
+    rule doesn't fire — this row is naturally inline.
     """
     # Initialize state on first render so the widgets pick up the
     # default ("abs", "D") instead of None.
@@ -6671,16 +6678,11 @@ def _render_chart_toolbar(raw_key: str, stacked: bool) -> None:
         st.session_state[f"dwm_mode_{raw_key}"] = "abs"
 
     mode_opts = list(_MODE_OPTIONS) if stacked else ["abs", "cum"]
-    # Compact toolbar: segmented_control for mode (renders as button
-    # group, matches the Blockworks icon-row look) + selectbox for
-    # time. Wider toolbar columns so charts in a 2-column layout
-    # (lending stack + per-asset breakdown) still fit the controls
-    # in one row instead of vertically stacking.
-    #
-    # CSS scoped to .dwm-toolbar: shrinks the segmented_control
-    # buttons and the selectbox to single-line height; otherwise
-    # Streamlit's default 40px buttons crowd them out at half-width
-    # column sizes.
+    # CSS scoped to .dwm-toolbar shrinks the widgets to single-line
+    # height so they fit comfortably even in half-page columns
+    # (used by the 2-column lending/per-asset layout). Also styles
+    # the inline 📋 button to match the prior transparent
+    # borderless look that the absolute-positioned variant had.
     st.markdown("""
     <style>
     div.dwm-toolbar div[data-baseweb="segmented-control"] button {
@@ -6695,14 +6697,35 @@ def _render_chart_toolbar(raw_key: str, stacked: bool) -> None:
         min-height: 28px !important;
         font-size: 12px !important;
     }
+    /* Inline 📋 button — transparent, right-aligned, borderless.
+       Distinct key prefix so the global st-key-raw_* absolute-
+       positioning rule (used by legacy callsites) doesn't fire. */
+    [class*="st-key-dwm_raw_inline_"] {
+        text-align: right;
+    }
+    [class*="st-key-dwm_raw_inline_"] button {
+        background: transparent !important; border: none !important;
+        box-shadow: none !important;
+        color: rgba(255,255,255,0.65) !important;
+        min-height: 0 !important; height: auto !important;
+        padding: 2px 4px !important; font-size: 18px; line-height: 1;
+        margin-top: 4px !important;
+    }
+    [class*="st-key-dwm_raw_inline_"] button:hover {
+        color: rgba(255,255,255,0.95) !important;
+        background: transparent !important;
+    }
     </style>
     """, unsafe_allow_html=True)
     st.markdown('<div class="dwm-toolbar">', unsafe_allow_html=True)
-    # Wide mode + time columns, tiny spacer — the 📋 button is
-    # absolute-positioned via the chartwrap CSS, doesn't need a real
-    # column to land in. Keeps the segmented_control on one row even
-    # at half-page (2-column lending layout) widths.
-    col_mode, col_time, _spacer = st.columns([4.0, 3.0, 1.0])
+    # Tight left cluster + wide spacer + tiny raw button column.
+    # At full-page width (~900px) → mode 180px, time 162px, spacer
+    # ~513px, btn ~45px — "Daily/Weekly/…" all display in full at
+    # 162px. At half-page (2-col lending layout, ~450px) → mode
+    # 90px, time 81px, spacer 257px, btn 22px — selectbox truncates
+    # "Daily" → "D…" at half-page (acceptable; cluster stays tight).
+    col_mode, col_time, _spacer, col_raw = st.columns(
+        [2.0, 1.8, 5.7, 0.5])
     with col_mode:
         # segmented_control needs Streamlit >= 1.38. Fall back to
         # st.radio (horizontal) on older versions so cloud deploys
@@ -6730,6 +6753,10 @@ def _render_chart_toolbar(raw_key: str, stacked: bool) -> None:
             key=f"dwm_time_{raw_key}",
             label_visibility="collapsed",
         )
+    with col_raw:
+        if st.button("📋", key=f"dwm_raw_inline_{raw_key}",
+                     help="View raw data"):
+            _raw_data_modal(raw_df, raw_fmt, raw_filename or raw_key)
     st.markdown('</div>', unsafe_allow_html=True)
 
 
@@ -6849,10 +6876,12 @@ def _chart_dwm_simple(title: str, source_df: pd.DataFrame,
     if caption:
         st.caption(caption)
     with st.container(key=f"chartwrap_{raw_key}"):
-        if st.button("📋", key=f"raw_{raw_key}",
-                     help="View raw data"):
-            _raw_data_modal(raw_df, raw_fmt, raw_filename or raw_key)
-        _render_chart_toolbar(raw_key, stacked=stacked)
+        # Toolbar handles the inline 📋 button itself — no separate
+        # button render needed here. Old absolute-positioned button
+        # path retired.
+        _render_chart_toolbar(raw_key, stacked=stacked,
+                               raw_df=raw_df, raw_fmt=raw_fmt,
+                               raw_filename=raw_filename)
         mode, time_unit = _get_chart_mode_time(raw_key, stacked=stacked)
         # Pipeline: resample → mode transform → build_fig.
         df_view = _resample_dwm(source_df, time_unit, col_aggs=col_aggs)
@@ -6910,10 +6939,9 @@ def _chart_dwm_frame(title: str, *, raw_df: pd.DataFrame, raw_key: str,
     # Q + Y both fall back to M-active.
     active_idx = {"D": 0, "W": 1, "M": 2, "Q": 2, "Y": 2}[time_unit]
     with st.container(key=f"chartwrap_{raw_key}"):
-        if st.button("📋", key=f"raw_{raw_key}",
-                     help="View raw data"):
-            _raw_data_modal(raw_df, raw_fmt, raw_filename or raw_key)
-        _render_chart_toolbar(raw_key, stacked=stacked)
+        _render_chart_toolbar(raw_key, stacked=stacked,
+                               raw_df=raw_df, raw_fmt=raw_fmt,
+                               raw_filename=raw_filename)
         # Active container is a real st.container; the inactive ones
         # are empty containers that get cleared after the yield so
         # they never render to screen. This preserves the 3-yield

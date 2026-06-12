@@ -80,7 +80,8 @@ treasury_pullers      = [p for p in pullers if getattr(p, "GROUP", "") == "treas
 # documented in the module docstring; they'll appear here as each gets
 # its data source nailed down.
 _VERTICALS = ["SOL token", "Stablecoins", "Lending", "RWA",
-              "Foreign L1 tokens", "Prediction Markets", "Perp DEXs"]
+              "Foreign L1 tokens", "Prediction Markets", "Perp DEXs",
+              "DEX"]
 
 with st.sidebar:
     st.markdown(
@@ -3321,6 +3322,351 @@ def _render_perp_dexs() -> None:
     )
 
 
+# ── DEX vertical ─────────────────────────────────────────────────────────────
+# Solana DEX activity sourced from a Blockworks-style market-metrics
+# export (5 CSVs dropped into `solana_seeds/dex/` by the user).
+# Refresh by re-exporting the CSVs and replacing the files. Same seed-
+# only model as the rwa.xyz Tokenized Credit history chart — no live
+# API path here because the data isn't available through DefiLlama at
+# this granularity (per-venue / per-liquidity-protocol daily volume +
+# active-token counts).
+import os as _os_dex
+_DEX_SEED_DIR = _os_dex.path.join(
+    _os_dex.path.dirname(_os_dex.path.abspath(__file__)),
+    "solana_seeds", "dex")
+
+
+@st.cache_data(ttl=14_400, show_spinner=False)
+def _load_dex_seed(filename: str, clip: bool = True) -> _pd.DataFrame:
+    """Load one Solana DEX seed CSV under solana_seeds/dex/.
+
+    Returns a wide DataFrame: `date` (parsed from `unix_time`) plus
+    one column per series (chain / venue / liquidity protocol).
+    The redundant `date_time` column is dropped — `unix_time` is the
+    authoritative time field and disambiguates the DD-MM-YYYY vs
+    MM-DD-YYYY format. Returns empty DF if the file is missing.
+
+    `clip=True` (default) runs every series through
+    `_clip_outliers(factor=25, min_retained=0.5)`, the same helper
+    we apply to Birdeye volume on the Stablecoins / Foreign-L1
+    charts. The Blockworks-style export occasionally carries a
+    handful of glitch days (e.g. Solana 2026-04-06 → -08 reported
+    $90B → $271B → $442B per day vs the legitimate Jan-2025 peak
+    of $68B — clearly inflated by wash-trading or per-pool double-
+    counting). Clipping replaces those with NaN so they render as a
+    chart-gap rather than dominating the y-axis.
+
+    Pass `clip=False` to skip clipping when you need the raw seed
+    (e.g. when computing the headline-tile latest-day metric, where
+    a single bad row would mislead the tile)."""
+    path = _os_dex.path.join(_DEX_SEED_DIR, filename)
+    if not _os_dex.path.exists(path):
+        return _pd.DataFrame()
+    df = _pd.read_csv(path)
+    if "unix_time" not in df.columns:
+        return _pd.DataFrame()
+    df["date"] = _pd.to_datetime(df["unix_time"], unit="s")
+    drop = [c for c in ("unix_time", "date_time") if c in df.columns]
+    df = df.drop(columns=drop)
+    cols = ["date"] + [c for c in df.columns if c != "date"]
+    df = df[cols].sort_values("date").reset_index(drop=True)
+    if clip:
+        # Apply per-column outlier clipping to suppress single-day
+        # data-quality glitches. `_clip_outliers` is from
+        # stocks_dashboard.py (TokenGroupMetricsPuller staticmethod)
+        # — same factor / min_retained tuning used for Birdeye volume.
+        _clipper = sd.TokenGroupMetricsPuller._clip_outliers
+        for c in df.columns:
+            if c == "date":
+                continue
+            df[c] = _clipper(df[c], factor=25.0, min_retained=0.5)
+    return df
+
+
+def _dex_top_n_others(df: _pd.DataFrame, n: int = 12
+                      ) -> tuple[_pd.DataFrame, list[str]]:
+    """Collapse a wide DEX seed DF to top-N by latest value plus an
+    "Others" bucket. Unnamed columns (the export sometimes carries an
+    `Unnamed: 2` rollup) and any existing "Others" column get folded
+    into the new Others rollup, so the final stack has exactly
+    N+1 ribbons. Returns (modified_df, ordered_series_names)."""
+    series = [c for c in df.columns if c != "date"]
+    # Pre-existing rollup-ish columns we want to merge into Others.
+    pre_others = [c for c in series
+                  if c == "Others" or c.startswith("Unnamed")]
+    named = [c for c in series if c not in pre_others]
+    latest = df.iloc[-1]
+    ranked = sorted(named,
+                    key=lambda c: float(latest.get(c, 0) or 0),
+                    reverse=True)
+    top = ranked[:n]
+    tail = ranked[n:]
+    out = df.copy()
+    fold_cols = tail + pre_others
+    if fold_cols:
+        # Use any existing values + sum tail into the Others rollup
+        out["Others"] = out[fold_cols].fillna(0).sum(axis=1)
+    else:
+        out["Others"] = 0.0
+    keep = ["date"] + top + ["Others"]
+    return out[keep], top + ["Others"]
+
+
+_DEX_PALETTE = [
+    "#FF8C42", "#5BC0EB", "#7DCE82", "#9B5DE5", "#F15BB5",
+    "#FEE440", "#00BBF9", "#00F5D4", "#FB8B24", "#A4036F",
+    "#E84142", "#F3BA2F", "#0052FF", "#F7931A", "#9945FF",
+]
+
+
+def _build_dex_stack_fig(df_view: _pd.DataFrame, ordered: list[str],
+                         colors: dict[str, str], stack_id: str,
+                         fmt_mode: str = "currency") -> "go.Figure":
+    """Generic builder for a DEX stacked-area chart. `fmt_mode` =
+    'currency' for USD-volume charts, 'count' for active-token-count
+    charts (drops the $ from hover/tooltips)."""
+    fig = _go.Figure()
+    for col in reversed(ordered):
+        if col not in df_view.columns:
+            continue
+        y = df_view[col].fillna(0)
+        if fmt_mode == "currency":
+            custom = y.map(sd._fmt_usd)
+        else:
+            custom = y.map(lambda v: f"{int(v):,}" if v == v else "")
+        fig.add_trace(_go.Scatter(
+            x=df_view["date"], y=y, name=col, mode="lines",
+            line=dict(color=colors[col], width=0.8),
+            stackgroup=stack_id,
+            customdata=custom,
+            hovertemplate=f"{col}: %{{customdata}}<extra></extra>",
+        ))
+    present = [c for c in ordered if c in df_view.columns]
+    tot = df_view[present].fillna(0).sum(axis=1)
+    if fmt_mode == "currency":
+        tot_custom = tot.map(sd._fmt_usd)
+    else:
+        tot_custom = tot.map(lambda v: f"{int(v):,}" if v == v else "")
+    fig.add_trace(_go.Scatter(
+        x=df_view["date"], y=tot, name="Total", mode="lines",
+        line=dict(width=0, color="rgba(0,0,0,0)"),
+        showlegend=False, stackgroup=None,
+        customdata=tot_custom,
+        hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+    ))
+    y_max = float(tot.max() or 0)
+    fig.update_layout(
+        height=440, hovermode="x unified", showlegend=False,
+        margin=dict(t=10, b=10, l=10, r=10),
+        yaxis=dict(showgrid=True, rangemode="tozero",
+                    range=[0, y_max * 1.10] if y_max > 0 else None),
+    )
+    return fig
+
+
+def _render_dex_stacked_chart(seed_file: str, title: str, caption: str,
+                              raw_key: str, raw_filename: str,
+                              top_n: int = 12,
+                              fmt_mode: str = "currency",
+                              legend_label: str = "series",
+                              agg: str = "sum") -> None:
+    """One-shot helper: load a DEX seed, collapse to top-N + Others,
+    build a stacked-area chart through `_chart_dwm_simple` (= cardinal
+    chart-rule UX: slider + D/W/M + 📋 + legend). `agg` is the
+    Daily→Weekly/Monthly aggregation rule ('sum' for flows like
+    volume, 'last' for snapshot-like values)."""
+    raw = _load_dex_seed(seed_file)
+    if raw.empty:
+        st.warning(f"DEX seed missing: `solana_seeds/dex/{seed_file}`")
+        return
+    wide, ordered = _dex_top_n_others(raw, n=top_n)
+    colors = {}
+    for i, c in enumerate(ordered):
+        colors[c] = ("#888888" if c == "Others"
+                      else _DEX_PALETTE[i % len(_DEX_PALETTE)])
+    raw_df = wide.copy()
+    raw_df["Total"] = wide[ordered].fillna(0).sum(axis=1).values
+    sd._chart_dwm_simple(
+        title,
+        source_df=wide,
+        build_fig=lambda dv, _o=ordered, _c=colors, _s=raw_key,
+                          _f=fmt_mode: _build_dex_stack_fig(
+            dv, _o, _c, _s, _f),
+        raw_df=raw_df.sort_values("date", ascending=False),
+        raw_key=raw_key,
+        raw_filename=raw_filename,
+        caption=caption,
+        col_aggs={c: agg for c in ordered},
+        legend_label=legend_label,
+        fmt_mode=fmt_mode,
+    )
+
+
+def _render_dex() -> None:
+    """Solana DEX vertical — daily volume + active-token counts,
+    sliced by chain (cross-chain context), venue (aggregator / front-
+    end / bot UI), and liquidity protocol (underlying AMM).
+
+    All charts route through `_chart_dwm_simple` per the cardinal
+    chart rule. Data is seed-only — no live API, since the
+    granularity (per-venue / per-liquidity-protocol) isn't exposed
+    by DefiLlama. Refresh by re-exporting and replacing the CSVs
+    under `solana_seeds/dex/`."""
+    st.markdown("## DEX")
+    st.caption(
+        "Solana DEX activity sourced from a market-metrics CSV "
+        "export (5 seed files under `solana_seeds/dex/`). Volume is "
+        "USD, sum-aggregated by W/M; active-token counts are "
+        "uniques-per-period (also sum-aggregated for direct totals). "
+        "Refresh by re-exporting the CSVs and replacing them — same "
+        "model as the rwa.xyz Tokenized Credit history chart."
+    )
+
+    # ── Headline tiles from the latest day on the chain file ───────────
+    # Read RAW (no outlier-clip) since the latest day is a single point
+    # and we want to surface whatever value the export contained verbatim.
+    # Chart data below uses the clipped version (default).
+    chains = _load_dex_seed("market_metrics_volumeUSD.csv", clip=False)
+    if chains.empty:
+        st.warning("Chain seed missing — headline metrics unavailable.")
+    else:
+        latest = chains.iloc[-1]
+        date_disp = _pd.to_datetime(latest["date"]).strftime("%Y-%m-%d")
+        chain_cols = [c for c in chains.columns if c != "date"]
+        sol_vol = float(latest.get("solana", 0) or 0)
+        total_vol = sum(float(latest.get(c, 0) or 0) for c in chain_cols)
+        sol_share = (sol_vol / total_vol * 100) if total_vol else 0
+        # Top non-Solana chain by latest volume
+        non_sol = [(c, float(latest.get(c, 0) or 0))
+                    for c in chain_cols if c != "solana"]
+        non_sol.sort(key=lambda kv: -kv[1])
+        next_chain, next_vol = non_sol[0] if non_sol else ("—", 0)
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Solana DEX volume (latest)",
+                   sd._fmt_usd(sol_vol),
+                   help=f"As of {date_disp} from the chain seed.")
+        m2.metric("Share of all-chain DEX volume",
+                   f"{sol_share:.1f}%",
+                   help=f"Solana ${sol_vol/1e9:.2f}B of "
+                        f"${total_vol/1e9:.2f}B total.")
+        m3.metric(f"Next chain ({next_chain.title()})",
+                   sd._fmt_usd(next_vol),
+                   help="Largest non-Solana chain on the same day.")
+        m4.metric("Tracked chains",
+                   f"{len(chain_cols)}",
+                   help=f"Latest snapshot covers {len(chain_cols)} "
+                        "chains; long-tail chains may show $0 if no "
+                        "DEX is live there yet.")
+        st.caption(f"As of {date_disp}.")
+        st.divider()
+
+    # ── (1) Cross-chain DEX volume — Solana in context ────────────────
+    _render_dex_stacked_chart(
+        seed_file="market_metrics_volumeUSD.csv",
+        title="DEX Volume by Chain",
+        caption=(
+            "Daily DEX volume per chain, stacked. **Top 12** chains "
+            "by latest day's volume shown explicitly; remaining "
+            "long-tail chains rolled into **Others**. Single-day "
+            "values > 25× the per-chain median are clipped to NaN to "
+            "suppress data-quality glitches in the export (e.g. "
+            "Solana 2026-04-06 → -08 reported \\$90B / \\$271B / "
+            "\\$442B per day vs the legitimate Jan-2025 peak of "
+            "~\\$68B). "
+            "Source: `market_metrics_volumeUSD.csv`."
+        ),
+        raw_key="dex_volume_by_chain",
+        raw_filename="dex_volume_by_chain",
+        top_n=12,
+        fmt_mode="currency",
+        legend_label="chains",
+        agg="sum",
+    )
+
+    # ── (2) Volume by venue (aggregator / front-end / bot) ────────────
+    _render_dex_stacked_chart(
+        seed_file=(
+            "market_metrics_by_category_volumeUSD_venue.csv"),
+        title="Solana DEX Volume by Venue",
+        caption=(
+            "Daily Solana DEX volume by **venue** — where the order "
+            "originates (aggregators like Jupiter, front-end UIs like "
+            "Photon / Axiom, memecoin launchpads like Pump.fun, etc.). "
+            "Top 12 by latest day shown explicitly; remaining venues + "
+            "unnamed-pubkey routers rolled into **Others**. Note this "
+            "is venue-of-origin — a Jupiter swap that settles on "
+            "Raydium counts as Jupiter here and Raydium in the next "
+            "chart."
+        ),
+        raw_key="dex_volume_by_venue",
+        raw_filename="dex_volume_by_venue",
+        top_n=12,
+        fmt_mode="currency",
+        legend_label="venues",
+        agg="sum",
+    )
+
+    # ── (3) Volume by liquidity protocol (underlying AMM) ─────────────
+    _render_dex_stacked_chart(
+        seed_file=(
+            "market_metrics_by_category_volumeUSD_liquidity_protocol.csv"),
+        title="Solana DEX Volume by Liquidity Protocol",
+        caption=(
+            "Daily Solana DEX volume by **liquidity protocol** — "
+            "where the AMM actually lives (Raydium, Orca, Meteora "
+            "DLMM, Pump AMM, Lifinity, etc.). Top 12 by latest day "
+            "shown; rest rolled into **Others**. This is the routing "
+            "destination, so cumulative volume here = sum of venue-"
+            "originated swaps in the previous chart."
+        ),
+        raw_key="dex_volume_by_protocol",
+        raw_filename="dex_volume_by_protocol",
+        top_n=12,
+        fmt_mode="currency",
+        legend_label="protocols",
+        agg="sum",
+    )
+
+    # ── (4) Active trading tokens by venue ────────────────────────────
+    _render_dex_stacked_chart(
+        seed_file=(
+            "market_metrics_by_category_activeTradingTokens_venue.csv"),
+        title="Active Trading Tokens by Venue",
+        caption=(
+            "Distinct token count traded per day by **venue** — a "
+            "proxy for the breadth of long-tail / memecoin activity "
+            "each aggregator routes. Top 12 venues by latest count "
+            "shown; remaining rolled into **Others**."
+        ),
+        raw_key="dex_tokens_by_venue",
+        raw_filename="dex_active_tokens_by_venue",
+        top_n=12,
+        fmt_mode="count",
+        legend_label="venues",
+        agg="sum",
+    )
+
+    # ── (5) Active trading tokens by liquidity protocol ───────────────
+    _render_dex_stacked_chart(
+        seed_file=(
+            "market_metrics_by_category_activeTradingTokens_"
+            "liquidity_protocol.csv"),
+        title="Active Trading Tokens by Liquidity Protocol",
+        caption=(
+            "Distinct token count traded per day by **liquidity "
+            "protocol** — shows where the long-tail liquidity "
+            "actually sits. Top 12 protocols shown; rest into "
+            "**Others**."
+        ),
+        raw_key="dex_tokens_by_protocol",
+        raw_filename="dex_active_tokens_by_protocol",
+        top_n=12,
+        fmt_mode="count",
+        legend_label="protocols",
+        agg="sum",
+    )
+
+
 # ── Dispatch ─────────────────────────────────────────────────────────────────
 if vertical == "SOL token":
     _render_sol_token()
@@ -3336,3 +3682,5 @@ elif vertical == "Prediction Markets":
     _render_prediction_markets()
 elif vertical == "Perp DEXs":
     _render_perp_dexs()
+elif vertical == "DEX":
+    _render_dex()

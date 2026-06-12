@@ -4022,7 +4022,10 @@ def _render_sol_etf() -> None:
     # ── Cumulative Net Inflow (line) ──────────────────────────────
     def _build_cum_fig(df_view):
         fig = _go.Figure()
-        y = df_view["cum_net_inflow"].fillna(method="ffill").fillna(0)
+        # `.ffill()` replaces the older `.fillna(method="ffill")` —
+        # the method= kwarg was removed in pandas 3.0 (and is a
+        # FutureWarning since 2.1), which Cloud's pip resolved.
+        y = df_view["cum_net_inflow"].ffill().fillna(0)
         fig.add_trace(_go.Scatter(
             x=df_view["date"], y=y, name="Cumulative Net Inflow",
             mode="lines", fill="tozeroy",

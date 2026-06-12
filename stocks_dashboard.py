@@ -6906,6 +6906,40 @@ def _apply_pct_yaxis(fig) -> "go.Figure":
     return fig
 
 
+def _apply_pct_hover(fig) -> "go.Figure":
+    """Rewrite every trace's customdata to percentage-formatted
+    strings so the hover-tooltip reads `Solana: 9.4%` instead of the
+    `Solana: $9.44` the build_fig closures hardcode via _fmt_usd.
+
+    Hovertemplates in build_fig closures already reference
+    `%{customdata}` — we just swap what customdata contains. y values
+    are already 0–100 (transformed by _apply_chart_mode), so
+    formatting them with `f"{v:.1f}%"` is the right rendering.
+
+    The invisible 'Total' trace (added by every stacked chart
+    builder to surface the sum in hover-unified mode) goes through
+    the same loop: its y values sum to ~100 in percentage mode, so
+    `Total: 100.0%` reads cleanly.
+
+    Idempotent. Skips traces with no y or empty y so single-marker
+    annotation traces don't crash."""
+    for trace in fig.data:
+        y = getattr(trace, "y", None)
+        if y is None or len(y) == 0:
+            continue
+        try:
+            trace.customdata = [
+                f"{float(v):.1f}%" if v is not None else "—"
+                for v in y
+            ]
+        except Exception:
+            # Defensive — exotic trace types (Bar with categorical y,
+            # heatmaps, etc.) don't fit the model. Leave the original
+            # customdata alone so the chart still renders.
+            continue
+    return fig
+
+
 def _chart_dwm_simple(title: str, source_df: pd.DataFrame,
                       build_fig, *,
                       raw_df: pd.DataFrame, raw_key: str,
@@ -6970,6 +7004,7 @@ def _chart_dwm_simple(title: str, source_df: pd.DataFrame,
         fig = build_fig(df_view)
         if mode == "pct":
             _apply_pct_yaxis(fig)
+            _apply_pct_hover(fig)
         if legend_entries is None:
             legend_entries = _legend_entries_from_fig(fig)
         # Percentage mode replaces $ y-ticks with % — bypass the

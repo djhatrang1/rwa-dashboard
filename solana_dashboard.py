@@ -81,7 +81,7 @@ treasury_pullers      = [p for p in pullers if getattr(p, "GROUP", "") == "treas
 # its data source nailed down.
 _VERTICALS = ["SOL token", "Stablecoins", "Lending", "RWA",
               "Foreign L1 tokens", "Prediction Markets", "Perp DEXs",
-              "DEX", "Payments"]
+              "DEX", "Payments", "SOL ETF"]
 
 with st.sidebar:
     st.markdown(
@@ -3905,6 +3905,222 @@ def _render_payments() -> None:
                     label="issuers")
 
 
+def _render_sol_etf() -> None:
+    """SOL ETF vertical — aggregate SoSoValue data across every U.S.-
+    listed Solana spot ETF. Three charts:
+
+      1. Daily Net Inflow (column, signed — green for +ve days,
+         red for -ve days)
+      2. Cumulative Net Inflow (single-series area-style line)
+      3. Daily Trading Volume (column)
+
+    All three come from one SoSoValue endpoint
+    (`/etfs/summary-history?symbol=SOL`), so a single fetch fills
+    the whole page. The fetcher already dedupes data-revision rows
+    by date and handles disk-snapshot fallback.
+
+    Headline tiles show the most recent day's totals + the catalog
+    of ETFs feeding the aggregate."""
+    import sosovalue as _sosovalue
+
+    st.title("SOL ETF")
+    st.caption(
+        "Aggregate flows across every U.S.-listed Solana spot ETF. "
+        "Source: [SoSoValue OpenAPI]"
+        "(https://sosovalue-1.gitbook.io/sosovalue-api-doc)."
+    )
+    st.divider()
+
+    df, err = _sosovalue.fetch_etf_summary_history(symbol="SOL")
+    if df.empty:
+        st.info(f"No SOL ETF data available. Reason: `{err or 'empty'}`")
+        return
+
+    # Surface a quiet seed-fallback notice so the user knows the data
+    # isn't fresh during an upstream outage. Live success shows nothing.
+    if err and err.startswith("seed-fallback"):
+        st.info("SoSoValue API unavailable — showing the most recent "
+                 "on-disk snapshot.")
+
+    # ── Headline tiles ────────────────────────────────────────────
+    df_sorted = df.sort_values("date").reset_index(drop=True)
+    latest = df_sorted.iloc[-1]
+    asof = _pd.to_datetime(latest["date"]).strftime("%Y-%m-%d") \
+        if "date" in latest else "—"
+    net = float(latest.get("total_net_inflow", 0) or 0)
+    cum = float(latest.get("cum_net_inflow", 0) or 0)
+    vol = float(latest.get("total_value_traded", 0) or 0)
+    aum = float(latest.get("total_net_assets", 0) or 0)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Latest day net inflow", sd._fmt_usd(net))
+    m2.metric("Cumulative net inflow", sd._fmt_usd(cum))
+    m3.metric("Latest day volume", sd._fmt_usd(vol))
+    m4.metric("Net assets (AUM)", sd._fmt_usd(aum))
+    st.caption(f"As of {asof}.")
+    st.divider()
+
+    # ── Daily Net Inflow (signed column) ──────────────────────────
+    def _build_inflow_fig(df_view):
+        fig = _go.Figure()
+        # Per-bar coloring: green when inflow ≥ 0, red when -ve. The
+        # default Plotly bar lacks an "individually color a bar" API
+        # without trace-splitting, so we pass a list to marker_color.
+        colors = ["#10B981" if float(v or 0) >= 0 else "#EF4444"
+                   for v in df_view["total_net_inflow"]]
+        y = df_view["total_net_inflow"].fillna(0)
+        fig.add_trace(_go.Bar(
+            x=df_view["date"], y=y, name="Net Inflow",
+            marker_color=colors,
+            customdata=y.map(sd._fmt_usd),
+            hovertemplate="Net Inflow: %{customdata}<extra></extra>",
+        ))
+        _xmin = df_view["date"].min().strftime("%Y-%m-%d")
+        _xmax = df_view["date"].max().strftime("%Y-%m-%d")
+        # Symmetric y-range around zero so the +/- bars share visual
+        # weight — important for an instrument with mixed-sign flows.
+        y_abs = float(y.abs().max() or 0) * 1.15
+        fig.update_layout(
+            height=420, hovermode="x unified", showlegend=False,
+            bargap=0.15,
+            margin=dict(t=10, b=10, l=10, r=10),
+            xaxis=dict(range=[_xmin, _xmax], autorange=False,
+                        type="date"),
+            yaxis=dict(showgrid=True,
+                        range=[-y_abs, y_abs] if y_abs > 0 else None,
+                        zeroline=True, zerolinecolor="#888888",
+                        zerolinewidth=1),
+        )
+        return fig
+
+    sd._chart_dwm_simple(
+        "Daily Net Inflow",
+        source_df=df_sorted,
+        build_fig=_build_inflow_fig,
+        raw_df=df_sorted.sort_values("date", ascending=False),
+        raw_key="sol_etf_net_inflow",
+        raw_filename="sol_etf_net_inflow",
+        raw_fmt={"total_net_inflow": "${:,.0f}",
+                  "total_value_traded": "${:,.0f}",
+                  "total_net_assets": "${:,.0f}",
+                  "cum_net_inflow": "${:,.0f}"},
+        caption=(
+            "Aggregate daily net flow across all 8 U.S. Solana spot "
+            "ETFs. Positive = net subscriptions; negative = net "
+            "redemptions. Source: SoSoValue `/etfs/summary-history`."
+        ),
+        col_aggs={"total_net_inflow": "sum",
+                   "total_value_traded": "sum",
+                   "total_net_assets": "last",
+                   "cum_net_inflow": "last"},
+        legend_entries=[("Net Inflow (+)", "#10B981"),
+                         ("Net Outflow (−)", "#EF4444")],
+    )
+    st.divider()
+
+    # ── Cumulative Net Inflow (line) ──────────────────────────────
+    def _build_cum_fig(df_view):
+        fig = _go.Figure()
+        y = df_view["cum_net_inflow"].fillna(method="ffill").fillna(0)
+        fig.add_trace(_go.Scatter(
+            x=df_view["date"], y=y, name="Cumulative Net Inflow",
+            mode="lines", fill="tozeroy",
+            line=dict(color="#9333EA", width=2),
+            fillcolor="rgba(147, 51, 234, 0.18)",
+            customdata=y.map(sd._fmt_usd),
+            hovertemplate=("Cum. Net Inflow: "
+                           "%{customdata}<extra></extra>"),
+        ))
+        _xmin = df_view["date"].min().strftime("%Y-%m-%d")
+        _xmax = df_view["date"].max().strftime("%Y-%m-%d")
+        y_max = float(y.max() or 0) * 1.10
+        fig.update_layout(
+            height=400, hovermode="x unified", showlegend=False,
+            margin=dict(t=10, b=10, l=10, r=10),
+            xaxis=dict(range=[_xmin, _xmax], autorange=False,
+                        type="date"),
+            yaxis=dict(showgrid=True, rangemode="tozero",
+                        range=[0, y_max] if y_max > 0 else None),
+        )
+        return fig
+
+    sd._chart_dwm_simple(
+        "Cumulative Net Inflow",
+        source_df=df_sorted,
+        build_fig=_build_cum_fig,
+        raw_df=df_sorted.sort_values("date", ascending=False),
+        raw_key="sol_etf_cum_inflow",
+        raw_filename="sol_etf_cum_inflow",
+        raw_fmt={"cum_net_inflow": "${:,.0f}"},
+        caption=(
+            "Cumulative SoSoValue-aggregated net inflow across all "
+            "SOL ETFs since the first listing. On weekly/monthly "
+            "tabs, the last value of each period is shown (cumulative "
+            "metric)."
+        ),
+        col_aggs={"cum_net_inflow": "last",
+                   "total_net_inflow": "sum",
+                   "total_value_traded": "sum",
+                   "total_net_assets": "last"},
+    )
+    st.divider()
+
+    # ── Daily Trading Volume (column) ─────────────────────────────
+    def _build_vol_fig(df_view):
+        fig = _go.Figure()
+        y = df_view["total_value_traded"].fillna(0)
+        fig.add_trace(_go.Bar(
+            x=df_view["date"], y=y, name="Trading Volume",
+            marker_color="#4285F4",
+            customdata=y.map(sd._fmt_usd),
+            hovertemplate="Volume: %{customdata}<extra></extra>",
+        ))
+        _xmin = df_view["date"].min().strftime("%Y-%m-%d")
+        _xmax = df_view["date"].max().strftime("%Y-%m-%d")
+        y_max = float(y.max() or 0) * 1.10
+        fig.update_layout(
+            height=400, hovermode="x unified", showlegend=False,
+            bargap=0.15,
+            margin=dict(t=10, b=10, l=10, r=10),
+            xaxis=dict(range=[_xmin, _xmax], autorange=False,
+                        type="date"),
+            yaxis=dict(showgrid=True, rangemode="tozero",
+                        range=[0, y_max] if y_max > 0 else None),
+        )
+        return fig
+
+    sd._chart_dwm_simple(
+        "Daily Trading Volume",
+        source_df=df_sorted,
+        build_fig=_build_vol_fig,
+        raw_df=df_sorted.sort_values("date", ascending=False),
+        raw_key="sol_etf_volume",
+        raw_filename="sol_etf_volume",
+        raw_fmt={"total_value_traded": "${:,.0f}"},
+        caption=(
+            "Aggregate USD trading volume across all SOL ETFs. "
+            "Source: SoSoValue `/etfs/summary-history`."
+        ),
+        col_aggs={"total_value_traded": "sum",
+                   "total_net_inflow": "sum",
+                   "total_net_assets": "last",
+                   "cum_net_inflow": "last"},
+    )
+
+    # ── ETF catalog (bottom of page) ──────────────────────────────
+    st.divider()
+    catalog, cat_err = _sosovalue.fetch_etfs_list(symbol="SOL")
+    if not catalog.empty:
+        st.markdown("### Constituents")
+        st.caption("U.S.-listed Solana spot ETFs included in the "
+                    "aggregate above.")
+        # Render as a simple table — columns from the API are
+        # already clean (ticker, name, exchange).
+        cols_show = [c for c in ("ticker", "name", "exchange")
+                      if c in catalog.columns]
+        st.dataframe(catalog[cols_show], hide_index=True,
+                      use_container_width=True)
+
+
 # ── Dispatch ─────────────────────────────────────────────────────────────────
 if vertical == "SOL token":
     _render_sol_token()
@@ -3924,3 +4140,5 @@ elif vertical == "DEX":
     _render_dex()
 elif vertical == "Payments":
     _render_payments()
+elif vertical == "SOL ETF":
+    _render_sol_etf()

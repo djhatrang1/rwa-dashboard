@@ -3,7 +3,7 @@
 These rules apply to every change in this repo. Newer entries at the bottom.
 
 ## Data sources — closed list
-Only pull data from these six sources unless the user explicitly authorizes a new one:
+Only pull data from these eight sources unless the user explicitly authorizes a new one:
 
 - Birdeye
 - Dune
@@ -12,6 +12,7 @@ Only pull data from these six sources unless the user explicitly authorizes a ne
 - Allium
 - Blockworks Research
 - Paymentscan
+- SoSoValue (ETF data)
 
 Do NOT scrape, hit undocumented endpoints, or use third-party aggregators outside this list. When you find yourself wanting another source, ask first.
 

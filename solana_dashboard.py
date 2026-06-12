@@ -964,9 +964,21 @@ def _render_lending() -> None:
     st.divider()
     st.subheader("Jupiter Lend — by asset")
     st.caption(
-        "Per-asset supply and borrow within Jupiter Lend on Solana. "
-        "Jupiter is a single-market protocol on DefiLlama; the breakdown "
-        "below is by deposited / borrowed asset (top 8 + Others)."
+        "Per-asset gross supply (= net + borrowed) and borrow within "
+        "Jupiter Lend on Solana, sourced from DefiLlama "
+        "`/protocol/jupiter-lend` chainTvls.tokensInUsd. Top 20 assets "
+        "by combined supply+borrow shown, rest aggregated as 'Others'. "
+        "\n\n**Cross-check vs Jupiter's own API**: Jupiter Lend is "
+        "Fluid-based with separate earn vaults and credit markets — "
+        "DefiLlama tracks the lender-side deposits "
+        "(~$0.86B net + $0.81B borrowed = $1.67B gross), but Jupiter "
+        "self-reports ~$1.9B total TVL which includes collateral "
+        "from the borrow-side credit markets that DefiLlama under-"
+        "counts. Lender-side earn vaults via "
+        "`lite-api.jup.ag/lend/v1/earn/tokens` total ~$0.53B (7 vaults: "
+        "JUICED / jlUSDC / jlWSOL / jlUSDT / jlEURC / jlUSDG / "
+        "jlUSDS). DefiLlama lag of ~$230M (~12%) is similar in shape "
+        "to the Kamino lag noted above."
     )
     _render_protocol_asset_breakdown("jupiter-lend", "Jupiter Lend")
 

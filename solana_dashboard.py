@@ -532,9 +532,32 @@ def _fetch_solana_lending_history(slug: str) -> _pd.DataFrame:
                 for p in bor_pts}
     all_ts = sorted(set(net_map) | set(bor_map))
     # supply = net + borrow (gross deposits); borrow stays as is.
-    rows = [{"date":   _pd.to_datetime(t, unit="s"),
-             "supply": net_map.get(t, 0.0) + bor_map.get(t, 0.0),
-             "borrow": bor_map.get(t, 0.0)} for t in all_ts]
+    # Outage-day NaN handling: if a ts is missing from `bor_map` we
+    # can't compute gross supply for that day. Writing `net + 0`
+    # would render as a 1-day cliff in the stacked chart; instead
+    # write NaN and let the downstream ffill in _build_lending_stack
+    # carry the previous day's value across the gap. Same pattern
+    # used by _fetch_lending_per_asset_history for the per-asset
+    # breakdown.
+    _NAN = float("nan")
+    rows = []
+    for t in all_ts:
+        bor_present = t in bor_map
+        sup_present = t in net_map
+        if bor_present and sup_present:
+            supply_val = net_map[t] + bor_map[t]
+            borrow_val = bor_map[t]
+        elif bor_present:   # supply outage (rare)
+            supply_val = _NAN
+            borrow_val = bor_map[t]
+        elif sup_present:   # borrow outage (Kamino 2025-01-23 case)
+            supply_val = _NAN
+            borrow_val = _NAN
+        else:
+            supply_val = _NAN
+            borrow_val = _NAN
+        rows.append({"date":   _pd.to_datetime(t, unit="s"),
+                     "supply": supply_val, "borrow": borrow_val})
     return _pd.DataFrame(rows)
 
 
@@ -630,24 +653,46 @@ def _fetch_lending_per_asset_history(slug: str, top_n: int = 20) -> tuple:
     # not the DefiLlama-default net (deposits − borrows). Mirrors the
     # convention every lending protocol's UI uses (Kamino, Aave, etc.).
     # See `_fetch_solana_lending_history` docstring for the SOL example.
+    #
+    # Outage-day NaN handling: DefiLlama occasionally returns an empty
+    # tokens dict for one side on a single day (e.g. Kamino 2025-01-23
+    # has supply intact but `Solana-borrowed.tokensInUsd[that_day]`
+    # entirely missing). Naively summing `s + b` then produces gross
+    # = net for that one day, which renders as a sharp downward cliff
+    # in the stacked-area chart. We detect such outages and write NaN
+    # for that row's columns so the downstream
+    # `df_view[col].ffill()` in _build_lending_stack carries the
+    # previous day's value forward across the gap, matching what
+    # we already do for the per-protocol aggregate chart.
     rows: dict[int, dict] = {}
     all_ts = sorted(set(sup_by_ts) | set(bor_by_ts))
+    _NAN = float("nan")
     for ts in all_ts:
-        sup_tok = sup_by_ts.get(ts, {})
-        bor_tok = bor_by_ts.get(ts, {})
+        sup_tok = sup_by_ts.get(ts) or {}
+        bor_tok = bor_by_ts.get(ts) or {}
+        # An "outage" is a day where the whole dict is empty OR every
+        # token rounds to 0 USD. False positive on the very first day
+        # of a protocol's life is harmless: ffill has nothing to carry
+        # forward so .fillna(0) at the chart layer renders 0 anyway.
+        sup_outage = not sup_tok or not any(
+            float(v or 0) > 0 for v in sup_tok.values())
+        bor_outage = not bor_tok or not any(
+            float(v or 0) > 0 for v in bor_tok.values())
         row = rows.setdefault(ts, {})
         for a in top_assets:
             s = float(sup_tok.get(a, 0) or 0)
             b = float(bor_tok.get(a, 0) or 0)
-            row[f"supply_{a}"] = s + b   # gross
-            row[f"borrow_{a}"] = b
-        # Others bucket — same gross-vs-borrow split for unnamed long-tail.
+            # Gross supply needs BOTH sides; if either is outage, NaN.
+            row[f"supply_{a}"] = _NAN if (sup_outage or bor_outage) else s + b
+            row[f"borrow_{a}"] = _NAN if bor_outage else b
+        # Others bucket — same outage detection.
         sup_others = sum(float(v or 0) for k, v in sup_tok.items()
                           if k not in top_assets)
         bor_others = sum(float(v or 0) for k, v in bor_tok.items()
                           if k not in top_assets)
-        row["supply_others"] = sup_others + bor_others   # gross
-        row["borrow_others"] = bor_others
+        row["supply_others"] = (_NAN if (sup_outage or bor_outage)
+                                  else sup_others + bor_others)
+        row["borrow_others"] = _NAN if bor_outage else bor_others
 
     wide_rows = []
     for ts in sorted(rows):

@@ -114,6 +114,8 @@ import os as _os
 import datetime as _dt
 import plotly.graph_objects as _go
 
+import defillama as _defillama
+
 _SOL_ADDRESS = "So11111111111111111111111111111111111111112"
 
 
@@ -482,13 +484,11 @@ def _fetch_solana_lending_catalog() -> _pd.DataFrame:
     lending UI uses and keeps this catalog consistent with the gross-
     supply charts above it. The chainTvls payload on /protocols
     exposes both fields as live scalars so no extra calls are needed."""
-    try:
-        r = _requests.get("https://api.llama.fi/protocols", timeout=30)
-        r.raise_for_status()
-        data = r.json()
-    except Exception as exc:
-        log_fn = getattr(sd, "log", None)
-        if log_fn: log_fn.warning("DefiLlama /protocols failed: %s", exc)
+    # Go through the wrapper so we get the on-disk seed fallback for
+    # free — DefiLlama /protocols 5xxs aren't rare, and a blank
+    # lending catalog blanks every chart downstream.
+    data = _defillama.fetch_protocols()
+    if not data:
         return _pd.DataFrame()
     rows = []
     LENDING_CATS = {"Lending", "CDP", "RWA Lending", "Cross Chain Lending",
@@ -528,11 +528,8 @@ def _fetch_solana_lending_history(slug: str) -> _pd.DataFrame:
       borrow = $184.76M (DefiLlama Solana-borrowed.tvl[SOL])
       gross  = $200.5M  ← matches Kamino UI's ~$190M
     """
-    try:
-        r = _requests.get(f"https://api.llama.fi/protocol/{slug}", timeout=30)
-        r.raise_for_status()
-        d = r.json()
-    except Exception:
+    d = _defillama.fetch_protocol(slug)
+    if not d:
         return _pd.DataFrame(columns=["date", "supply", "borrow"])
     ct = d.get("chainTvls", {})
     sup_pts = (ct.get("Solana") or {}).get("tvl", []) or []
@@ -588,11 +585,8 @@ def _fetch_lending_per_asset_history(slug: str, top_n: int = 20) -> tuple:
         their own ribbon, instead of being lumped into Others and
         making Others bigger than every named asset)
     """
-    try:
-        r = _requests.get(f"https://api.llama.fi/protocol/{slug}", timeout=30)
-        r.raise_for_status()
-        d = r.json()
-    except Exception:
+    d = _defillama.fetch_protocol(slug)
+    if not d:
         return _pd.DataFrame(), []
     ct = d.get("chainTvls", {})
     sup_pts = (ct.get("Solana") or {}).get("tokensInUsd", []) or []

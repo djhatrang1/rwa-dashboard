@@ -33,10 +33,34 @@ import pandas as pd
 import requests
 import streamlit as st
 
+import seed_cache
+
 
 log = logging.getLogger(__name__)
 
 _BASE = "https://paymentscan.xyz/api/v1"
+
+# On-disk fallback dir. The live fetcher writes its DataFrame here on
+# every success; on failure we read the most recent snapshot back so
+# the dashboard keeps rendering during Paymentscan outages or
+# rate-limiting. Same seed pattern as `allium_seeds/`,
+# `blockworks_seeds/`, etc.
+_SEEDS_DIR = "paymentscan_seeds"
+
+
+def _seed_filename(endpoint: str, period: str,
+                    include_topups: bool,
+                    include_offchain: bool) -> str:
+    """Seed file naming: `<endpoint>_<period>[_no_topups][_no_offchain].csv`.
+    The flag suffixes only appear when set non-default — so the
+    common case (both true) writes the cleanest filename. Keeps the
+    seed dir readable in the repo listing."""
+    parts = [endpoint, period]
+    if not include_topups:
+        parts.append("no_topups")
+    if not include_offchain:
+        parts.append("no_offchain")
+    return "_".join(parts) + ".csv"
 
 Period = Literal["daily", "weekly", "monthly"]
 Endpoint = Literal["projects", "chains", "currencies", "networks", "infra"]
@@ -111,6 +135,14 @@ def _fetch_cached(endpoint: str, period: str,
     rows = body.get("data") or []
     df = pd.DataFrame(rows)
     log.info("Paymentscan %s/%s: %d rows", endpoint, period, len(df))
+    # On live success, persist to disk so future failures have a
+    # snapshot to fall back on. write_seed_df no-ops on empty frames
+    # so a degraded live response can't overwrite a good prior seed.
+    if not df.empty:
+        seed_cache.write_seed_df(
+            df, _SEEDS_DIR,
+            _seed_filename(endpoint, period,
+                            include_topups, include_offchain))
     return df
 
 
@@ -138,4 +170,16 @@ def fetch(endpoint: Endpoint, period: Period = "daily",
         msg = f"{type(exc).__name__}: {exc}"
         log.warning("Paymentscan %s/%s fetch failed: %s",
                     endpoint, period, msg)
+        # Live API down — try the disk snapshot before giving up.
+        # Successful reads return an err of `seed:<msg>` so the caller
+        # can tell the difference between "live" and "fell back to
+        # disk" if it wants to surface that to the user, while non-
+        # falsy err still preserves the original failure mode for
+        # call sites that bail on any error.
+        fallback = seed_cache.read_seed_df(
+            _SEEDS_DIR,
+            _seed_filename(endpoint, period,
+                            include_topups, include_offchain))
+        if not fallback.empty:
+            return fallback, f"seed-fallback ({msg})"
         return pd.DataFrame(), msg

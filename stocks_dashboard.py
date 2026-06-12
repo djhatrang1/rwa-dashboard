@@ -38,6 +38,8 @@ from pydantic_settings import BaseSettings
 from streamlit_autorefresh import st_autorefresh
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+import defillama as _defillama
+
 # Optional Postgres driver — only required when DATABASE_URL is set.
 try:
     import psycopg
@@ -1425,12 +1427,11 @@ def _fetch_dl_protocol(slug: str) -> dict:
         hit = _DL_CACHE.get(key)
         if hit and now - hit[0] < _DL_TTL:
             return hit[1]
-        try:
-            r = requests.get(f"https://api.llama.fi/protocol/{slug}", timeout=30)
-            r.raise_for_status()
-            data = r.json()
-        except Exception as exc:
-            log.warning("DefiLlama /protocol/%s fetch failed: %s", slug, exc)
+        # Go through the seed-cache wrapper — same data path but with
+        # a disk-snapshot fallback so DefiLlama 5xxs don't blank the
+        # RWA charts.
+        data = _defillama.fetch_protocol(slug)
+        if not data:
             return hit[1] if hit else {}
         out: dict = {}
         for chain, payload in (data.get("chainTvls") or {}).items():
@@ -1464,13 +1465,8 @@ def _fetch_dl_stablecoin(stable_id: int) -> dict:
         hit = _DL_CACHE.get(key)
         if hit and now - hit[0] < _DL_TTL:
             return hit[1]
-        try:
-            r = requests.get(
-                f"https://stablecoins.llama.fi/stablecoin/{stable_id}", timeout=30)
-            r.raise_for_status()
-            data = r.json()
-        except Exception as exc:
-            log.warning("DefiLlama /stablecoin/%s fetch failed: %s", stable_id, exc)
+        data = _defillama.fetch_stablecoin(stable_id)
+        if not data:
             return hit[1] if hit else {}
         out: dict = {}
         for chain, payload in (data.get("chainBalances") or {}).items():
@@ -1513,29 +1509,15 @@ _ALL_CHAIN_STABLE_TOP = [
     "Arbitrum", "Polygon", "Tron", "Avalanche", "Aptos",
 ]
 
-@st.cache_data(ttl=3600, show_spinner=False)
 def _fetch_stablecoin_chain_chart(chain: str) -> pd.DataFrame:
     """DefiLlama /stablecoincharts/{chain} → DataFrame[date, mc_usd]. Returns
     an empty DataFrame on any error so callers can skip the chain without
-    blowing up the whole stack."""
-    try:
-        r = requests.get(
-            f"https://stablecoins.llama.fi/stablecoincharts/{chain}", timeout=30)
-        r.raise_for_status()
-        pts = r.json() or []
-    except Exception as exc:
-        log.warning("DefiLlama stablecoincharts/%s failed: %s", chain, exc)
-        return pd.DataFrame(columns=["date", "mc_usd"])
-    rows = []
-    for p in pts:
-        try:
-            d  = pd.to_datetime(int(p["date"]), unit="s").strftime("%Y-%m-%d")
-            mc = float((p.get("totalCirculatingUSD") or {}).get("peggedUSD") or 0)
-            if mc > 0:
-                rows.append({"date": d, "mc_usd": mc})
-        except (KeyError, TypeError, ValueError):
-            continue
-    return pd.DataFrame(rows)
+    blowing up the whole stack.
+
+    Delegates to `defillama.fetch_stablecoin_chain_chart` which adds
+    the on-disk seed fallback. Kept as a thin module-private wrapper
+    so existing call sites don't have to be retouched."""
+    return _defillama.fetch_stablecoin_chain_chart(chain)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)

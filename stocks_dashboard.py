@@ -6877,12 +6877,18 @@ def _apply_chart_mode(df: pd.DataFrame, mode: str,
     if mode == "pct":
         # Row totals over the participating value columns. Where the
         # row total is 0 (or NaN), preserve NaN so the chart renders
-        # an empty bar instead of a misleading 0% / NaN%.
+        # an empty bar instead of a misleading 0% / NaN%. The
+        # `.where(totals > 0)` masks the zero-total rows explicitly;
+        # earlier versions of this used a `pd.option_context(
+        # "mode.use_inf_as_na", True)` wrapper around the division
+        # to also catch any inf results, but that option was
+        # removed in pandas 2.1 and the .where() masking already
+        # covers the only case the inf catch fired on (total=0 →
+        # x/0 = inf → masked away anyway).
         totals = out[value_cols].sum(axis=1)
-        with pd.option_context("mode.use_inf_as_na", True):
-            for c in value_cols:
-                out[c] = (out[c] / totals) * 100.0
-            out[value_cols] = out[value_cols].where(totals > 0)
+        for c in value_cols:
+            out[c] = (out[c] / totals) * 100.0
+        out[value_cols] = out[value_cols].where(totals > 0)
         return out
     return df
 

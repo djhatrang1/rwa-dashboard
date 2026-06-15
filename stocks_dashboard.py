@@ -1278,14 +1278,21 @@ class SolanaTokenMetricsPuller(DataPuller):
                 c3.metric("Circulating Supply",
                           f"{supply/1e6:.2f}M" if supply else "N/A")
 
-        # chartwrap_/raw_ key pair triggers the global CSS that pins the
-        # 📋 button onto the D/W/M tab row's right edge.
-        with st.container(key=f"chartwrap_{self.name}_full"):
-            if st.button("📋", key=f"raw_{self.name}_full",
-                         help="View raw data"):
-                _raw_data_modal(df.sort_values("date", ascending=False),
-                                self.raw_data_fmt())
-            tab_d, tab_w, tab_m = st.tabs(["Daily", "Weekly", "Monthly"])
+        # Route through the canonical toolbar helper so this chart
+        # gets the same display-mode / time-unit / 📋 cluster as the
+        # rest of the dashboard. `title=""` since the parent already
+        # renders the group/token header above; caption=None for the
+        # same reason — the "Last pull" caption stays above the
+        # metric tiles outside this block. stacked=False because this
+        # is a single-token price+vol chart, not a stacked composition.
+        with _chart_dwm_frame(
+            "",
+            raw_df=df.sort_values("date", ascending=False),
+            raw_key=f"{self.name}_full",
+            raw_fmt=self.raw_data_fmt(),
+            raw_filename=f"{self.name}_full",
+            stacked=False,
+        ) as (tab_d, tab_w, tab_m):
             with tab_d:
                 _chart(self._build_fig(df, height=520),
                        use_container_width=True)
@@ -3181,19 +3188,28 @@ class TokenGroupMetricsPuller(DataPuller):
             _safe = _tn.lower().replace("-", "_").replace(" ", "_")
             _fmt[f"vol_{_safe}_usd"] = "${:,.0f}"
 
-        st.caption(f"Last pull: {df.attrs.get('pulled_at', '?')} UTC · Source: Birdeye")
-        with st.container(key=f"chartwrap_{self.name}"):
-            # Raw-data icon — pinned onto the tab row, far right (see CSS).
-            # Restrict the modal payload to the columns actually charted
-            # (date + per-token vol_*_usd) so analysts don't get unrelated
-            # MC + every-other-chain columns dumped on them.
-            _vol_cols = [self._safe_col(t) for t, _, _ in sorted_tokens
-                         if self._safe_col(t) in df.columns]
-            _raw = df[["date"] + _vol_cols].sort_values(
-                "date", ascending=False)
-            if st.button("📋", key=f"raw_{self.name}", help="View raw data"):
-                _raw_data_modal(_raw, _fmt)
-            tab_d, tab_w, tab_m = st.tabs(["Daily", "Weekly", "Monthly"])
+        # Restrict the raw-data modal payload to the columns actually
+        # charted (date + per-token vol_*_usd) so analysts don't get
+        # unrelated MC + every-other-chain columns dumped on them.
+        _vol_cols = [self._safe_col(t) for t, _, _ in sorted_tokens
+                     if self._safe_col(t) in df.columns]
+        _raw = df[["date"] + _vol_cols].sort_values(
+            "date", ascending=False)
+        # Route through the canonical toolbar helper. `title=""` —
+        # parent already renders the group header in an st.columns
+        # layout. stacked=True — _build_fig produces a stacked bar
+        # composition (barmode='stack') so the % toolbar mode is
+        # meaningful (share-of-total-volume).
+        with _chart_dwm_frame(
+            "",
+            raw_df=_raw,
+            raw_key=self.name,
+            raw_fmt=_fmt,
+            raw_filename=self.name,
+            caption=(f"Last pull: {df.attrs.get('pulled_at', '?')} "
+                     f"UTC · Source: Birdeye"),
+            stacked=True,
+        ) as (tab_d, tab_w, tab_m):
             with tab_d:
                 _chart(
                     self._build_fig(df, sorted_tokens, height=450),
@@ -3716,28 +3732,36 @@ class TokenGroupMetricsPuller(DataPuller):
             st.info(f"No trading volume recorded on {chain or 'any chain'} yet.")
             return
 
-        st.caption(
-            f"Last pull: {df.attrs.get('pulled_at', '?')} UTC · "
-            f"Source: Birdeye OHLCV V3 (x-chain: {chain or 'all'})"
-        )
         chain_tag = (chain or "all").lower().replace(" ", "_")
         if key_suffix:
             chain_tag = f"{chain_tag}_{key_suffix}"
-        with st.container(key=f"chartwrap_{self.name}_vol_{chain_tag}"):
-            # Raw-data icon — pinned via existing CSS rules. Restrict to the
-            # chain-suffixed vol cols that are actually charted so the modal
-            # doesn't dump MC + every other chain's vol columns on the user
-            # (the cache row carries every column the puller writes — for
-            # 'Other Stables (Solana)' that's ~60 unrelated mc_*/vol_*
-            # entries without this filter).
-            _vol_cols = [self._safe_col(t, chain) for t, _, _ in sorted_tokens
-                         if self._safe_col(t, chain) in df.columns]
-            _fmt = {c: "${:,.0f}" for c in _vol_cols}
-            _raw = df[["date"] + _vol_cols].sort_values(
-                "date", ascending=False)
-            if st.button("📋", key=f"raw_{self.name}_vol_{chain_tag}",
-                         help="View raw data"):
-                _raw_data_modal(_raw, _fmt)
+        # Restrict raw-data modal payload to the chain-suffixed vol
+        # cols that are actually charted so the modal doesn't dump MC
+        # + every other chain's vol columns on the user (the cache
+        # row carries every column the puller writes — for 'Other
+        # Stables (Solana)' that's ~60 unrelated mc_*/vol_* entries
+        # without this filter).
+        _vol_cols = [self._safe_col(t, chain) for t, _, _ in sorted_tokens
+                     if self._safe_col(t, chain) in df.columns]
+        _fmt = {c: "${:,.0f}" for c in _vol_cols}
+        _raw = df[["date"] + _vol_cols].sort_values(
+            "date", ascending=False)
+        # Toolbar helper opens its own chartwrap container under the
+        # hood. `title=""` — parent renders the group header in an
+        # st.columns(2) layout above this call. stacked=True since
+        # _build_fig produces a stacked bar composition.
+        _toolbar_cm = _chart_dwm_frame(
+            "",
+            raw_df=_raw,
+            raw_key=f"{self.name}_vol_{chain_tag}",
+            raw_fmt=_fmt,
+            raw_filename=f"{self.name}_vol_{chain_tag}",
+            caption=(f"Last pull: {df.attrs.get('pulled_at', '?')} "
+                     f"UTC · Source: Birdeye OHLCV V3 "
+                     f"(x-chain: {chain or 'all'})"),
+            stacked=True,
+        )
+        with _toolbar_cm as (tab_d, tab_w, tab_m):
             # Aliased view: rename the chain-suffixed col → legacy col name so
             # _build_fig (which reads _safe_col(name) = vol_<name>_usd) works
             # without modification. The legacy col is also written by fetch()
@@ -7102,8 +7126,14 @@ def _chart_dwm_frame(title: str, *, raw_df: pd.DataFrame, raw_key: str,
     `_get_chart_mode_time(raw_key, stacked)` and `_resample_dwm`
     inline. The yielded-triple shim is for the old code path and
     will be cleaned up after the toolbar lands on every chart.
+
+    Empty / falsy `title` is permitted — used by the per-group puller
+    renders (PreStocks, xStocks, Ondo) where the parent already
+    rendered the group header in an st.columns layout and we just
+    need the toolbar + chart underneath.
     """
-    st.subheader(title)
+    if title:
+        st.subheader(title)
     if caption:
         st.caption(caption)
     # Resolve current state ONCE so all 3 callbacks the caller fires

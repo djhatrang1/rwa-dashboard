@@ -1676,6 +1676,7 @@ def _render_all_chain_stablecoins() -> None:
         build_fig=_build_stables_chain_fig,
         raw_df=_raw_stables.sort_values("date", ascending=False),
         raw_key="all_stablecoins_by_chain",
+        stacked=True,
         raw_filename="stablecoins_market_cap_by_chain",
         caption=(
             "Per-chain stablecoin circulating supply, sourced from "
@@ -3529,6 +3530,7 @@ class TokenGroupMetricsPuller(DataPuller):
                 raw_df=_raw,
                 raw_key=raw_key,
                 raw_filename=raw_key,
+                stacked=True,
             ) as (tab_d, tab_w, tab_m):
                 with tab_d:
                     _chart(_build_mc_fig(mdf), use_container_width=True)
@@ -7714,6 +7716,7 @@ if __name__ == "__main__":
                 build_fig=_build_stablecoin_payments_fig,
                 raw_df=_sp_raw.sort_values("date", ascending=False),
                 raw_key="asset_stable_payments_by_category",
+                stacked=True,
                 raw_filename="stablecoin_payments_by_category",
                 caption=(
                     "Daily stablecoin payment flow volume in USD, split "
@@ -8389,6 +8392,7 @@ if __name__ == "__main__":
                         "(CEX + DEX, all venues)",
                         raw_df=_raw_vol.sort_values("date", ascending=False),
                         raw_key="asset_gold_volume_cg",
+                        stacked=True,
                         raw_filename="tokenized_gold_volume_cg_all_chains",
                         caption=_caption_global,
                         legend_from_fig=_gold_vol_daily,
@@ -8622,6 +8626,7 @@ if __name__ == "__main__":
                                 "On-chain DEX Volume by Chain",
                                 raw_df=_raw_ch_export.sort_values("date", ascending=False),
                                 raw_key="asset_gold_volume_by_chain",
+                                stacked=True,
                                 raw_filename="tokenized_gold_volume_by_chain",
                                 caption=(
                                     "Stacked DEX volume per chain. "
@@ -8727,6 +8732,7 @@ if __name__ == "__main__":
                                 "CEX vs DEX Volume",
                                 raw_df=_raw_cv_export.sort_values("date", ascending=False),
                                 raw_key="asset_gold_cex_vs_dex",
+                                stacked=True,
                                 raw_filename="tokenized_gold_cex_vs_dex",
                                 caption=(
                                     "Daily volume split into two "
@@ -8923,6 +8929,7 @@ if __name__ == "__main__":
                         build_fig=_build_stocks_mc_by_chain_fig,
                         raw_df=_mc_chain_raw.sort_values("date", ascending=False),
                         raw_key="asset_equities_mc_by_chain",
+                        stacked=True,
                         raw_filename="tokenized_equities_mc_by_chain",
                         caption=(
                             "Per-chain MC summed across every project "
@@ -8953,6 +8960,7 @@ if __name__ == "__main__":
                         "Trading Volume by Project (all chains)",
                         raw_df=_vol_raw.sort_values("date", ascending=False),
                         raw_key="asset_equities_combined_vol_all",
+                        stacked=True,
                         raw_filename="tokenized_equities_combined_volume_all_chains",
                         caption=(
                             "Stacked daily volume per project, summed "
@@ -9041,6 +9049,7 @@ if __name__ == "__main__":
                         build_fig=_build_stocks_vol_by_chain_fig,
                         raw_df=_vol_chain_raw.sort_values("date", ascending=False),
                         raw_key="asset_equities_vol_by_chain",
+                        stacked=True,
                         raw_filename="tokenized_equities_vol_by_chain",
                         caption=(
                             "Per-chain volume summed across every "
@@ -9253,6 +9262,7 @@ if __name__ == "__main__":
                     build_fig=_build_treas_mc_by_chain_fig,
                     raw_df=_treas_chain_raw.sort_values("date", ascending=False),
                     raw_key="asset_treas_mc_by_chain",
+                    stacked=True,
                     raw_filename="tokenized_treasuries_mc_by_chain",
                     caption=(
                         "Per-chain MC summed across every treasury "
@@ -9392,6 +9402,7 @@ if __name__ == "__main__":
                         raw_df=_holders_raw.sort_values(
                             "date", ascending=False),
                         raw_key="asset_treas_holders_solana",
+                        stacked=True,
                         raw_filename="tokenized_treasuries_holders_solana",
                         caption=(
                             "Per-token Solana holder count, stacked. "
@@ -9561,6 +9572,7 @@ if __name__ == "__main__":
                     raw_df=raw_df.sort_values("date", ascending=False),
                     raw_key=raw_key,
                     raw_filename=raw_key,
+                    stacked=True,
                     caption=(
                         f"**{label}** assets only, as classified by "
                         "[rwa.xyz](https://app.rwa.xyz/credit). "
@@ -9922,6 +9934,7 @@ if __name__ == "__main__":
                     build_fig=_build_oi_fig,
                     raw_df=_oi_raw.sort_values("date", ascending=False),
                     raw_key="rwa_perp_hl_oi_by_mkt",
+                    stacked=True,
                     raw_filename="hyperliquid_rwa_oi_by_market",
                     caption=(
                         "Daily open interest per RWA perp market on "
@@ -10035,6 +10048,7 @@ if __name__ == "__main__":
                     build_fig=_build_vol_fig,
                     raw_df=_vol_raw.sort_values("date", ascending=False),
                     raw_key="rwa_perp_hl_vol_by_mkt",
+                    stacked=True,
                     raw_filename="hyperliquid_rwa_volume_by_market",
                     caption=(
                         "Daily perp volume per RWA market on "
@@ -10417,6 +10431,7 @@ if __name__ == "__main__":
                                         "date", ascending=False),
                                     raw_key=(f"rwa_perp_bw_"
                                               f"{qid}_{key_suffix}"),
+                                    stacked=True,
                                     raw_filename=(
                                         f"rwa_perp_bw_"
                                         f"{title.lower().replace(' ','_')}"

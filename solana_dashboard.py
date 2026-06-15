@@ -2324,6 +2324,7 @@ def _render_dflow_prediction_section() -> None:
             build_fig=_build_dfl_users_fig,
             raw_df=df_users[["day", "daily"]].copy(),
             raw_key="pm_dfl_users_daily",
+            stacked=True,
             raw_fmt={"daily": "{:,.0f}"},
             raw_filename="pm_dfl_users_daily",
             col_aggs={"daily": "sum"},
@@ -2832,6 +2833,7 @@ def _render_perp_dexs() -> None:
                         build_fig=lambda df_view: _build_perp_stack(df_view),
                         raw_df=_raw_f.sort_values("date", ascending=False),
                         raw_key="perp_dex_fees",
+                        stacked=True,
                         raw_filename="solana_perp_dex_fees",
                         caption="Daily protocol fees paid per DEX.",
                         col_aggs={c: "sum" for c in _ord_f},
@@ -2848,6 +2850,7 @@ def _render_perp_dexs() -> None:
                         build_fig=lambda df_view: _build_perp_stack(df_view),
                         raw_df=_raw_r.sort_values("date", ascending=False),
                         raw_key="perp_dex_rev",
+                        stacked=True,
                         raw_filename="solana_perp_dex_rev",
                         caption=(
                             "Daily protocol revenue per DEX (post-LP / "
@@ -2872,6 +2875,7 @@ def _render_perp_dexs() -> None:
                     df_view, fmt_kind="count"),
                 raw_df=_raw_m.sort_values("date", ascending=False),
                 raw_key="perp_dex_market_count",
+                stacked=True,
                 raw_filename="solana_perp_dex_market_count",
                 caption=(
                     "Number of distinct trading pairs listed per DEX. "

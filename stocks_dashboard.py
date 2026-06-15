@@ -498,21 +498,30 @@ def _fetch_paxg_price_history() -> pd.DataFrame:
     return df
 
 
-@st.cache_data(ttl=14_400, show_spinner=False)
+@st.cache_data(ttl=86_400, show_spinner=False)
 def _cached_latest_payload(puller_name: str):
     """Module-level cache wrapper for the latest-pull DataFrame. Keyed by
-    puller name; TTL 4 hours — matches the GitHub Actions cron cadence
-    (pull_interval_seconds=14_400) so the cache stays warm for the full
-    inter-pull window and Postgres egress drops by ~50× vs the old 5-min
-    TTL. Force Pull and PULLERS_VERSION bumps invalidate the cache
-    explicitly (see _cached_latest_payload.clear() call sites) so users
-    still see fresh data immediately when intended.
+    puller name; TTL 24 hours.
 
-    Each cached payload is a few hundred KB to a couple MB of JSON, and
-    each Solana / Ethereum / BNB / Base / All-chain dashboard render
-    touches ~25-30 pullers; at the old 5-min TTL a single page reload
-    every 5-10 minutes was burning gigabytes per day against the Supabase
-    free-tier egress quota.
+    The cron writes new snapshots to Postgres every 4 hours, but the
+    dashboard only needs to RE-READ Postgres when its in-memory cache
+    expires. Bumping TTL from 4h → 24h reduces Postgres reads (and thus
+    Supabase egress) by another ~6×, on top of the earlier 5min → 4h
+    bump. Each cached payload is a few hundred KB to a couple MB of
+    JSON; each Solana / Ethereum / BNB / Base / All-chain render touches
+    ~25–30 pullers, so a single cold start moves 25–50 MB. At 4h TTL
+    that re-read was happening 6×/day per process, blowing through the
+    Supabase free-tier 5 GB/month egress in days.
+
+    Staleness trade-off: with 24h TTL, a user who keeps a tab open will
+    see snapshots up to 24h old until the next cache expiry. The Force
+    Pull button still calls `_cached_latest_payload.clear()` to bust
+    on-demand. Acceptable because most charts plot historical series
+    where one extra day at the right edge isn't material.
+
+    Force Pull and PULLERS_VERSION bumps invalidate the cache explicitly
+    (see _cached_latest_payload.clear() call sites) so users still see
+    fresh data immediately when intended.
 
     Returns (df, pulled_at_iso) — splitting attrs out because st.cache_data
     doesn't preserve DataFrame.attrs across cache hits."""

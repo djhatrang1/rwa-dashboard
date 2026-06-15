@@ -3906,6 +3906,258 @@ def _render_payments() -> None:
                      for c in _psol_ordered],
                     label="issuers")
 
+    # ── Stablecoin Chains (Dune) ─────────────────────────────────────────────
+    # Two emerging stablecoin-native L1s with public Dune dashboards
+    # tracking daily on-chain stablecoin transfer volume. Source data
+    # comes via the existing Dune REST fetcher (`_fetch_dune_query_results`,
+    # already used by the Solana Jupiter / Phantom / DFlow charts) so
+    # no new dependency — just two new query ids.
+    #
+    # Both charts are scoped to the same shape: stacked-area daily
+    # volume by stablecoin symbol, total line on top. Same colour
+    # palette discipline as the rest of the dashboard (USDT green,
+    # USDC blue, others distinct).
+    #
+    # If a query returns empty (Dune outage, key missing, query
+    # deprecated upstream) the section renders an info placeholder
+    # instead of the chart — the rest of the Payments page keeps
+    # working regardless.
+    st.divider()
+    st.markdown("### Stablecoin Chains")
+    st.caption(
+        "Daily stablecoin transfer volume on emerging stablecoin-"
+        "native L1s. Each chain's chart is sourced from a public Dune "
+        "query — the dashboards are maintained upstream by the chain "
+        "teams + community researchers."
+    )
+
+    # ── Plasma — daily stablecoin volume by token ────────────────────────────
+    # Query 6025394 is long-format (one row per (day, symbol)); we
+    # pivot to wide so the build_fig closure can iterate one column
+    # per token. Filter row_type='daily' — the query also emits
+    # `total` and `latest` rows for the upstream dashboard's headline
+    # tiles which would otherwise show up as extra "days".
+    try:
+        _plasma_raw = _fetch_dune_query_results(6025394)
+    except Exception:
+        _plasma_raw = _pd.DataFrame()
+    if _plasma_raw.empty:
+        st.subheader("Plasma stablecoin payments (Dune)")
+        st.caption("Source: [Dune query 6025394]"
+                   "(https://dune.com/queries/6025394).")
+        st.info("Plasma stablecoin volume query returned no rows.")
+    else:
+        # The fetcher normalises the timestamp col to `day`. Trim to
+        # row_type='daily' and pivot symbol → columns.
+        _pl = _plasma_raw.copy()
+        if "row_type" in _pl.columns:
+            _pl = _pl[_pl["row_type"] == "daily"]
+        _pl["day"] = _pd.to_datetime(_pl["day"], errors="coerce")
+        _pl = _pl.dropna(subset=["day", "symbol"])
+        _pl_wide = (_pl.pivot_table(index="day", columns="symbol",
+                                     values="daily_volume_usd",
+                                     aggfunc="sum")
+                       .reset_index()
+                       .rename(columns={"day": "date"}))
+        # Order tokens by latest-day volume so the largest bands sit
+        # at the bottom of the stack (visually stable across reruns).
+        _pl_tokens = [c for c in _pl_wide.columns if c != "date"]
+        _pl_latest = _pl_wide.iloc[-1].fillna(0)
+        _pl_ordered = sorted(
+            _pl_tokens,
+            key=lambda c: float(_pl_latest.get(c, 0) or 0),
+            reverse=True)
+        # Stablecoin palette: USDT=Tether green; others pulled from
+        # the standard chart-helper rotation so they don't clash with
+        # the Allium charts above.
+        _PLASMA_COLORS = {
+            "USDT":      "#26A17B",  # Tether brand green
+            "USDe":      "#4285F4",  # blue
+            "USDai":     "#F59E0B",  # amber
+            "sUSDe":     "#A78BFA",  # lavender
+            "sUSDai":    "#EF4444",  # red
+            "syrupUSDT": "#14F195",  # mint
+            "wstUSR":    "#EC4899",  # pink
+        }
+
+        def _build_plasma_fig(df_view):
+            fig = _go.Figure()
+            # Reversed so the largest ribbon paints LAST (top of stack
+            # in Plotly's stackgroup math).
+            for tok in reversed(_pl_ordered):
+                if tok not in df_view.columns:
+                    continue
+                color = _PLASMA_COLORS.get(tok, "#888888")
+                y = df_view[tok].fillna(0)
+                fig.add_trace(_go.Scatter(
+                    x=df_view["date"], y=y, name=tok,
+                    mode="lines",
+                    line=dict(color=color, width=0.9),
+                    stackgroup="plasma",
+                    customdata=y.map(sd._fmt_usd),
+                    hovertemplate=f"{tok}: %{{customdata}}<extra></extra>",
+                ))
+            present = [t for t in _pl_ordered if t in df_view.columns]
+            tot = df_view[present].fillna(0).sum(axis=1)
+            fig.add_trace(_go.Scatter(
+                x=df_view["date"], y=tot, name="Total",
+                mode="lines",
+                line=dict(width=0, color="rgba(0,0,0,0)"),
+                showlegend=False, stackgroup=None,
+                customdata=tot.map(sd._fmt_usd),
+                hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+            ))
+            y_max = float(tot.max() or 0)
+            _xmin = df_view["date"].min().strftime("%Y-%m-%d")
+            _xmax = df_view["date"].max().strftime("%Y-%m-%d")
+            fig.update_layout(
+                height=400, hovermode="x unified",
+                margin=dict(t=10, b=10, l=10, r=10),
+                showlegend=False,
+                xaxis=dict(range=[_xmin, _xmax], autorange=False,
+                            type="date"),
+                yaxis=dict(tickprefix="$", tickformat="~s",
+                           showgrid=True, rangemode="tozero",
+                           range=[0, y_max * 1.10] if y_max > 0 else None),
+            )
+            return fig
+
+        _pl_raw = _pl_wide.copy()
+        _pl_raw["Total"] = (_pl_wide[_pl_ordered].fillna(0)
+                              .sum(axis=1).values)
+        sd._chart_dwm_simple(
+            "Plasma stablecoin payments",
+            source_df=_pl_wide,
+            build_fig=_build_plasma_fig,
+            raw_df=_pl_raw,
+            raw_key="sd_stable_chains_plasma", stacked=True,
+            raw_filename="plasma_stablecoin_payments",
+            raw_fmt={c: "${:,.0f}" for c in _pl_ordered + ["Total"]},
+            caption=(
+                "Daily on-chain stablecoin transfer volume on Plasma "
+                "(stablecoin-native L1, launched 2025-09). Stacked by "
+                "token: USDT, USDe, USDai, sUSDe, sUSDai, syrupUSDT, "
+                "wstUSR. Source: [Dune query 6025394]"
+                "(https://dune.com/queries/6025394) — community-"
+                "maintained Plasma dashboard."
+            ),
+            col_aggs={c: "sum" for c in _pl_ordered},
+        )
+        sd._legend_expander(
+            [(t, _PLASMA_COLORS.get(t, "#888888")) for t in _pl_ordered],
+            label="tokens")
+
+    # ── Tempo — daily stablecoin volume by token ─────────────────────────────
+    # Query 7209618 is already wide-format (one row per day, one column
+    # per token volume). Just rename + plot.
+    try:
+        _tempo_raw = _fetch_dune_query_results(7209618)
+    except Exception:
+        _tempo_raw = _pd.DataFrame()
+    if _tempo_raw.empty:
+        st.subheader("Tempo stablecoin payments (Dune)")
+        st.caption("Source: [Dune query 7209618]"
+                   "(https://dune.com/queries/7209618).")
+        st.info("Tempo stablecoin volume query returned no rows.")
+    else:
+        # The fetcher normalises the timestamp col to `day`, but
+        # query 7209618 uses `dt` instead — handle both defensively
+        # so a future fetcher tweak doesn't silently break this.
+        _tp = _tempo_raw.copy()
+        _time_col = "day" if "day" in _tp.columns else (
+            "dt" if "dt" in _tp.columns else None)
+        if _time_col is None:
+            _tp["date"] = _pd.NaT
+        else:
+            _tp["date"] = _pd.to_datetime(_tp[_time_col], errors="coerce")
+        # Rename the snake_case volume columns to display labels.
+        _TEMPO_RENAME = {
+            "pathusd_volume": "pathUSD",
+            "usdc_e_volume":  "USDC.e",
+            "usdt0_volume":   "USDT0",
+        }
+        _tp = _tp.rename(columns=_TEMPO_RENAME)
+        _tp_tokens_all = ["pathUSD", "USDC.e", "USDT0"]
+        # Keep only tokens that actually appear in the data + sort by
+        # latest-day volume.
+        _tp_tokens = [t for t in _tp_tokens_all if t in _tp.columns]
+        _tp = _tp.dropna(subset=["date"]).sort_values("date")
+        _tp_latest = _tp.iloc[-1].fillna(0) if not _tp.empty else {}
+        _tp_ordered = sorted(
+            _tp_tokens,
+            key=lambda c: float(_tp_latest.get(c, 0) or 0),
+            reverse=True)
+        _TEMPO_COLORS = {
+            "pathUSD": "#F97316",  # orange — Path-branded
+            "USDC.e":  "#2775CA",  # USDC blue
+            "USDT0":   "#26A17B",  # Tether green (USDT0 is the
+                                    # CCTP-wrapped USDT on Tempo)
+        }
+
+        def _build_tempo_fig(df_view):
+            fig = _go.Figure()
+            for tok in reversed(_tp_ordered):
+                if tok not in df_view.columns:
+                    continue
+                color = _TEMPO_COLORS.get(tok, "#888888")
+                y = df_view[tok].fillna(0)
+                fig.add_trace(_go.Scatter(
+                    x=df_view["date"], y=y, name=tok,
+                    mode="lines",
+                    line=dict(color=color, width=0.9),
+                    stackgroup="tempo",
+                    customdata=y.map(sd._fmt_usd),
+                    hovertemplate=f"{tok}: %{{customdata}}<extra></extra>",
+                ))
+            present = [t for t in _tp_ordered if t in df_view.columns]
+            tot = df_view[present].fillna(0).sum(axis=1)
+            fig.add_trace(_go.Scatter(
+                x=df_view["date"], y=tot, name="Total",
+                mode="lines",
+                line=dict(width=0, color="rgba(0,0,0,0)"),
+                showlegend=False, stackgroup=None,
+                customdata=tot.map(sd._fmt_usd),
+                hovertemplate="<b>Total: %{customdata}</b><extra></extra>",
+            ))
+            y_max = float(tot.max() or 0)
+            _xmin = df_view["date"].min().strftime("%Y-%m-%d")
+            _xmax = df_view["date"].max().strftime("%Y-%m-%d")
+            fig.update_layout(
+                height=400, hovermode="x unified",
+                margin=dict(t=10, b=10, l=10, r=10),
+                showlegend=False,
+                xaxis=dict(range=[_xmin, _xmax], autorange=False,
+                            type="date"),
+                yaxis=dict(tickprefix="$", tickformat="~s",
+                           showgrid=True, rangemode="tozero",
+                           range=[0, y_max * 1.10] if y_max > 0 else None),
+            )
+            return fig
+
+        _tp_raw = _tp[["date"] + _tp_ordered].copy()
+        _tp_raw["Total"] = (_tp[_tp_ordered].fillna(0).sum(axis=1).values)
+        sd._chart_dwm_simple(
+            "Tempo stablecoin payments",
+            source_df=_tp[["date"] + _tp_ordered],
+            build_fig=_build_tempo_fig,
+            raw_df=_tp_raw,
+            raw_key="sd_stable_chains_tempo", stacked=True,
+            raw_filename="tempo_stablecoin_payments",
+            raw_fmt={c: "${:,.0f}" for c in _tp_ordered + ["Total"]},
+            caption=(
+                "Daily on-chain stablecoin transfer volume on Tempo "
+                "(payments-first EVM L1, launched 2026-01-16). Stacked "
+                "by token: pathUSD, USDC.e (Stargate-wrapped USDC), "
+                "USDT0 (CCTP-wrapped USDT). Source: [Dune query 7209618]"
+                "(https://dune.com/queries/7209618) — community-"
+                "maintained Tempo Traction dashboard."
+            ),
+            col_aggs={c: "sum" for c in _tp_ordered},
+        )
+        sd._legend_expander(
+            [(t, _TEMPO_COLORS.get(t, "#888888")) for t in _tp_ordered],
+            label="tokens")
+
 
 def _render_sol_etf() -> None:
     """SOL ETF vertical — aggregate SoSoValue data across every U.S.-

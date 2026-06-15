@@ -221,17 +221,53 @@ def fetch_open_positions(token: str, limit: int = 20,
 
 
 # ── RWA categorization helpers ──────────────────────────────────────
-# 70 RWA perps on Hyperliquid carry the `xyz:` prefix. Categorize by
-# the underlying asset class for the chart's grouping. Symbols not
-# matched fall through to "Other RWA" — currently includes a handful
-# of pre-IPO / exotic tickers (SPCX = SpaceX, SKHX, CBRS, QNT, etc.)
+# Hyperliquid's HIP-3 perps carry a builder-dex prefix. We scope this
+# module to the `xyz:` dex (the largest RWA dex by OI; ~77 markets).
+#
+# Categories come from Hyperliquid's `perpConciseAnnotations` info
+# endpoint — they tag every listed perp with one of {stocks,
+# commodities, indices, fx, preipo, crypto}. The annotation seed lives
+# at `hyperliquid_seeds/perp_annotations.json`, refreshed weekly by
+# the GitHub Actions cron (see
+# `.github/workflows/hyperliquid_categories.yml` +
+# `scripts/refresh_hyperliquid_seed.py`).
+#
+# The hand-curated `_FALLBACK_RWA_CATEGORIES` dict below is kept as a
+# defensive backstop — if the seed file is missing or unreadable
+# (broken deploy, fresh clone before cron has run), `categorize()`
+# falls back to the manual classification so the chart still renders
+# something coherent. Once the seed is in place the seed wins for any
+# overlapping symbol.
 
 _RWA_PREFIX = "xyz:"
 
-# Curated taxonomy — kept manually rather than parsed from a TLD/
-# ticker registry because Hyperliquid's symbol set is small (~70) and
-# evolves slowly. New listings get an "Other" bucket until classified.
-_RWA_CATEGORIES: dict[str, set[str]] = {
+# Hyperliquid's category labels → our display labels. Keep the chart's
+# legend wording stable even as Hyperliquid renames buckets upstream.
+_HL_CAT_TO_DISPLAY: dict[str, str] = {
+    "stocks":      "US Equities",
+    "commodities": "Commodities",
+    "indices":     "Indices",
+    "fx":          "FX",
+    "preipo":      "Other RWA",
+    # `crypto` shouldn't appear on xyz: but defensively bucket it
+    # somewhere visible rather than swallowing it.
+    "crypto":      "Other RWA",
+}
+
+
+def _normalize_hl_category(raw: str | None) -> str | None:
+    """Map a Hyperliquid `perpConciseAnnotations` category string to
+    our display label. Case-insensitive (Hyperliquid has shipped both
+    `fx` and `FX`). None / unknown → None so the caller can fall back
+    to the hand-curated dict."""
+    if not raw:
+        return None
+    return _HL_CAT_TO_DISPLAY.get(raw.lower())
+
+
+# Hand-curated backstop — used only when the seed file is missing or
+# returns no match. Order doesn't matter; lookup is by token name.
+_FALLBACK_RWA_CATEGORIES: dict[str, set[str]] = {
     "Commodities": {
         "GOLD", "SILVER", "COPPER", "PLATINUM", "PALLADIUM",
         "BRENTOIL", "CL", "NATGAS",
@@ -243,38 +279,97 @@ _RWA_CATEGORIES: dict[str, set[str]] = {
     "FX": {
         "EUR", "JPY", "GBP",
     },
-    # US single-name equities — explicitly enumerated so additions
-    # (when Hyperliquid lists new tickers) don't silently land in
-    # "Other" until someone notices.
     "US Equities": {
         "NVDA", "MSFT", "AAPL", "GOOGL", "AMZN", "META", "TSLA",
         "AMD", "AVGO", "MU", "INTC", "ORCL", "LLY", "NFLX", "NOW",
         "ARM", "COST", "BABA", "RIVN", "COIN", "MSTR", "HOOD",
         "PLTR", "GME", "HIMS", "RKLB", "DKNG", "ZM", "DELL", "IBM",
-        "USAR", "URNM", "BB", "CRWV", "CRCL", "NBIS", "BIRD",
+        "USAR", "URNM", "BB", "CRWV", "CRCL", "NBIS",
         "DRAM", "LITE", "ASML", "TSM", "SMSN", "HYUNDAI", "MRVL",
         "SNDK",
     },
-    # Pre-IPO / exotic / ETFs that don't fit elsewhere — name kept
-    # generic so the chart's legend reads cleanly.
     "Other RWA": {
         "SPCX",   # SpaceX pre-IPO
         "SKHX",   # opaque ticker
         "CBRS",   # opaque ticker
         "QNT",    # likely Quant Network or similar
-        "PURRDAT","BIRD",
+        "PURRDAT", "BIRD",
     },
 }
 
 
+def _load_seed_categories() -> dict[str, str]:
+    """Parse the on-disk Hyperliquid annotation seed into
+    {bare_ticker: display_category} for the xyz: dex only.
+
+    LRU-cached on the loader (see decorator) so repeated calls within
+    one process pay the JSON read + parse cost exactly once. The seed
+    file is replaced atomically by the weekly cron — process restart
+    picks up the new mapping; live processes serve the cached old map
+    until restart (acceptable: categories drift slowly)."""
+    # Local import — circular-safe and keeps hyperliquid.py optional
+    # for the test path (categorize() still works on the fallback dict
+    # even if hyperliquid.py is somehow missing).
+    try:
+        import hyperliquid  # noqa: WPS433
+    except Exception:
+        return {}
+    seed = hyperliquid.load_seed()
+    if not seed:
+        return {}
+    out: dict[str, str] = {}
+    for entry in seed.get("annotations", []):
+        try:
+            token, meta = entry
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(token, str) or not token.startswith(_RWA_PREFIX):
+            continue
+        bare = token[len(_RWA_PREFIX):]
+        display = _normalize_hl_category((meta or {}).get("category"))
+        if display:
+            out[bare] = display
+    return out
+
+
+# Module-level cache populated lazily on first categorize() call. We
+# don't use functools.lru_cache because (a) the loader takes no args
+# and (b) we want a single explicit invalidator for tests.
+_seed_categories_cache: dict[str, str] | None = None
+
+
+def _categories() -> dict[str, str]:
+    """Return the seed-derived ticker→category map (cached). Call this
+    instead of `_load_seed_categories()` directly so repeat lookups
+    don't re-read the JSON every time."""
+    global _seed_categories_cache
+    if _seed_categories_cache is None:
+        _seed_categories_cache = _load_seed_categories()
+    return _seed_categories_cache
+
+
 def categorize(token: str) -> str:
-    """Return the RWA category for an xyz:* token; None for non-RWA."""
+    """Return the RWA category for an xyz:* token; None for non-RWA.
+
+    Resolution order:
+      1. Hyperliquid `perpConciseAnnotations` seed (authoritative,
+         refreshed weekly by cron).
+      2. Hand-curated fallback dict (defensive — used when the seed
+         file is missing or the ticker isn't in it).
+      3. "Other RWA" (terminal fallback for unknown xyz: tickers).
+    """
     if not token.startswith(_RWA_PREFIX):
         return None
     bare = token[len(_RWA_PREFIX):]
-    for cat, members in _RWA_CATEGORIES.items():
+    # 1. Seed (authoritative).
+    seed_cat = _categories().get(bare)
+    if seed_cat:
+        return seed_cat
+    # 2. Hand-curated fallback.
+    for cat, members in _FALLBACK_RWA_CATEGORIES.items():
         if bare in members:
             return cat
+    # 3. Terminal.
     return "Other RWA"
 
 

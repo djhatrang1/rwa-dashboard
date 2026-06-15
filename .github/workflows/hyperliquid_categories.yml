@@ -1,0 +1,72 @@
+name: Refresh Hyperliquid annotation seed (weekly)
+
+# Hyperliquid's `perpConciseAnnotations` info endpoint tags each
+# HIP-3 perp with a category (`stocks` / `commodities` / `indices` /
+# `fx` / `preipo` / `crypto`). The dashboard reads this seed at
+# chart render time to colour the RWA OI chart — so the seed needs
+# to be fresh, but new HIP-3 listings appear maybe a few times a
+# week at most, so a weekly refresh is plenty.
+#
+# Why weekly (not bundled into the 6h pull):
+#   - keeps git history clean (one commit/week vs one/6h)
+#   - this is a category mapping, not market data — staleness on
+#     newly-listed tokens just means they show up under "Other RWA"
+#     for up to a week, which is fine.
+
+on:
+  schedule:
+    # Sundays at 00:30 UTC. Off-peak; offset from the 6h pull crons
+    # (00:00, 06:00, 12:00, 18:00) so the two workflows don't fight
+    # for runner concurrency.
+    - cron: "30 0 * * 0"
+  workflow_dispatch: {}
+
+concurrency:
+  group: hyperliquid-categories
+  cancel-in-progress: false
+
+permissions:
+  # Need write so the auto-commit step below can push.
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        # The refresh script only needs `requests`; pull the full
+        # requirements anyway so the import-graph (seed_cache →
+        # pandas) doesn't crash on a missing dep.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Refresh seed
+        run: |
+          python scripts/refresh_hyperliquid_seed.py
+
+      - name: Commit if changed
+        # No-op when nothing changed (the `--quiet` keeps the log
+        # clean). Author + email are the default GitHub Actions bot
+        # identity so the commit shows up as automation, not as a
+        # human pretending to be one.
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add hyperliquid_seeds/perp_annotations.json
+          if git diff --cached --quiet; then
+            echo "no seed changes — nothing to commit"
+          else
+            git commit -m "chore: refresh Hyperliquid annotation seed"
+            git push
+          fi

@@ -3,7 +3,7 @@
 These rules apply to every change in this repo. Newer entries at the bottom.
 
 ## Data sources — closed list
-Only pull data from these eight sources unless the user explicitly authorizes a new one:
+Only pull data from these nine sources unless the user explicitly authorizes a new one:
 
 - Birdeye
 - Dune
@@ -13,6 +13,7 @@ Only pull data from these eight sources unless the user explicitly authorizes a 
 - Blockworks Research
 - Paymentscan
 - SoSoValue (ETF data)
+- Hyperliquid (RWA perp annotations only — `perpConciseAnnotations` info endpoint; weekly cron writes a disk seed under `hyperliquid_seeds/`, the dashboard reads from disk at render time — never hits the API live, never touches Postgres egress)
 
 Do NOT scrape, hit undocumented endpoints, or use third-party aggregators outside this list. When you find yourself wanting another source, ask first.
 

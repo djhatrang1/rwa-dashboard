@@ -1,0 +1,1237 @@
+{
+  "annotations": [
+    [
+      "flx:BTC",
+      {
+        "category": "crypto"
+      }
+    ],
+    [
+      "flx:COIN",
+      {
+        "category": "stocks"
+      }
+    ],
+    [
+      "flx:COPPER",
+      {
+        "category": "commodities"
+      }
+    ],
+    [
+      "flx:CRCL",
+      {
+        "category": "stocks"
+      }
+    ],
+    [
+      "flx:GAS",
+      {
+        "category": "commodities"
+      }
+    ],
+    [
+      "flx:GOLD",
+      {
+        "category": "commodities"
+      }
+    ],
+    [
+      "flx:NVDA",
+      {
+        "category": "stocks"
+      }
+    ],
+    [
+      "flx:OIL",
+      {
+        "category": "commodities"
+      }
+    ],
+    [
+      "flx:PALLADIUM",
+      {
+        "category": "commodities"
+      }
+    ],
+    [
+      "flx:PLATINUM",
+      {
+        "category": "commodities"
+      }
+    ],
+    [
+      "flx:SILVER",
+      {
+        "category": "commodities"
+      }
+    ],
+    [
+      "flx:TSLA",
+      {
+        "category": "stocks"
+      }
+    ],
+    [
+      "flx:USA500",
+      {
+        "category": "indices"
+      }
+    ],
+    [
+      "flx:USDE",
+      {
+        "category": "crypto"
+      }
+    ],
+    [
+      "flx:XMR",
+      {
+        "category": "crypto"
+      }
+    ],
+    [
+      "km:AAPL",
+      {
+        "category": "stocks"
+      }
+    ],
+    [
+      "km:BABA",
+      {
+        "category": "stocks"
+      }
+    ],
+    [
+      "km:BMNR",
+      {
+        "category": "stocks"
+      }
+    ],
+    [
+      "km:EUR",
+      {
+        "category": "FX"
+      }
+    ],
+    [
+      "km:GLDMINE",
+      {
+        "category": "indices"
+      }
+    ],
+    [
+      "km:GOLD",
+      {
+        "category": "commodities"
+      }
+    ],
+    [
+      "km:GOOGL",
+      {
+        "category": "stocks"
+      }
+    ],
+    [
+      "km:MU",
+      {
+        "category": "stocks"
+      }
+    ],
+    [
+      "km:NVDA",
+      {
+        "category": "stocks"
+      }
+    ],
+    [
+      "km:PLTR",
+      {
+        "category": "stocks"
+      }
+    ],
+    [
+      "km:RTX",
+      {
+        "category": "stocks"
+      }
+    ],
+    [
+      "km:SEMI",
+      {
+        "category": "indices"
+      }
+    ],
+    [
+      "km:SILVER",
+      {
+        "category": "commodities"
+      }
+    ],
+    [
+      "km:SMALL2000",
+      {
+        "category": "indices"
+      }
+    ],
+    [
+      "km:TENCENT",
+      {
+        "category": "stocks"
+      }
+    ],
+    [
+      "km:TSLA",
+      {
+        "category": "stocks"
+      }
+    ],
+    [
+      "km:US500",
+      {
+        "category": "indices"
+      }
+    ],
+    [
+      "km:USENERGY",
+      {
+        "category": "indices"
+      }
+    ],
+    [
+      "km:USOIL",
+      {
+        "category": "commodities"
+      }
+    ],
+    [
+      "km:USTECH",
+      {
+        "category": "indices",
+        "displayName": "USTECH100"
+      }
+    ],
+    [
+      "km:XIAOMI",
+      {
+        "category": "stocks"
+      }
+    ],
+    [
+      "para:AVGO",
+      {
+        "category": "stocks",
+        "keywords": [
+          "broadcom",
+          "ai"
+        ]
+      }
+    ],
+    [
+      "para:BTCD",
+      {
+        "category": "crypto",
+        "displayName": "BTC.D",
+        "keywords": [
+          "dominance",
+          "index"
+        ]
+      }
+    ],
+    [
+      "para:OTHERS",
+      {
+        "category": "crypto",
+        "displayName": "OTHERS",
+        "keywords": [
+          "altcoin",
+          "index"
+        ]
+      }
+    ],
+    [
+      "para:TOTAL2",
+      {
+        "category": "crypto",
+        "displayName": "TOTAL2",
+        "keywords": [
+          "altcoin",
+          "index"
+        ]
+      }
+    ],
+    [
+      "vntl:ANTHROPIC",
+      {
+        "category": "preipo",
+        "keywords": [
+          "ai",
+          "claude"
+        ]
+      }
+    ],
+    [
+      "vntl:BIOTECH",
+      {
+        "category": "indices",
+        "keywords": [
+          "xbi",
+          "pharma"
+        ]
+      }
+    ],
+    [
+      "vntl:DEFENSE",
+      {
+        "category": "indices",
+        "keywords": [
+          "shld",
+          "military"
+        ]
+      }
+    ],
+    [
+      "vntl:ENERGY",
+      {
+        "category": "indices",
+        "keywords": [
+          "xle"
+        ]
+      }
+    ],
+    [
+      "vntl:GOLDJM",
+      {
+        "category": "indices"
+      }
+    ],
+    [
+      "vntl:INFOTECH",
+      {
+        "category": "indices"
+      }
+    ],
+    [
+      "vntl:MAG7",
+      {
+        "category": "indices"
+      }
+    ],
+    [
+      "vntl:NUCLEAR",
+      {
+        "category": "indices",
+        "keywords": [
+          "nlr",
+          "energy"
+        ]
+      }
+    ],
+    [
+      "vntl:OPENAI",
+      {
+        "category": "preipo",
+        "keywords": [
+          "ai",
+          "chatgpt"
+        ]
+      }
+    ],
+    [
+      "vntl:ROBOT",
+      {
+        "category": "indices",
+        "keywords": [
+          "botz"
+        ]
+      }
+    ],
+    [
+      "vntl:SEMIS",
+      {
+        "category": "indices"
+      }
+    ],
+    [
+      "vntl:SILVERJM",
+      {
+        "category": "indices"
+      }
+    ],
+    [
+      "vntl:SOY",
+      {
+        "category": "commodities",
+        "keywords": [
+          "food",
+          "oilseed"
+        ]
+      }
+    ],
+    [
+      "vntl:SPACEX",
+      {
+        "category": "preipo",
+        "keywords": [
+          "elon",
+          "preipo"
+        ]
+      }
+    ],
+    [
+      "vntl:WHEAT",
+      {
+        "category": "commodities",
+        "keywords": [
+          "grain",
+          "food"
+        ]
+      }
+    ],
+    [
+      "xyz:AAPL",
+      {
+        "category": "stocks",
+        "displayName": "AAPL",
+        "keywords": [
+          "apple",
+          "tech"
+        ]
+      }
+    ],
+    [
+      "xyz:ALUMINIUM",
+      {
+        "category": "commodities",
+        "displayName": "ALUMINIUM",
+        "keywords": [
+          "ALI",
+          "metal"
+        ]
+      }
+    ],
+    [
+      "xyz:AMD",
+      {
+        "category": "stocks",
+        "displayName": "AMD",
+        "keywords": [
+          "advanced",
+          "semis"
+        ]
+      }
+    ],
+    [
+      "xyz:AMZN",
+      {
+        "category": "stocks",
+        "displayName": "AMZN",
+        "keywords": [
+          "amazon",
+          "tech"
+        ]
+      }
+    ],
+    [
+      "xyz:ASML",
+      {
+        "category": "stocks",
+        "displayName": "ASML",
+        "keywords": [
+          "ai",
+          "semi"
+        ]
+      }
+    ],
+    [
+      "xyz:AVGO",
+      {
+        "category": "stocks",
+        "displayName": "AVGO",
+        "keywords": [
+          "semis",
+          "broadcom"
+        ]
+      }
+    ],
+    [
+      "xyz:BABA",
+      {
+        "category": "stocks",
+        "displayName": "BABA",
+        "keywords": [
+          "alibaba",
+          "china"
+        ]
+      }
+    ],
+    [
+      "xyz:BB",
+      {
+        "category": "stocks",
+        "displayName": "BB",
+        "keywords": [
+          "blackberry",
+          "tech"
+        ]
+      }
+    ],
+    [
+      "xyz:BIRD",
+      {
+        "category": "stocks",
+        "displayName": "BIRD",
+        "keywords": [
+          "allbirds",
+          "ai"
+        ]
+      }
+    ],
+    [
+      "xyz:BRENTOIL",
+      {
+        "category": "commodities",
+        "displayName": "BRENTOIL",
+        "keywords": [
+          "bz",
+          "crude"
+        ]
+      }
+    ],
+    [
+      "xyz:BX",
+      {
+        "category": "stocks",
+        "displayName": "BX",
+        "keywords": [
+          "blackstone",
+          "credit"
+        ]
+      }
+    ],
+    [
+      "xyz:CBRS",
+      {
+        "category": "stocks",
+        "displayName": "CBRS",
+        "keywords": [
+          "cerebras",
+          "ai"
+        ]
+      }
+    ],
+    [
+      "xyz:CL",
+      {
+        "category": "commodities",
+        "displayName": "WTIOIL",
+        "keywords": [
+          "crude",
+          "CL"
+        ]
+      }
+    ],
+    [
+      "xyz:COIN",
+      {
+        "category": "stocks",
+        "displayName": "COIN",
+        "keywords": [
+          "coinbase",
+          "crypto"
+        ]
+      }
+    ],
+    [
+      "xyz:COPPER",
+      {
+        "category": "commodities",
+        "displayName": "COPPER",
+        "keywords": [
+          "HG",
+          "metal"
+        ]
+      }
+    ],
+    [
+      "xyz:CORN",
+      {
+        "category": "commodities",
+        "displayName": "CORN",
+        "keywords": [
+          "agricultur",
+          "grain"
+        ]
+      }
+    ],
+    [
+      "xyz:COST",
+      {
+        "category": "stocks",
+        "displayName": "COST",
+        "keywords": [
+          "costco",
+          "consumer"
+        ]
+      }
+    ],
+    [
+      "xyz:CRCL",
+      {
+        "category": "stocks",
+        "displayName": "CRCL",
+        "keywords": [
+          "circle",
+          "crypto"
+        ]
+      }
+    ],
+    [
+      "xyz:CRWV",
+      {
+        "category": "stocks",
+        "displayName": "CRWV",
+        "keywords": [
+          "coreweave",
+          "ai"
+        ]
+      }
+    ],
+    [
+      "xyz:DELL",
+      {
+        "category": "stocks",
+        "displayName": "DELL",
+        "keywords": [
+          "tech",
+          "enterprise"
+        ]
+      }
+    ],
+    [
+      "xyz:DKNG",
+      {
+        "category": "stocks",
+        "displayName": "DKNG",
+        "keywords": [
+          "draftkings",
+          "sports"
+        ]
+      }
+    ],
+    [
+      "xyz:DRAM",
+      {
+        "category": "stocks",
+        "displayName": "DRAM",
+        "keywords": [
+          "etf",
+          "memory"
+        ]
+      }
+    ],
+    [
+      "xyz:DXY",
+      {
+        "category": "fx",
+        "displayName": "DXY",
+        "keywords": [
+          "dollar",
+          "currency"
+        ]
+      }
+    ],
+    [
+      "xyz:EUR",
+      {
+        "category": "fx",
+        "displayName": "EURUSD",
+        "keywords": [
+          "currency",
+          "euro"
+        ]
+      }
+    ],
+    [
+      "xyz:EWJ",
+      {
+        "category": "stocks",
+        "displayName": "EWJ",
+        "keywords": [
+          "japan",
+          "etf"
+        ]
+      }
+    ],
+    [
+      "xyz:EWY",
+      {
+        "category": "stocks",
+        "displayName": "EWY",
+        "keywords": [
+          "korea",
+          "etf"
+        ]
+      }
+    ],
+    [
+      "xyz:EWZ",
+      {
+        "category": "stocks",
+        "displayName": "EWZ",
+        "keywords": [
+          "etf",
+          "brazil"
+        ]
+      }
+    ],
+    [
+      "xyz:GBP",
+      {
+        "category": "fx",
+        "displayName": "GBPUSD",
+        "keywords": [
+          "currency",
+          "pound"
+        ]
+      }
+    ],
+    [
+      "xyz:GME",
+      {
+        "category": "stocks",
+        "displayName": "GME",
+        "keywords": [
+          "gamestop",
+          "meme"
+        ]
+      }
+    ],
+    [
+      "xyz:GOLD",
+      {
+        "category": "commodities",
+        "displayName": "GOLD",
+        "keywords": [
+          "xau",
+          "metal"
+        ]
+      }
+    ],
+    [
+      "xyz:GOOGL",
+      {
+        "category": "stocks",
+        "displayName": "GOOGL",
+        "keywords": [
+          "google",
+          "ai"
+        ]
+      }
+    ],
+    [
+      "xyz:HIMS",
+      {
+        "category": "stocks",
+        "displayName": "HIMS",
+        "keywords": [
+          "health",
+          "peptides"
+        ]
+      }
+    ],
+    [
+      "xyz:HOOD",
+      {
+        "category": "stocks",
+        "displayName": "HOOD",
+        "keywords": [
+          "robinhood",
+          "tech"
+        ]
+      }
+    ],
+    [
+      "xyz:HYUNDAI",
+      {
+        "category": "stocks",
+        "displayName": "HYUNDAI",
+        "keywords": [
+          "korea",
+          "car"
+        ]
+      }
+    ],
+    [
+      "xyz:IBM",
+      {
+        "category": "stocks",
+        "displayName": "IBM",
+        "keywords": [
+          "tech",
+          "enterprise"
+        ]
+      }
+    ],
+    [
+      "xyz:INTC",
+      {
+        "category": "stocks",
+        "displayName": "INTC",
+        "keywords": [
+          "intel",
+          "semis"
+        ]
+      }
+    ],
+    [
+      "xyz:JP225",
+      {
+        "category": "indices",
+        "displayName": "JP225",
+        "keywords": [
+          "japan",
+          "nikkei"
+        ]
+      }
+    ],
+    [
+      "xyz:JPY",
+      {
+        "category": "fx",
+        "displayName": "USDJPY",
+        "keywords": [
+          "currency",
+          "yen"
+        ]
+      }
+    ],
+    [
+      "xyz:KIOXIA",
+      {
+        "category": "stocks",
+        "displayName": "KIOXIA",
+        "keywords": [
+          "japan",
+          "285"
+        ]
+      }
+    ],
+    [
+      "xyz:KR200",
+      {
+        "category": "indices",
+        "displayName": "KR200",
+        "keywords": [
+          "korea",
+          "kospi"
+        ]
+      }
+    ],
+    [
+      "xyz:KRW",
+      {
+        "category": "fx",
+        "displayName": "USDKRW",
+        "keywords": [
+          "currency",
+          "won"
+        ]
+      }
+    ],
+    [
+      "xyz:LITE",
+      {
+        "category": "stocks",
+        "displayName": "LITE",
+        "keywords": [
+          "lumentum",
+          "photonics"
+        ]
+      }
+    ],
+    [
+      "xyz:LLY",
+      {
+        "category": "stocks",
+        "displayName": "LLY",
+        "keywords": [
+          "elililly",
+          "pharma"
+        ]
+      }
+    ],
+    [
+      "xyz:META",
+      {
+        "category": "stocks",
+        "displayName": "META",
+        "keywords": [
+          "facebook",
+          "tech"
+        ]
+      }
+    ],
+    [
+      "xyz:MRVL",
+      {
+        "category": "stocks",
+        "displayName": "MRVL",
+        "keywords": [
+          "marvell",
+          "ai"
+        ]
+      }
+    ],
+    [
+      "xyz:MSFT",
+      {
+        "category": "stocks",
+        "displayName": "MSFT",
+        "keywords": [
+          "microsoft",
+          "tech"
+        ]
+      }
+    ],
+    [
+      "xyz:MSTR",
+      {
+        "category": "stocks",
+        "displayName": "MSTR",
+        "keywords": [
+          "strategy",
+          "crypto"
+        ]
+      }
+    ],
+    [
+      "xyz:MU",
+      {
+        "category": "stocks",
+        "displayName": "MU",
+        "keywords": [
+          "micron",
+          "memory"
+        ]
+      }
+    ],
+    [
+      "xyz:NATGAS",
+      {
+        "category": "commodities",
+        "displayName": "NATGAS",
+        "keywords": [
+          "hh",
+          "ng"
+        ]
+      }
+    ],
+    [
+      "xyz:NFLX",
+      {
+        "category": "stocks",
+        "displayName": "NFLX",
+        "keywords": [
+          "netflix",
+          "tech"
+        ]
+      }
+    ],
+    [
+      "xyz:NOW",
+      {
+        "category": "stocks",
+        "displayName": "NOW",
+        "keywords": [
+          "ai",
+          "service"
+        ]
+      }
+    ],
+    [
+      "xyz:NVDA",
+      {
+        "category": "stocks",
+        "displayName": "NVDA",
+        "keywords": [
+          "nvidia",
+          "ai"
+        ]
+      }
+    ],
+    [
+      "xyz:ORCL",
+      {
+        "category": "stocks",
+        "displayName": "ORCL",
+        "keywords": [
+          "oracle",
+          "ai"
+        ]
+      }
+    ],
+    [
+      "xyz:PALLADIUM",
+      {
+        "category": "commodities",
+        "displayName": "PALLADIUM",
+        "keywords": [
+          "XPD",
+          "metal"
+        ]
+      }
+    ],
+    [
+      "xyz:PLATINUM",
+      {
+        "category": "commodities",
+        "displayName": "PLATINUM",
+        "keywords": [
+          "XPT",
+          "metal"
+        ]
+      }
+    ],
+    [
+      "xyz:PLTR",
+      {
+        "category": "stocks",
+        "displayName": "PLTR",
+        "keywords": [
+          "palantir",
+          "ai"
+        ]
+      }
+    ],
+    [
+      "xyz:PURRDAT",
+      {
+        "category": "stocks",
+        "displayName": "PURRDAT",
+        "keywords": [
+          "hyperliq",
+          "strategies"
+        ]
+      }
+    ],
+    [
+      "xyz:QNT",
+      {
+        "category": "preipo",
+        "displayName": "QNT",
+        "keywords": [
+          "quantinuum",
+          "ipo"
+        ]
+      }
+    ],
+    [
+      "xyz:RIVN",
+      {
+        "category": "stocks",
+        "displayName": "RIVN",
+        "keywords": [
+          "rivian",
+          "ev"
+        ]
+      }
+    ],
+    [
+      "xyz:RKLB",
+      {
+        "category": "stocks",
+        "displayName": "RKLB",
+        "keywords": [
+          "rocketlab",
+          "space"
+        ]
+      }
+    ],
+    [
+      "xyz:SILVER",
+      {
+        "category": "commodities",
+        "displayName": "SILVER",
+        "keywords": [
+          "xag",
+          "metal"
+        ]
+      }
+    ],
+    [
+      "xyz:SKHX",
+      {
+        "category": "stocks",
+        "displayName": "SKHYNIX",
+        "keywords": [
+          "ai",
+          "korea"
+        ]
+      }
+    ],
+    [
+      "xyz:SMSN",
+      {
+        "category": "stocks",
+        "displayName": "SAMSUNG",
+        "keywords": [
+          "smsn",
+          "korea"
+        ]
+      }
+    ],
+    [
+      "xyz:SNDK",
+      {
+        "category": "stocks",
+        "displayName": "SNDK",
+        "keywords": [
+          "sandisk",
+          "memory"
+        ]
+      }
+    ],
+    [
+      "xyz:SOFTBANK",
+      {
+        "category": "stocks",
+        "displayName": "SOFTBANK",
+        "keywords": [
+          "japan",
+          "tech"
+        ]
+      }
+    ],
+    [
+      "xyz:SP500",
+      {
+        "category": "indices",
+        "displayName": "S&P500",
+        "keywords": [
+          "es",
+          "spx"
+        ]
+      }
+    ],
+    [
+      "xyz:SPCX",
+      {
+        "category": "stocks",
+        "displayName": "SPCX",
+        "keywords": [
+          "ai",
+          "spacex"
+        ]
+      }
+    ],
+    [
+      "xyz:TSLA",
+      {
+        "category": "stocks",
+        "displayName": "TSLA",
+        "keywords": [
+          "tesla",
+          "ev"
+        ]
+      }
+    ],
+    [
+      "xyz:TSM",
+      {
+        "category": "stocks",
+        "displayName": "TSM",
+        "keywords": [
+          "semis",
+          "taiwan"
+        ]
+      }
+    ],
+    [
+      "xyz:URNM",
+      {
+        "category": "stocks",
+        "displayName": "URNM",
+        "keywords": [
+          "uranium",
+          "etf"
+        ]
+      }
+    ],
+    [
+      "xyz:USAR",
+      {
+        "category": "stocks",
+        "displayName": "USAR",
+        "keywords": [
+          "rareearth",
+          "mining"
+        ]
+      }
+    ],
+    [
+      "xyz:VIX",
+      {
+        "category": "indices",
+        "displayName": "VVV"
+      }
+    ],
+    [
+      "xyz:VOL",
+      {
+        "category": "indices",
+        "displayName": "VOL",
+        "keywords": [
+          "volatility",
+          "vxx"
+        ]
+      }
+    ],
+    [
+      "xyz:WHEAT",
+      {
+        "category": "commodities",
+        "displayName": "WHEAT",
+        "keywords": [
+          "grain",
+          "agricultur"
+        ]
+      }
+    ],
+    [
+      "xyz:XLE",
+      {
+        "category": "stocks",
+        "displayName": "XLE",
+        "keywords": [
+          "etf",
+          "energy"
+        ]
+      }
+    ],
+    [
+      "xyz:XYZ100",
+      {
+        "category": "indices",
+        "displayName": "XYZ100",
+        "keywords": [
+          "nasdaq",
+          "qqq"
+        ]
+      }
+    ],
+    [
+      "xyz:ZM",
+      {
+        "category": "stocks",
+        "displayName": "ZM",
+        "keywords": [
+          "zoom",
+          "ai"
+        ]
+      }
+    ]
+  ],
+  "fetched_at": "2026-06-15T05:56:16.325046Z",
+  "source": "POST https://api.hyperliquid.xyz/info type=perpConciseAnnotations"
+}

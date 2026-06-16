@@ -8164,21 +8164,98 @@ if __name__ == "__main__":
             ]
 
             # ── (a) Volume by Chain (stacked area, daily) ─────────
-            _ps_chain_df, _ps_chain_err = _ps.fetch("chains", "daily")
-            if _ps_chain_df.empty:
+            # Data source: three Allium queries collectively covering
+            # 2025-01-01 → 2026-06-15 in three 6-month windows. Each
+            # query returns wide format with `activity_date` + 7 chain
+            # cols (tron/solana/bsc/ethereum/polygon/arbitrum/base) +
+            # `other` rollup. Concatenated chronologically; no
+            # overlap between windows.
+            #
+            # NB: this measures on-chain stablecoin TRANSFER volume,
+            # not card-payment volume — the per-day scale is ~10-30×
+            # the Paymentscan equivalent because it captures every
+            # stablecoin movement on each chain, not just settlement-
+            # to-merchant. The Paymentscan endpoint stays available for
+            # the other charts in this section (issuers, infra).
+            _ALLIUM_HIST_QIDS = [
+                "7YP5E6h3YdfPttJUA0Ab",   # 2025 H1
+                "m4s4whB5eSxWM0DErjRN",   # 2025 H2
+                "WOUH0iQxt7Rsbk3qLcKr",   # 2026 H1
+            ]
+            # Display name map — Allium returns lowercased keys (per
+            # ClickHouse convention); the chart's palette lookup
+            # expects the canonical capitalisation we use elsewhere.
+            _ALLIUM_CHAIN_LABELS = {
+                "tron":     "TRON",
+                "solana":   "Solana",
+                "bsc":      "BSC",
+                "ethereum": "Ethereum",
+                "polygon":  "Polygon",
+                "arbitrum": "Arbitrum",
+                "base":     "Base",
+                "other":    "Others",
+            }
+
+            @st.cache_data(ttl=14_400, show_spinner=False)
+            def _fetch_payment_volume_history(_qids: tuple[str, ...]
+                                              ) -> tuple[pd.DataFrame, list[str]]:
+                """Pull each historical-window Allium query, concat into
+                one wide frame keyed by `date`. Returns (wide_df, errs)
+                — errs is a list of per-query error strings so the
+                caller can surface partial-data conditions."""
+                parts: list[pd.DataFrame] = []
+                errs: list[str] = []
+                for qid in _qids:
+                    _df, _err = _allium.fetch_allium_query_results(
+                        qid, revision="v1")
+                    if _err:
+                        errs.append(f"{qid}: {_err}")
+                        continue
+                    if _df.empty:
+                        continue
+                    parts.append(_df)
+                if not parts:
+                    return pd.DataFrame(), errs
+                _combined = pd.concat(parts, ignore_index=True)
+                _combined["date"] = pd.to_datetime(
+                    _combined["activity_date"], errors="coerce")
+                _combined = _combined.drop(columns=["activity_date"])
+                # Dedupe by date in case windows overlap a day; keep
+                # the later-window row (each pair of consecutive
+                # windows shares zero days per the schema we probed,
+                # but guard anyway).
+                _combined = (_combined.dropna(subset=["date"])
+                                       .sort_values("date")
+                                       .drop_duplicates(subset="date",
+                                                         keep="last")
+                                       .reset_index(drop=True))
+                # Rename lower-cased Allium cols → display labels.
+                _combined = _combined.rename(columns=_ALLIUM_CHAIN_LABELS)
+                return _combined, errs
+
+            _ch_wide, _ch_errs = _fetch_payment_volume_history(
+                tuple(_ALLIUM_HIST_QIDS))
+            if _ch_wide.empty:
                 st.subheader("Payment Volume by Chain")
                 st.caption(
-                    "Source: [Paymentscan /chains/daily]"
-                    "(https://paymentscan.xyz/api-docs)."
+                    "Source: Allium historical queries "
+                    f"({len(_ALLIUM_HIST_QIDS)} concatenated)."
                 )
-                st.info(f"No data. Reason: `{_ps_chain_err or 'empty'}`")
+                st.info(
+                    "No data. Errors: "
+                    f"`{'; '.join(_ch_errs) or 'all queries empty'}`")
             else:
-                _ch_wide, _ch_ordered = _pivot_top_n(
-                    _ps_chain_df, key_col="chain", value_col="volumes",
-                    top_n=12)
-                # _ordered sorts by latest value so "Others" may land
-                # anywhere — count non-Others positions separately so
-                # we don't index past _PS_PALETTE (12 hues, 13 cols).
+                # Order chains by latest-day volume, largest first.
+                _latest = _ch_wide.iloc[-1]
+                _chain_cols = [c for c in _ch_wide.columns if c != "date"]
+                _ch_ordered = sorted(
+                    _chain_cols,
+                    key=lambda c: float(_latest.get(c, 0) or 0),
+                    reverse=True)
+                # Stable palette: 12 high-contrast hues + grey for
+                # Others. With 8 columns including Others, we never
+                # touch index 7+ of the palette but keep the modulo
+                # for forward compatibility if more chains are added.
                 _ch_colors, _ci = {}, 0
                 for c in _ch_ordered:
                     if c == "Others":
@@ -8230,13 +8307,21 @@ if __name__ == "__main__":
                         dfv, _ch_ordered, _ch_colors, "ps_chain"),
                     raw_df=_ch_raw.sort_values("date", ascending=False),
                     raw_key="asset_ps_chain",
-                    raw_filename="paymentscan_volume_by_chain",
+                    raw_filename="allium_payment_volume_by_chain",
                     caption=(
-                        "Daily card-payment volume in USD per "
-                        "settlement chain. Top 12 chains shown; "
-                        "remaining long-tail chains rolled into "
-                        "**Others**. Source: [Paymentscan /chains/daily]"
-                        "(https://paymentscan.xyz/api-docs)."
+                        "Daily on-chain stablecoin transfer volume in "
+                        "USD per chain — proxy for total payment "
+                        "activity across each network. Top 7 chains "
+                        "shown explicitly; long-tail chains pre-rolled "
+                        "into **Others** by the upstream queries. "
+                        "Source: three Allium queries concatenated — "
+                        "[`7YP5E6h3YdfPttJUA0Ab`]"
+                        "(https://app.allium.so/analyze/queries/7YP5E6h3YdfPttJUA0Ab) "
+                        "(2025 H1), [`m4s4whB5eSxWM0DErjRN`]"
+                        "(https://app.allium.so/analyze/queries/m4s4whB5eSxWM0DErjRN) "
+                        "(2025 H2), [`WOUH0iQxt7Rsbk3qLcKr`]"
+                        "(https://app.allium.so/analyze/queries/WOUH0iQxt7Rsbk3qLcKr) "
+                        "(2026 H1)."
                     ),
                     col_aggs={c: "sum" for c in _ch_ordered},
                     legend_entries=[(c, _ch_colors[c]) for c in _ch_ordered],

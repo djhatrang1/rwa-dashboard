@@ -8186,9 +8186,43 @@ if __name__ == "__main__":
                     else:
                         _ch_colors[c] = _PS_PALETTE[_ci % len(_PS_PALETTE)]
                         _ci += 1
+                # Clip 1-day-only spikes per column — Paymentscan's
+                # mid-2025 TRON outlier (~$95M against ~$30M neighbors)
+                # compresses the y-axis and hides every other day's
+                # variation. Same idea as TokenGroupMetricsPuller's
+                # `_clip_isolated_spikes`: a point qualifies as an
+                # isolated spike when v > 2× mean(prev,next) AND v
+                # exceeds BOTH neighbors. Replaces the bad day with
+                # the neighbor mean so the stack stays continuous.
+                def _clip_spike(s: pd.Series,
+                                factor: float = 2.0) -> pd.Series:
+                    if len(s) < 3:
+                        return s
+                    out = s.copy()
+                    for i in range(1, len(s) - 1):
+                        v = s.iat[i]
+                        p = s.iat[i - 1]
+                        n = s.iat[i + 1]
+                        if pd.isna(v) or pd.isna(p) or pd.isna(n):
+                            continue
+                        m = (p + n) / 2.0
+                        if m > 0 and v > factor * m and v > p and v > n:
+                            out.iat[i] = m
+                    return out
+                for col in _ch_ordered:
+                    if col in _ch_wide.columns:
+                        _ch_wide[col] = _clip_spike(_ch_wide[col])
                 _ch_raw = _ch_wide.copy()
                 _ch_raw["Total"] = (_ch_wide[_ch_ordered].fillna(0)
                                                           .sum(axis=1).values)
+                # Pass legend_entries + legend_label explicitly so
+                # the helper renders ONE legend with the controlled
+                # color order. Previously the helper auto-extracted
+                # entries from the fig (rendering "Legend (N series)"
+                # with reversed trace order) AND a manual
+                # _legend_expander call below produced a SECOND
+                # "Legend (N chains)" — the duplicate the user
+                # reported. Single source of truth now.
                 _chart_dwm_simple(
                     "Payment Volume by Chain",
                     source_df=_ch_wide,
@@ -8205,10 +8239,10 @@ if __name__ == "__main__":
                         "(https://paymentscan.xyz/api-docs)."
                     ),
                     col_aggs={c: "sum" for c in _ch_ordered},
+                    legend_entries=[(c, _ch_colors[c]) for c in _ch_ordered],
+                    legend_label="chains",
+                    stacked=True,
                 )
-                _legend_expander(
-                    [(c, _ch_colors[c]) for c in _ch_ordered],
-                    label="chains")
 
             st.divider()
 

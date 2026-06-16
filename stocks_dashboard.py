@@ -8163,6 +8163,34 @@ if __name__ == "__main__":
                 "#F87171", "#84CC16",
             ]
 
+            # Clip 1-day-only spikes per column — used by both the
+            # by-chain and by-issuer charts in this section. A point
+            # qualifies as an isolated spike when v > 2× mean(prev,
+            # next) AND v exceeds BOTH neighbors. Replaces the bad day
+            # with the neighbor mean so the stack stays continuous.
+            # Targeted at upstream-data outliers (e.g. Paymentscan's
+            # mid-2025 RedotPay $95M day against ~$15M neighbors)
+            # that compress the y-axis and hide every other day's
+            # variation. Mirrors the static-method version on
+            # `TokenGroupMetricsPuller._clip_isolated_spikes` but lives
+            # here so the asset-vertical charts don't have to reach
+            # into a puller class.
+            def _clip_spike(s: pd.Series,
+                            factor: float = 2.0) -> pd.Series:
+                if len(s) < 3:
+                    return s
+                out = s.copy()
+                for i in range(1, len(s) - 1):
+                    v = s.iat[i]
+                    p = s.iat[i - 1]
+                    n = s.iat[i + 1]
+                    if pd.isna(v) or pd.isna(p) or pd.isna(n):
+                        continue
+                    m = (p + n) / 2.0
+                    if m > 0 and v > factor * m and v > p and v > n:
+                        out.iat[i] = m
+                return out
+
             # ── (a) Volume by Chain (stacked area, daily) ─────────
             # Data source: three Allium queries collectively covering
             # 2025-01-01 → 2026-06-15 in three 6-month windows. Each
@@ -8263,29 +8291,9 @@ if __name__ == "__main__":
                     else:
                         _ch_colors[c] = _PS_PALETTE[_ci % len(_PS_PALETTE)]
                         _ci += 1
-                # Clip 1-day-only spikes per column — Paymentscan's
-                # mid-2025 TRON outlier (~$95M against ~$30M neighbors)
-                # compresses the y-axis and hides every other day's
-                # variation. Same idea as TokenGroupMetricsPuller's
-                # `_clip_isolated_spikes`: a point qualifies as an
-                # isolated spike when v > 2× mean(prev,next) AND v
-                # exceeds BOTH neighbors. Replaces the bad day with
-                # the neighbor mean so the stack stays continuous.
-                def _clip_spike(s: pd.Series,
-                                factor: float = 2.0) -> pd.Series:
-                    if len(s) < 3:
-                        return s
-                    out = s.copy()
-                    for i in range(1, len(s) - 1):
-                        v = s.iat[i]
-                        p = s.iat[i - 1]
-                        n = s.iat[i + 1]
-                        if pd.isna(v) or pd.isna(p) or pd.isna(n):
-                            continue
-                        m = (p + n) / 2.0
-                        if m > 0 and v > factor * m and v > p and v > n:
-                            out.iat[i] = m
-                    return out
+                # Spike-clip per column — uses the hoisted helper
+                # `_clip_spike` defined above (shared with the
+                # by-issuer chart further down).
                 for col in _ch_ordered:
                     if col in _ch_wide.columns:
                         _ch_wide[col] = _clip_spike(_ch_wide[col])
@@ -8356,9 +8364,23 @@ if __name__ == "__main__":
                     else:
                         _pr_colors[c] = _PS_PALETTE[_ci % len(_PS_PALETTE)]
                         _ci += 1
+                # Spike-clip per column — same hoisted helper as the
+                # by-chain chart. Catches the mid-2025 RedotPay $95M
+                # day vs ~$15M neighbors (~6× the surrounding window).
+                for col in _pr_ordered:
+                    if col in _pr_wide.columns:
+                        _pr_wide[col] = _clip_spike(_pr_wide[col])
                 _pr_raw = _pr_wide.copy()
                 _pr_raw["Total"] = (_pr_wide[_pr_ordered].fillna(0)
                                                           .sum(axis=1).values)
+                # Pass legend_entries + legend_label explicitly so the
+                # helper renders ONE legend with the controlled colour
+                # order (single source of truth). Previously the helper
+                # auto-extracted entries from the fig and rendered
+                # "Legend (N series)" with reversed trace order AND
+                # the manual `_legend_expander` call below produced a
+                # SECOND "Legend (N issuers)" — the duplicate the user
+                # reported.
                 _chart_dwm_simple(
                     "Payment Volume by Card Issuer",
                     source_df=_pr_wide,
@@ -8379,10 +8401,10 @@ if __name__ == "__main__":
                         "renamed here for clarity.)"
                     ),
                     col_aggs={c: "sum" for c in _pr_ordered},
+                    legend_entries=[(c, _pr_colors[c]) for c in _pr_ordered],
+                    legend_label="issuers",
+                    stacked=True,
                 )
-                _legend_expander(
-                    [(c, _pr_colors[c]) for c in _pr_ordered],
-                    label="issuers")
             st.stop()
 
         if selected_asset == "Tokenized commodities":

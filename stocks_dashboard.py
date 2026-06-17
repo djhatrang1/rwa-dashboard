@@ -8691,6 +8691,147 @@ if __name__ == "__main__":
                         "+ Total at each date."
                     )
 
+                # ── Market Cap by Chain (all gold tokens) ─────────────
+                # Mirror of the tokenized-equities/treasuries by-chain
+                # chart: sum every gold token's per-chain MC into one
+                # band per chain. Reuses `_combined_stocks_mc_chain_df`
+                # (generic over puller list / GROUP_LABEL) plus the
+                # `_PER_CHAIN_LABEL` / `_PER_CHAIN_COLOR` lookups that
+                # the equities chart already uses, so the band colours
+                # match between asset views.
+                st.divider()
+                _GOLD_KNOWN_CHAINS = (
+                    "Solana", "Ethereum", "Binance", "Base",
+                    "Arbitrum", "Polygon", "Avalanche",
+                )
+                _gold_by_chain: pd.DataFrame | None = None
+                for ch in _GOLD_KNOWN_CHAINS:
+                    df_ch = _combined_stocks_mc_chain_df(
+                        commodity_pullers, chain=ch)
+                    if df_ch is None or df_ch.empty:
+                        continue
+                    proj_cols = [c for c in df_ch.columns
+                                  if c != "date"]
+                    if not proj_cols:
+                        continue
+                    total_for_chain = (df_ch[proj_cols]
+                                        .ffill().fillna(0)
+                                        .sum(axis=1))
+                    _safe_ch = ch.lower().replace(" ", "_")
+                    if _safe_ch == "binance":
+                        _safe_ch = "binance_smart_chain"
+                    _col_name = f"mc_{_safe_ch}_usd"
+                    _sub = pd.DataFrame({
+                        "date": df_ch["date"],
+                        _col_name: total_for_chain.values,
+                    })
+                    _gold_by_chain = (
+                        _sub if _gold_by_chain is None
+                        else _gold_by_chain.merge(
+                            _sub, on="date", how="outer"))
+
+                if _gold_by_chain is None or _gold_by_chain.empty:
+                    st.info(
+                        "No per-chain commodity MC data yet — next "
+                        "pull (every 4h) will populate this view."
+                    )
+                else:
+                    _gold_by_chain = (
+                        _gold_by_chain[_gold_by_chain["date"]
+                                       >= "2020-01-01"]
+                        .sort_values("date")
+                        .reset_index(drop=True))
+                    _gc_chain_cols = [
+                        c for c in _gold_by_chain.columns
+                        if c.startswith("mc_") and c.endswith("_usd")
+                    ]
+                    # Largest chain at the bottom of the stack.
+                    def _latest_gc_chain(col,
+                                          _df=_gold_by_chain) -> float:
+                        s = _df[col].dropna()
+                        return float(s.iloc[-1]) if len(s) else 0.0
+                    _gc_chain_cols.sort(key=_latest_gc_chain,
+                                         reverse=True)
+
+                    def _build_gold_mc_by_chain_fig(df_view):
+                        fig = go.Figure()
+                        present = [c for c in _gc_chain_cols
+                                   if c in df_view.columns]
+                        for col in present:
+                            ch_safe = col[len("mc_"):-len("_usd")]
+                            label = _PER_CHAIN_LABEL.get(
+                                ch_safe, ch_safe.title())
+                            color = _PER_CHAIN_COLOR.get(
+                                ch_safe, "#888888")
+                            y = df_view[col].ffill().fillna(0.0)
+                            fig.add_trace(go.Scatter(
+                                x=df_view["date"], y=y, name=label,
+                                mode="lines",
+                                line=dict(color=color, width=0.8),
+                                stackgroup="gold_mc_chain",
+                                customdata=y.map(_fmt_usd),
+                                hovertemplate=(
+                                    f"{label}: %{{customdata}}"
+                                    "<extra></extra>"),
+                            ))
+                        totals_v = (df_view[present]
+                                     .ffill().fillna(0).sum(axis=1))
+                        fig.add_trace(go.Scatter(
+                            x=df_view["date"], y=totals_v,
+                            name="Total", mode="lines",
+                            line=dict(width=0,
+                                       color="rgba(0,0,0,0)"),
+                            showlegend=False, stackgroup=None,
+                            customdata=totals_v.map(_fmt_usd),
+                            hovertemplate=(
+                                "<b>Total: %{customdata}</b>"
+                                "<extra></extra>"),
+                        ))
+                        y_max = float(totals_v.max() or 0)
+                        fig.update_layout(
+                            height=380, hovermode="x unified",
+                            margin=dict(t=10, b=10, l=10, r=10),
+                            showlegend=False,
+                            yaxis=dict(
+                                tickprefix="$", tickformat="~s",
+                                showgrid=True, rangemode="tozero",
+                                range=([0, y_max * 1.10]
+                                       if y_max > 0 else None)),
+                        )
+                        return fig
+
+                    _gc_raw = _gold_by_chain.copy()
+                    _gc_raw["total"] = (
+                        _gold_by_chain[_gc_chain_cols]
+                            .ffill().fillna(0).sum(axis=1).values)
+                    _chart_dwm_simple(
+                        "Tokenized Gold — Market Cap by Chain",
+                        source_df=_gold_by_chain,
+                        build_fig=_build_gold_mc_by_chain_fig,
+                        raw_df=_gc_raw.sort_values(
+                            "date", ascending=False),
+                        raw_key="asset_commod_mc_by_chain",
+                        stacked=True,
+                        raw_filename="tokenized_gold_mc_by_chain",
+                        caption=(
+                            "Per-chain MC summed across every tokenized "
+                            "gold token deployed on that chain. Same "
+                            "sources as the by-token view above; each "
+                            "chain's band = sum of every token's "
+                            "circulating MC on that network. Hover "
+                            "shows per-chain + Total at each date."
+                        ),
+                        col_aggs={c: "last" for c in _gc_chain_cols},
+                        legend_entries=[
+                            (_PER_CHAIN_LABEL.get(
+                                c[len("mc_"):-len("_usd")],
+                                c[len("mc_"):-len("_usd")].title()),
+                             _PER_CHAIN_COLOR.get(
+                                c[len("mc_"):-len("_usd")], "#888888"))
+                            for c in _gc_chain_cols],
+                        legend_label="chains",
+                    )
+
                 # ── Volume chart (CoinGecko cross-chain) ──────────────
                 st.divider()
                 for p in commodity_pullers:

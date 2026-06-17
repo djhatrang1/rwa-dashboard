@@ -1646,63 +1646,13 @@ def _allium_key_source() -> str | None:
     return None
 
 
-@st.cache_data(ttl=14400, show_spinner=False)
-def _fetch_dune_query_results(query_id: int) -> _pd.DataFrame:
-    """Pull the latest-cached results for a Dune query id via the public REST
-    endpoint. Returns a DataFrame where the timestamp column is normalised
-    to `day` (datetime) and every other column is kept verbatim with its
-    Dune column name. Caller is responsible for renaming / casting.
-
-    Reads DUNE_API_KEY from st.secrets first then falls back to the env
-    var so the same call works on Streamlit Cloud and locally. Empty frame
-    on auth/network failure (renderer shows an info placeholder).
-
-    Uses /results (the latest materialised execution), NOT /execute — we
-    consume the existing cached snapshot rather than triggering a fresh
-    run, which costs credits and takes minutes."""
-    try:
-        key = st.secrets.get("DUNE_API_KEY", "")
-    except Exception:
-        key = ""
-    if not key:
-        key = _os.environ.get("DUNE_API_KEY", "")
-    if not key:
-        return _pd.DataFrame()
-    try:
-        r = _requests.get(
-            f"https://api.dune.com/api/v1/query/{query_id}/results",
-            headers={"X-Dune-API-Key": key},
-            params={"limit": 5000},   # generous cap; queries return ~200 rows
-            timeout=30,
-        )
-        r.raise_for_status()
-        rows = (r.json().get("result") or {}).get("rows") or []
-    except Exception:
-        return _pd.DataFrame()
-    if not rows:
-        return _pd.DataFrame()
-    df = _pd.DataFrame(rows)
-    # Normalise the timestamp column to 'day' (datetime). Dune queries on
-    # this dashboard use a mix of 'day' / 'date' / 'Date' / 'hour' / 'time'
-    # depending on the author's convention — coalesce them all to 'day' so
-    # the renderer can always reference one column name. First match wins;
-    # if none of the candidates exist the frame passes through unchanged
-    # and the caller's "missing 'day' column" guard catches it.
-    for _cand in ("day", "date", "Date", "hour", "time", "Time", "timestamp"):
-        if _cand in df.columns:
-            df = df.rename(columns={_cand: "day"})
-            # Force tz-naive UTC. Dune queries on the Jupiter dashboard mix
-            # `timestamp(3) with time zone` (5 of 6) and bare `timestamp(3)`
-            # (TVL query 6298659). Comparing a tz-aware Timestamp with a
-            # tz-naive one — e.g. in max(asof_candidates) for the headline
-            # KPIs — raises `Cannot compare tz-naive and tz-aware`. Coercing
-            # via utc=True then dropping tz gives a single naive-UTC dtype
-            # that compares cleanly across queries.
-            df["day"] = (_pd.to_datetime(df["day"], utc=True)
-                            .dt.tz_localize(None))
-            df = df.sort_values("day").reset_index(drop=True)
-            break
-    return df
+# Dune fetcher lives in its own module now (mirrors paymentscan.py /
+# sosovalue.py / hyperliquid.py layout). Local alias preserved so
+# every callsite in this file keeps working unchanged. The original
+# ~55-line implementation (HTTP + 4 h cache + tz-naive timestamp
+# normalisation) is in dune.py — single source of truth shared with
+# the RWA dashboard's Stablecoin Chains section.
+from dune import fetch_dune_query_results as _fetch_dune_query_results  # noqa: E402
 
 
 def _render_prediction_markets() -> None:

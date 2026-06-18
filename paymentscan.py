@@ -103,7 +103,7 @@ def _request(url: str, headers: dict, params: dict | None = None,
 @st.cache_data(ttl=14_400,
                show_spinner="Fetching Paymentscan data…")
 def _fetch_cached(endpoint: str, period: str,
-                  include_topups: bool = True,
+                  include_topups: bool = False,
                   include_offchain: bool = True,
                   revision: str = "v1") -> pd.DataFrame:
     """Cached inner — RAISES on failure (key missing, HTTP error, bad
@@ -147,13 +147,23 @@ def _fetch_cached(endpoint: str, period: str,
 
 
 def fetch(endpoint: Endpoint, period: Period = "daily",
-          include_topups: bool = True,
+          include_topups: bool = False,
           include_offchain: bool = True,
           revision: str = "v1") -> tuple[pd.DataFrame, str | None]:
     """Public entry. Returns (DataFrame, error_message).
     On success the error is None; on failure the DataFrame is empty
     and the error is a short string (key missing, 401, 429, schema
     error, etc.) so renderers can surface the actual cause.
+
+    `include_topups` defaults to False — every chart in this repo
+    wants clean transfer volume (user-to-merchant card payments),
+    NOT the gross flow that double-counts the top-up step (user
+    funds card → card pays merchant). Paymentscan's API includes
+    top-ups by default so the raw numbers are roughly 2× the
+    actual settlement volume; flipping this here keeps every
+    callsite consistently scoped to the payment leg only. Pass
+    `include_topups=True` only when you specifically want a
+    diagnostic view of gross flow including funding events.
 
     `revision` is a cache-bust knob: bump the string (v1 → v2) when
     Paymentscan ships a schema change and you want the next page-

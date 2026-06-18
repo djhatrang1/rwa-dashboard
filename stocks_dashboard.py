@@ -8339,72 +8339,158 @@ if __name__ == "__main__":
 
             st.divider()
 
-            # ── (b) Volume by Card Issuer (stacked area, daily) ───
+            # ── (b) Card-payment row: Issuer | Chain ──────────────
+            # Two charts sit side-by-side, both sourced from the
+            # Paymentscan card-payment endpoint family:
+            #   left  — `/projects/daily`  (per card issuer)
+            #   right — `/chains/daily`    (per settlement chain,
+            #                                card-payment-scoped)
+            # The right-hand chart is conceptually DIFFERENT from the
+            # top-level "Payment Volume by Chain" Allium chart — that
+            # one measures all on-chain stablecoin transfer volume;
+            # this one measures only Paymentscan-reported card
+            # settlements per chain. The same chain name (e.g. TRON)
+            # appears in both with very different magnitudes; the
+            # captions call out the distinction.
+            #
+            # Both use the existing `_build_ps_stack` builder + the
+            # shared `_clip_spike` helper hoisted above + the
+            # legend_entries / stacked=True wiring on
+            # `_chart_dwm_simple` so the % toolbar mode works and we
+            # render exactly one legend per chart.
+            col_iss, col_chain = st.columns(2, gap="medium")
+
+            # ── Left column: Card Issuer ──────────────────────────
             # Paymentscan calls these `projects`; user terminology is
             # "card issuer" (= consumer-facing card brand: Phantom Cash,
             # RedotPay, MetaMask, etc.). The /infra endpoint is the
             # different concept of BIN-sponsor "card provider" (Rain,
             # Wirex, Kulipa, ...).
-            _ps_proj_df, _ps_proj_err = _ps.fetch("projects", "daily")
-            if _ps_proj_df.empty:
-                st.subheader("Payment Volume by Card Issuer")
-                st.caption(
-                    "Source: [Paymentscan /projects/daily]"
-                    "(https://paymentscan.xyz/api-docs)."
-                )
-                st.info(f"No data. Reason: `{_ps_proj_err or 'empty'}`")
-            else:
-                _pr_wide, _pr_ordered = _pivot_top_n(
-                    _ps_proj_df, key_col="project", value_col="volumes",
-                    top_n=12)
-                _pr_colors, _ci = {}, 0
-                for c in _pr_ordered:
-                    if c == "Others":
-                        _pr_colors[c] = "#888888"
-                    else:
-                        _pr_colors[c] = _PS_PALETTE[_ci % len(_PS_PALETTE)]
-                        _ci += 1
-                # Spike-clip per column — same hoisted helper as the
-                # by-chain chart. Catches the mid-2025 RedotPay $95M
-                # day vs ~$15M neighbors (~6× the surrounding window).
-                for col in _pr_ordered:
-                    if col in _pr_wide.columns:
-                        _pr_wide[col] = _clip_spike(_pr_wide[col])
-                _pr_raw = _pr_wide.copy()
-                _pr_raw["Total"] = (_pr_wide[_pr_ordered].fillna(0)
-                                                          .sum(axis=1).values)
-                # Pass legend_entries + legend_label explicitly so the
-                # helper renders ONE legend with the controlled colour
-                # order (single source of truth). Previously the helper
-                # auto-extracted entries from the fig and rendered
-                # "Legend (N series)" with reversed trace order AND
-                # the manual `_legend_expander` call below produced a
-                # SECOND "Legend (N issuers)" — the duplicate the user
-                # reported.
-                _chart_dwm_simple(
-                    "Payment Volume by Card Issuer",
-                    source_df=_pr_wide,
-                    build_fig=lambda dfv: _build_ps_stack(
-                        dfv, _pr_ordered, _pr_colors, "ps_proj"),
-                    raw_df=_pr_raw.sort_values("date", ascending=False),
-                    raw_key="asset_ps_issuer",
-                    raw_filename="paymentscan_volume_by_issuer",
-                    caption=(
-                        "Daily card-payment volume in USD per card "
-                        "issuer (RedotPay, KAST, EtherFi, MetaMask, "
-                        "Phantom Cash, Solflare, …). Top 12 issuers "
-                        "shown; the long tail of smaller issuers is "
-                        "rolled into **Others**. Source: "
-                        "[Paymentscan /projects/daily]"
-                        "(https://paymentscan.xyz/api-docs). "
-                        "(Paymentscan labels these `projects`; "
-                        "renamed here for clarity.)"
-                    ),
-                    col_aggs={c: "sum" for c in _pr_ordered},
-                    legend_entries=[(c, _pr_colors[c]) for c in _pr_ordered],
-                    legend_label="issuers",
-                    stacked=True,
-                )
+            with col_iss:
+                _ps_proj_df, _ps_proj_err = _ps.fetch("projects", "daily")
+                if _ps_proj_df.empty:
+                    st.subheader("Payment Volume by Card Issuer")
+                    st.caption(
+                        "Source: [Paymentscan /projects/daily]"
+                        "(https://paymentscan.xyz/api-docs)."
+                    )
+                    st.info(
+                        f"No data. Reason: `{_ps_proj_err or 'empty'}`")
+                else:
+                    _pr_wide, _pr_ordered = _pivot_top_n(
+                        _ps_proj_df, key_col="project",
+                        value_col="volumes", top_n=12)
+                    _pr_colors, _ci = {}, 0
+                    for c in _pr_ordered:
+                        if c == "Others":
+                            _pr_colors[c] = "#888888"
+                        else:
+                            _pr_colors[c] = _PS_PALETTE[
+                                _ci % len(_PS_PALETTE)]
+                            _ci += 1
+                    # Spike-clip per column — same hoisted helper.
+                    # Catches the mid-2025 RedotPay $95M day vs ~$15M
+                    # neighbors (~6× the surrounding window).
+                    for col in _pr_ordered:
+                        if col in _pr_wide.columns:
+                            _pr_wide[col] = _clip_spike(_pr_wide[col])
+                    _pr_raw = _pr_wide.copy()
+                    _pr_raw["Total"] = (_pr_wide[_pr_ordered]
+                                          .fillna(0).sum(axis=1).values)
+                    _chart_dwm_simple(
+                        "Payment Volume by Card Issuer",
+                        source_df=_pr_wide,
+                        build_fig=lambda dfv: _build_ps_stack(
+                            dfv, _pr_ordered, _pr_colors, "ps_proj"),
+                        raw_df=_pr_raw.sort_values("date",
+                                                    ascending=False),
+                        raw_key="asset_ps_issuer",
+                        raw_filename="paymentscan_volume_by_issuer",
+                        caption=(
+                            "Daily card-payment volume in USD per "
+                            "card issuer (RedotPay, KAST, EtherFi, "
+                            "MetaMask, Phantom Cash, Solflare, …). "
+                            "Top 12 issuers shown; the long tail of "
+                            "smaller issuers is rolled into "
+                            "**Others**. Source: [Paymentscan "
+                            "/projects/daily]"
+                            "(https://paymentscan.xyz/api-docs). "
+                            "(Paymentscan labels these `projects`; "
+                            "renamed here for clarity.)"
+                        ),
+                        col_aggs={c: "sum" for c in _pr_ordered},
+                        legend_entries=[(c, _pr_colors[c])
+                                         for c in _pr_ordered],
+                        legend_label="issuers",
+                        stacked=True,
+                    )
+
+            # ── Right column: Card Payment Volume by Chain ────────
+            # Same `/chains/daily` endpoint the top chart used BEFORE
+            # the Allium swap. Kept here because it's the card-
+            # payment-specific cut, which is the right comparison
+            # next to the by-issuer chart on its left.
+            with col_chain:
+                _ps_cchain_df, _ps_cchain_err = _ps.fetch(
+                    "chains", "daily")
+                if _ps_cchain_df.empty:
+                    st.subheader("Card Payment Volume by Chain")
+                    st.caption(
+                        "Source: [Paymentscan /chains/daily]"
+                        "(https://paymentscan.xyz/api-docs)."
+                    )
+                    st.info(
+                        f"No data. Reason: `{_ps_cchain_err or 'empty'}`")
+                else:
+                    _cc_wide, _cc_ordered = _pivot_top_n(
+                        _ps_cchain_df, key_col="chain",
+                        value_col="volumes", top_n=12)
+                    _cc_colors, _ci = {}, 0
+                    for c in _cc_ordered:
+                        if c == "Others":
+                            _cc_colors[c] = "#888888"
+                        else:
+                            _cc_colors[c] = _PS_PALETTE[
+                                _ci % len(_PS_PALETTE)]
+                            _ci += 1
+                    for col in _cc_ordered:
+                        if col in _cc_wide.columns:
+                            _cc_wide[col] = _clip_spike(_cc_wide[col])
+                    _cc_raw = _cc_wide.copy()
+                    _cc_raw["Total"] = (_cc_wide[_cc_ordered]
+                                          .fillna(0).sum(axis=1).values)
+                    _chart_dwm_simple(
+                        "Card Payment Volume by Chain",
+                        source_df=_cc_wide,
+                        build_fig=lambda dfv: _build_ps_stack(
+                            dfv, _cc_ordered, _cc_colors, "ps_cchain"),
+                        raw_df=_cc_raw.sort_values("date",
+                                                    ascending=False),
+                        raw_key="asset_ps_chain_card",
+                        raw_filename=(
+                            "paymentscan_card_volume_by_chain"),
+                        caption=(
+                            "Daily card-payment volume in USD per "
+                            "settlement chain — same Paymentscan "
+                            "scope as the by-issuer chart on the "
+                            "left (only payment volume attributed to "
+                            "card issuers Paymentscan tracks). Top "
+                            "12 chains shown; the long tail rolled "
+                            "into **Others**. Distinct from the "
+                            "Allium-sourced **Payment Volume by "
+                            "Chain** at the top — that one measures "
+                            "ALL on-chain stablecoin transfer "
+                            "volume, this one only what flows "
+                            "through tracked card issuers. Source: "
+                            "[Paymentscan /chains/daily]"
+                            "(https://paymentscan.xyz/api-docs)."
+                        ),
+                        col_aggs={c: "sum" for c in _cc_ordered},
+                        legend_entries=[(c, _cc_colors[c])
+                                         for c in _cc_ordered],
+                        legend_label="chains",
+                        stacked=True,
+                    )
 
             # ── (c) Stablecoin Chains (Dune) ──────────────────────
             # Two emerging stablecoin-native L1s with public Dune

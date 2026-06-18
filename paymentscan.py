@@ -149,7 +149,7 @@ def _fetch_cached(endpoint: str, period: str,
 def fetch(endpoint: Endpoint, period: Period = "daily",
           include_topups: bool = False,
           include_offchain: bool = True,
-          revision: str = "v1") -> tuple[pd.DataFrame, str | None]:
+          revision: str = "v2") -> tuple[pd.DataFrame, str | None]:
     """Public entry. Returns (DataFrame, error_message).
     On success the error is None; on failure the DataFrame is empty
     and the error is a short string (key missing, 401, 429, schema

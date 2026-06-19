@@ -103,7 +103,7 @@ def _request(url: str, headers: dict, params: dict | None = None,
 @st.cache_data(ttl=14_400,
                show_spinner="Fetching Paymentscan data…")
 def _fetch_cached(endpoint: str, period: str,
-                  include_topups: bool = True,
+                  include_topups: bool = False,
                   include_offchain: bool = True,
                   revision: str = "v1") -> pd.DataFrame:
     """Cached inner — RAISES on failure (key missing, HTTP error, bad
@@ -147,34 +147,42 @@ def _fetch_cached(endpoint: str, period: str,
 
 
 def fetch(endpoint: Endpoint, period: Period = "daily",
-          include_topups: bool = True,
+          include_topups: bool = False,
           include_offchain: bool = True,
-          revision: str = "v3") -> tuple[pd.DataFrame, str | None]:
+          revision: str = "v4") -> tuple[pd.DataFrame, str | None]:
     """Public entry. Returns (DataFrame, error_message).
     On success the error is None; on failure the DataFrame is empty
     and the error is a short string (key missing, 401, 429, schema
     error, etc.) so renderers can surface the actual cause.
 
-    `include_topups` defaults to True (matches the Paymentscan UI
-    default). Trying include_topups=False does NOT do what the
-    intuition suggests — the API filter is way coarser than the
-    UI's "INCLUDE TOP-UPS" toggle:
+    `include_topups` defaults to False. Confirmed with the
+    Paymentscan team that the API filter is correct and the UI
+    toggle is buggy:
 
-      • Paymentscan UI toggle off → subtracts top-up amounts from
-        each row's `volumes` value but keeps every chain visible
-        (so TRON, BSC, etc. still show their PAYMENT activity);
-        magnitudes drop only modestly.
-      • API includeTopups=false → completely OMITS rows from any
-        chain Paymentscan classifies as top-up-dominant. TRON, BSC
-        vanish from the response entirely; magnitudes drop ~70%
-        AND the chain ranking inverts to L2s/Solana.
+      • API includeTopups=false → returns ONLY rows that
+        represent actual user-to-merchant card payments. Chains
+        whose entire activity is top-ups (TRON, BSC) drop out
+        because there's no payment activity to report there —
+        users load USDT cheaply via TRON/BSC and spend through
+        L2s / Solana. This is the correct view of "card payment
+        volume."
+      • API includeTopups=true → gross flow including top-ups.
+        TRON/BSC dominate because that's where top-up volume
+        sits. Useful for a diagnostic "what's the funding leg
+        doing" view, but NOT what users mean by "card payment
+        volume."
+      • Paymentscan UI "INCLUDE TOP-UPS = false" toggle → looks
+        like topups are being subtracted but actually just
+        shows the same data as `=true`. UI bug; the team
+        acknowledged it.
 
-    The API response has NO separate `topup_volumes` /
-    `payment_volumes` fields, so we can't replicate the UI's
-    granular subtraction on our side either. Best we can do is
-    match the UI's WITH-topups view (the default), which is gross
-    flow but at least keeps the chain ranking honest. If a future
-    Paymentscan endpoint exposes the split, revisit this.
+    Earlier docstring revisions in this file misdiagnosed the
+    direction of the disagreement; this is now the canonical
+    behaviour. Caches bumped to v4 with every flip during
+    investigation.
+
+    Pass `include_topups=True` only when you specifically want a
+    diagnostic view of gross flow including funding events.
 
     `revision` is a cache-bust knob: bump the string (v1 → v2) when
     Paymentscan ships a schema change and you want the next page-

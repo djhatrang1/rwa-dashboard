@@ -477,6 +477,17 @@
       }
     ],
     [
+      "xyz:BE",
+      {
+        "category": "stocks",
+        "displayName": "BE",
+        "keywords": [
+          "bloom",
+          "energy"
+        ]
+      }
+    ],
+    [
       "xyz:BIRD",
       {
         "category": "stocks",
@@ -873,6 +884,17 @@
       }
     ],
     [
+      "xyz:MINIMAX",
+      {
+        "category": "stocks",
+        "displayName": "MINIMAX",
+        "keywords": [
+          "ai",
+          "china"
+        ]
+      }
+    ],
+    [
       "xyz:MRVL",
       {
         "category": "stocks",
@@ -935,6 +957,17 @@
         "keywords": [
           "netflix",
           "tech"
+        ]
+      }
+    ],
+    [
+      "xyz:NOK",
+      {
+        "category": "stocks",
+        "displayName": "NOK",
+        "keywords": [
+          "ai",
+          "nokia"
         ]
       }
     ],
@@ -1067,6 +1100,17 @@
         "keywords": [
           "ai",
           "korea"
+        ]
+      }
+    ],
+    [
+      "xyz:SMH",
+      {
+        "category": "stocks",
+        "displayName": "SMH",
+        "keywords": [
+          "etf",
+          "semis"
         ]
       }
     ],
@@ -1232,6 +1276,6 @@
       }
     ]
   ],
-  "fetched_at": "2026-06-15T05:56:16.325046Z",
+  "fetched_at": "2026-06-21T05:25:26.950506Z",
   "source": "POST https://api.hyperliquid.xyz/info type=perpConciseAnnotations"
 }

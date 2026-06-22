@@ -10669,49 +10669,175 @@ if __name__ == "__main__":
                     legend_label="chains",
                 )
 
-            st.divider()
-            # syrupUSDC — Maple Finance's primary distributed credit
-            # token. ~$1.4B aggregate MC across three chains; Ethereum
-            # is largest by MC ($1.29B) but Solana dominates DEX
-            # volume (~$110M / 30d vs ~$23M on Ethereum) — Solana is
-            # the active trading hub.
-            _render_token_volume(
-                symbol="syrupUSDC",
-                label="Maple Finance",
-                url="https://syrup.fi",
-                tokens=[
-                    ("Ethereum",
-                     "0x80ac24aA929eaF5013f6436cdA2a7ba190f5Cc0b",
-                     "ethereum", "#627EEA"),
-                    ("Solana",
-                     "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
-                     "solana",   "#9945FF"),
-                    ("Base",
-                     "0x660975730059246A68521a3e2FBD4740173100f5",
-                     "base",     "#0052FF"),
-                ],
-                raw_key="syrup_usdc_volume_by_chain",
-            )
+            # Inline helper for the Kamino supply/borrow charts that
+            # sit to the right of each volume chart. Same render shape
+            # for every market — two lines (Supply green, Borrow
+            # amber), hourly→daily-resampled from
+            # `/kamino-market/<lm>/metrics/history`. Caller supplies
+            # the market pubkey + a caption tail (collateral asset,
+            # borrowable stables, launch date) so each chart's caption
+            # reads correctly without copy-pasting fetch + plot code.
 
-            # PRIME — Hastra's tokenized prime brokerage credit
-            # position. Verified Birdeye search hits across 8 EVM L1s
-            # + Solana; "Hastra PRIME" only appears on Solana
-            # ($216M MC) and Ethereum ($175M MC) — every other chain's
-            # "PRIME" symbol is a different project (Echelon Prime,
-            # DeltaPrime, Prime Intellect, etc.). If Hastra later
-            # bridges to Base/Arbitrum/etc., add a tuple here.
-            #
-            # The PRIME volume chart on the left is paired with the
-            # Kamino-market supply/borrow chart on the right (Hastra
-            # PRIME is the collateral asset on Kamino's isolated PRIME
-            # market — `CqAoLuq…HA`) so an analyst can read DEX flow
-            # and on-chain lending depth side by side. Both charts
-            # share the same x-axis range so the eye can correlate
-            # volume spikes with deposit/borrow inflows.
+            def _render_kamino_market(*, title: str,
+                                        lending_market: str,
+                                        raw_key: str,
+                                        caption_tail: str) -> None:
+                """Render a stacked-area-style time series of the
+                Kamino lending market's aggregate supply (depositTVL)
+                and outstanding borrow (borrowTVL) since market
+                launch.
+
+                `caption_tail` describes the market-specific context
+                (collateral asset, borrowable assets, launch date)
+                appended after the generic "Total deposit TVL ..."
+                preamble so every chart's caption reads naturally
+                without duplicating the boilerplate."""
+                _kam = _fetch_kamino_market_history(lending_market)
+                if _kam.empty:
+                    st.info(
+                        f"Kamino market history unavailable — "
+                        "`api.kamino.finance` returned empty. Likely "
+                        "a transient outage; refreshes on next 4h "
+                        "cache expiry."
+                    )
+                    return
+                _palette = {
+                    # Green for supply (deposit), amber for borrow.
+                    # Distinct from the EVM/Solana brand purples and
+                    # blues in the adjacent volume chart so the eye
+                    # doesn't conflate the two.
+                    "Supply (TVL)": "#10B981",
+                    "Borrow":       "#F59E0B",
+                }
+
+                def _build_fig(view, _p=_palette):
+                    fig = go.Figure()
+                    for lbl, col in (("Supply (TVL)", "supply_usd"),
+                                       ("Borrow",       "borrow_usd")):
+                        if col not in view.columns:
+                            continue
+                        y = view[col].fillna(0)
+                        fig.add_trace(go.Scatter(
+                            x=view["date"], y=y, name=lbl,
+                            mode="lines",
+                            line=dict(color=_p[lbl], width=2.0),
+                            customdata=y.map(_fmt_usd),
+                            hovertemplate=(
+                                f"{lbl}: %{{customdata}}<extra></extra>"),
+                        ))
+                    fig.update_layout(
+                        height=420, hovermode="x unified",
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        showlegend=False,   # _legend() renders below
+                        yaxis=dict(tickprefix="$", tickformat="~s",
+                                    showgrid=True, rangemode="tozero"),
+                    )
+                    return fig
+
+                _raw = (_kam[["date", "supply_usd",
+                              "borrow_usd", "obligations"]]
+                          .rename(columns={
+                              "supply_usd":  "Supply (TVL)",
+                              "borrow_usd":  "Borrow",
+                              "obligations": "Obligations",
+                          })
+                          .sort_values("date", ascending=False))
+                _chart_dwm_simple(
+                    title,
+                    source_df=_kam,
+                    build_fig=_build_fig,
+                    raw_df=_raw,
+                    raw_key=raw_key,
+                    raw_filename=raw_key,
+                    caption=(
+                        "Total deposit TVL (supply) and outstanding "
+                        f"borrow on {caption_tail} Source: Kamino API "
+                        "`/kamino-market/<lm>/metrics/history` — "
+                        "hourly snapshots, daily-resampled. Cached 4h."
+                    ),
+                    # Stocks (not flows) → last-of-period for W/M.
+                    col_aggs={"supply_usd": "last",
+                                "borrow_usd": "last",
+                                "obligations": "last"},
+                    # Not a stacked chart — supply CONTAINS borrow
+                    # (utilization = borrow / supply), so they aren't
+                    # additive and the toolbar's % view is correctly
+                    # disabled by stacked=False.
+                    stacked=False,
+                    legend_entries=[
+                        ("Supply (TVL)", _palette["Supply (TVL)"]),
+                        ("Borrow",       _palette["Borrow"]),
+                    ],
+                )
+
+            st.divider()
+            # ── Row 1: syrupUSDC volume (left) + Maple-on-Kamino
+            #    supply/borrow (right). Maple's isolated lending market
+            #    on Kamino takes syrupUSDC as collateral (88% LTV) and
+            #    lets borrowers draw USDC / PYUSD / USDS / CASH / USDG
+            #    / USD1 against it. Launched 2025-06-03 — over a year
+            #    of hourly history. Current state: $151M supply,
+            #    $62M borrow, ~41% utilization, 710 open positions.
+            _MAPLE_KAMINO_LM = (
+                "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y")
+            _col_sv, _col_sk = st.columns(2, gap="medium")
+            with _col_sv:
+                # syrupUSDC — Maple Finance's primary distributed
+                # credit token. ~$1.4B aggregate MC across three
+                # chains; Ethereum is largest by MC ($1.29B) but
+                # Solana dominates DEX volume (~$110M / 30d vs ~$23M
+                # on Ethereum) — Solana is the active trading hub.
+                _render_token_volume(
+                    symbol="syrupUSDC",
+                    label="Maple Finance",
+                    url="https://syrup.fi",
+                    tokens=[
+                        ("Ethereum",
+                         "0x80ac24aA929eaF5013f6436cdA2a7ba190f5Cc0b",
+                         "ethereum", "#627EEA"),
+                        ("Solana",
+                         "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+                         "solana",   "#9945FF"),
+                        ("Base",
+                         "0x660975730059246A68521a3e2FBD4740173100f5",
+                         "base",     "#0052FF"),
+                    ],
+                    raw_key="syrup_usdc_volume_by_chain",
+                )
+            with _col_sk:
+                _render_kamino_market(
+                    title="Maple on Kamino — Supply vs Borrow",
+                    lending_market=_MAPLE_KAMINO_LM,
+                    raw_key="maple_kamino_market_supply_borrow",
+                    caption_tail=(
+                        f"the Maple market on [Kamino]"
+                        f"(https://kamino.com/borrow/"
+                        f"{_MAPLE_KAMINO_LM}). syrupUSDC is the "
+                        "collateral asset (88% LTV); USDC / PYUSD / "
+                        "USDS / CASH / USDG / USD1 are the borrowable "
+                        "stables. Hourly history since 2025-06-03."
+                    ),
+                )
+
+            # ── Row 2: PRIME volume (left) + PRIME-on-Kamino
+            #    supply/borrow (right). Hastra PRIME is the collateral
+            #    asset on its own isolated Kamino market (`CqAoLuq…HA`,
+            #    88% LTV); USDC / PYUSD / CASH / USDS are the borrowable
+            #    stables. Launched 2025-12-04. Current state: $358M
+            #    supply, $146M borrow, ~41% utilization, 2,910 open
+            #    positions.
             _PRIME_KAMINO_LM = (
                 "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA")
-            _col_v, _col_k = st.columns(2, gap="medium")
-            with _col_v:
+            _col_pv, _col_pk = st.columns(2, gap="medium")
+            with _col_pv:
+                # PRIME — Hastra's tokenized prime brokerage credit
+                # position. Verified Birdeye search hits across 8 EVM
+                # L1s + Solana; "Hastra PRIME" only appears on Solana
+                # ($216M MC) and Ethereum ($175M MC) — every other
+                # chain's "PRIME" symbol is a different project
+                # (Echelon Prime, DeltaPrime, Prime Intellect, etc.).
+                # If Hastra later bridges to Base/Arbitrum/etc., add
+                # a tuple here.
                 _render_token_volume(
                     symbol="PRIME",
                     label="Hastra",
@@ -10726,97 +10852,20 @@ if __name__ == "__main__":
                     ],
                     raw_key="hastra_prime_volume_by_chain",
                 )
-            with _col_k:
-                _kam = _fetch_kamino_market_history(_PRIME_KAMINO_LM)
-                if _kam.empty:
-                    st.info(
-                        "Kamino PRIME-market history unavailable — "
-                        "`api.kamino.finance` returned empty. Likely a "
-                        "transient outage; refreshes on next 4h cache "
-                        "expiry."
-                    )
-                else:
-                    # Stock-semantics for resampling: latest reading
-                    # per period wins (supply/borrow are TVL snapshots,
-                    # not flows). Daily tab serves the raw daily rows
-                    # we already aggregated; W/M tabs `last`-aggregate.
-                    _kam_palette = {
-                        # Pick visually-distinct hues that don't clash
-                        # with the brand colors in the volume chart on
-                        # the left — green for supply (deposit), amber
-                        # for borrow (utilization). Both far enough
-                        # from the EVM/Solana brand purples/blues that
-                        # the user's eye doesn't conflate the two
-                        # charts.
-                        "Supply (TVL)": "#10B981",
-                        "Borrow":       "#F59E0B",
-                    }
-
-                    def _build_kam_fig(view, _palette=_kam_palette):
-                        fig = go.Figure()
-                        for label, col in (("Supply (TVL)", "supply_usd"),
-                                            ("Borrow",       "borrow_usd")):
-                            if col not in view.columns:
-                                continue
-                            y = view[col].fillna(0)
-                            fig.add_trace(go.Scatter(
-                                x=view["date"], y=y, name=label,
-                                mode="lines",
-                                line=dict(color=_palette[label],
-                                            width=2.0),
-                                customdata=y.map(_fmt_usd),
-                                hovertemplate=(
-                                    f"{label}: %{{customdata}}<extra></extra>"),
-                            ))
-                        fig.update_layout(
-                            height=420, hovermode="x unified",
-                            margin=dict(t=10, b=10, l=10, r=10),
-                            showlegend=False,   # _legend() renders below
-                            yaxis=dict(tickprefix="$", tickformat="~s",
-                                        showgrid=True, rangemode="tozero"),
-                        )
-                        return fig
-
-                    _raw_kam = (_kam[["date", "supply_usd",
-                                        "borrow_usd", "obligations"]]
-                                  .rename(columns={
-                                      "supply_usd":  "Supply (TVL)",
-                                      "borrow_usd":  "Borrow",
-                                      "obligations": "Obligations",
-                                  })
-                                  .sort_values("date", ascending=False))
-                    _chart_dwm_simple(
-                        "PRIME on Kamino — Supply vs Borrow",
-                        source_df=_kam,
-                        build_fig=_build_kam_fig,
-                        raw_df=_raw_kam,
-                        raw_key="prime_kamino_market_supply_borrow",
-                        raw_filename="prime_kamino_market_supply_borrow",
-                        caption=(
-                            "Total deposit TVL (supply) and outstanding "
-                            "borrow on Hastra's isolated PRIME market on "
-                            "[Kamino](https://kamino.com/borrow/"
-                            f"{_PRIME_KAMINO_LM}). PRIME is the "
-                            "collateral asset (88% LTV); USDC / PYUSD / "
-                            "CASH / USDS are the borrowable stables. "
-                            "Source: Kamino API "
-                            "`/kamino-market/<lm>/metrics/history` — "
-                            "hourly snapshots since launch (2025-12-04), "
-                            "daily-resampled. Cached 4h."
-                        ),
-                        # Stocks (not flows) → last-of-period for W/M.
-                        col_aggs={"supply_usd": "last",
-                                    "borrow_usd": "last",
-                                    "obligations": "last"},
-                        # Not a stacked chart — supply contains borrow
-                        # (utilization = borrow / supply), they're not
-                        # additive. % toolbar disabled accordingly.
-                        stacked=False,
-                        legend_entries=[
-                            ("Supply (TVL)", _kam_palette["Supply (TVL)"]),
-                            ("Borrow",       _kam_palette["Borrow"]),
-                        ],
-                    )
+            with _col_pk:
+                _render_kamino_market(
+                    title="PRIME on Kamino — Supply vs Borrow",
+                    lending_market=_PRIME_KAMINO_LM,
+                    raw_key="prime_kamino_market_supply_borrow",
+                    caption_tail=(
+                        f"Hastra's isolated PRIME market on [Kamino]"
+                        f"(https://kamino.com/borrow/"
+                        f"{_PRIME_KAMINO_LM}). PRIME is the collateral "
+                        "asset (88% LTV); USDC / PYUSD / CASH / USDS "
+                        "are the borrowable stables. Hourly history "
+                        "since launch (2025-12-04)."
+                    ),
+                )
             st.stop()
 
         if selected_asset == "RWA perps":

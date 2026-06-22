@@ -48,8 +48,23 @@ jobs:
 
       - name: Run pullers
         env:
-          BIRDEYE_API_KEY: ${{ secrets.BIRDEYE_API_KEY }}
-          DATABASE_URL:    ${{ secrets.DATABASE_URL }}
-          PULL_GROUP:      ${{ github.event.inputs.groups }}
+          BIRDEYE_API_KEY:   ${{ secrets.BIRDEYE_API_KEY }}
+          # CoinGecko Pro tier key. The xStocks puller fetches
+          # MC + Vol per token from CoinGecko (~80 tokens × 2
+          # endpoints / cron run). Without this var the puller
+          # falls through to the free public endpoint and gets
+          # rate-limited into a 90s backoff per call, which used
+          # to blow past the 25-min timeout and starve every
+          # downstream group ("data hasn't updated since June 11"
+          # symptom users reported). With the Pro key, calls go
+          # to pro-api.coingecko.com with the x-cg-pro-api-key
+          # header and avoid the 429 storm. NOTE: the secret
+          # needs to exist in the repo's GitHub Settings →
+          # Secrets store; pasting the same key into Streamlit
+          # Cloud Secrets isn't sufficient (separate secret
+          # stores).
+          COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
+          DATABASE_URL:      ${{ secrets.DATABASE_URL }}
+          PULL_GROUP:        ${{ github.event.inputs.groups }}
         run: |
           python scripts/run_pull.py

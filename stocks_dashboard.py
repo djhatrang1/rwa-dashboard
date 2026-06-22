@@ -1407,6 +1407,61 @@ _CG_VOL_CACHE: dict[str, tuple[float, dict]] = {}
 _CG_VOL_TTL   = 3600.0
 _CG_VOL_LOCK  = threading.Lock()
 
+# On-disk fallback for CoinGecko market_chart responses. Same seed pattern
+# as `paymentscan_seeds/`, `allium_seeds/`, etc.: on every live success the
+# fetcher merges the fresh `{date_str: value}` dict into the seed and
+# writes it back; on every live failure (typically a 429 storm against the
+# free public endpoint when the Pro key isn't propagated to the runtime
+# env, but also network errors or CG outages) the fetcher serves the
+# seed instead of returning `{}` and erasing the chart. One file per
+# (cg_id, kind) where kind ∈ {"mc", "vol"} — keeps each file small
+# (~10KB of {date_str: float}) and means an evicted token doesn't
+# require rewriting a shared blob.
+import seed_cache as _seed_cache   # noqa: E402  (kept local to avoid
+                                    #   bumping the top-level import block
+                                    #   for a single-callsite dependency)
+_CG_SEEDS_DIR = "coingecko_seeds"
+
+
+def _cg_seed_filename(cg_id: str, kind: str) -> str:
+    """`coingecko_seeds/<cg_id>_<kind>.json`. Sanitise the id for the
+    filesystem — CG slugs are already lowercase-with-dashes per their
+    convention, but we strip path separators / whitespace defensively
+    so a future hypothetical id like "foo/bar baz" can't escape the
+    seed dir or break tab-completion."""
+    safe = (cg_id or "").lower().replace("/", "_").replace(" ", "_").strip()
+    return f"{safe}_{kind}.json"
+
+
+def _cg_seed_read(cg_id: str, kind: str) -> dict[str, float]:
+    """Best-effort read; empty dict on any failure (missing file,
+    JSON parse error, permission denied). Caller decides whether
+    empty means 'fall through' or 'serve as-is'."""
+    try:
+        data = _seed_cache.read_seed_json(
+            _CG_SEEDS_DIR, _cg_seed_filename(cg_id, kind))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _cg_seed_write(cg_id: str, kind: str, fresh: dict[str, float]) -> None:
+    """Merge `fresh` into the existing seed (newer date wins on
+    conflict) and write back. Wrapped in try/except so a seed-write
+    failure (read-only FS on Streamlit Cloud's container, locked
+    file on Windows, etc.) never bubbles up and breaks the puller."""
+    if not fresh:
+        return
+    try:
+        existing = _cg_seed_read(cg_id, kind)
+        existing.update(fresh)   # later writes win — covers re-fetches
+                                  # that fix a previously-None reading
+        _seed_cache.write_seed_json(
+            existing, _CG_SEEDS_DIR, _cg_seed_filename(cg_id, kind))
+    except Exception:
+        pass   # seed write is purely opportunistic; never block live fetch
+
+
 # Process-wide cache for DefiLlama per-chain market-cap history (free API).
 # Cached so concurrent scheduler threads don't duplicate work or hammer the API.
 _DL_CACHE: dict[str, tuple[float, dict]] = {}
@@ -2428,7 +2483,20 @@ class TokenGroupMetricsPuller(DataPuller):
                         continue
                     self.logger.warning("%s CoinGecko MC fetch failed (%s): %s",
                                         self.GROUP_LABEL, cg_id, exc)
-                    return hit[1] if hit else {}   # serve stale cache if we have it
+                    # Tiered fallback: in-memory stale cache → disk
+                    # seed → empty. The disk seed only matters in
+                    # cold-process scenarios (cron run, first render
+                    # after a Cloud restart) — once `_CG_MC_CACHE`
+                    # warms it covers within-process retries first.
+                    if hit:
+                        return hit[1]
+                    disk = _cg_seed_read(cg_id, "mc")
+                    if disk:
+                        self.logger.info(
+                            "%s CoinGecko MC serving disk seed for %s (%d days)",
+                            self.GROUP_LABEL, cg_id, len(disk))
+                        return disk
+                    return {}
             out: dict[str, float] = {}
             for ts, mc in caps:
                 if mc is None:
@@ -2437,6 +2505,10 @@ class TokenGroupMetricsPuller(DataPuller):
                 out[date] = mc   # last reading of the day wins
             if out:
                 _CG_MC_CACHE[cg_id] = (now, out)
+                # Persist to disk so the next process-cold fetch can
+                # fall back here if CG 429s. Best-effort — failures
+                # are swallowed inside `_cg_seed_write`.
+                _cg_seed_write(cg_id, "mc", out)
             else:
                 # Diagnostic logging — USYC kept showing MISSING across
                 # 3 consecutive pulls even though /coins/hashnote-usyc/
@@ -2490,7 +2562,18 @@ class TokenGroupMetricsPuller(DataPuller):
                         continue
                     self.logger.warning("%s CoinGecko vol fetch failed (%s): %s",
                                         self.GROUP_LABEL, cg_id, exc)
-                    return hit[1] if hit else {}
+                    # Mirror MC's tiered fallback (memory → disk seed
+                    # → empty). See `_fetch_coingecko_mc` for the
+                    # rationale on why the disk tier matters.
+                    if hit:
+                        return hit[1]
+                    disk = _cg_seed_read(cg_id, "vol")
+                    if disk:
+                        self.logger.info(
+                            "%s CoinGecko vol serving disk seed for %s (%d days)",
+                            self.GROUP_LABEL, cg_id, len(disk))
+                        return disk
+                    return {}
             out: dict[str, float] = {}
             for ts, v in vols:
                 if v is None:
@@ -2499,6 +2582,7 @@ class TokenGroupMetricsPuller(DataPuller):
                 out[date] = v
             if out:
                 _CG_VOL_CACHE[cg_id] = (now, out)
+                _cg_seed_write(cg_id, "vol", out)
             return out
 
     def _fetch_sol_price_by_day(self, headers: dict, time_to: int) -> dict[str, float]:

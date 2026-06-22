@@ -10939,7 +10939,7 @@ if __name__ == "__main__":
             #   Base     — Aave v3 SYRUPUSDC.
             #
             # Adding a sixth chain later: append a tuple in
-            # `_EVM_AAVE_SYRUP_POOLS` (or a new helper for non-Aave
+            # `_EVM_AAVE_POOLS` (or a new helper for non-Aave
             # sources) and assign a color in `_CHAIN_PALETTE`.
             _SOL_KAMINO_MARKETS = [
                 ("PRIME",
@@ -10949,23 +10949,34 @@ if __name__ == "__main__":
                 ("OnRe",
                  "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8"),
             ]
-            # Morpho syrupUSDC vaults on Ethereum — three main vaults
-            # (the 4th, `d202a84b...`, is < $100K and noise-level).
-            _ETH_MORPHO_SYRUP_POOLS = [
+            # Morpho Blue vaults on Ethereum that we track as part of
+            # the private-credit aggregate. Today: 3 syrupUSDC vaults
+            # (Maple) + 1 WJAAA vault (Centrifuge JAAA CLO, wrapped).
+            # The 4th syrupUSDC vault (`d202a84b...`) is < $100K and
+            # noise-level — intentionally excluded.
+            _ETH_MORPHO_POOLS = [
+                # syrupUSDC vaults (Maple)
                 "44d88566-7795-49d3-a4a9-5d174cd40007",
                 "90f4a341-6dbf-435f-8808-2d4b983cb233",
                 "785d94f7-fa71-415c-b594-3767680580be",
+                # WJAAA vault (Centrifuge JAAA — Wrapped JAAA on Morpho)
+                "8f8c622b-1c29-452c-a0f2-b5f97133c7ac",
             ]
-            # Aave v3 syrupUSDC/T pools — one per chain. Pool ids from
-            # DefiLlama yields catalog. The symbol differs per chain
-            # (USDT-flavored on Plasma/Mantle/Ethereum, USDC on Base)
-            # but they're all Maple syrup-asset deployments on Aave,
-            # so we treat them as one project class. Each chain gets
-            # its own supply line; the Aave v3 numbers go into the
-            # chain bucket (so Ethereum aggregates Morpho + small
-            # Aave Eth pool, while Plasma/Mantle/Base are Aave-only).
-            _EVM_AAVE_SYRUP_POOLS: dict[str, list[str]] = {
-                "Ethereum": ["a79fdd93-2747-43ee-bf53-0c372192964d"],
+            # Aave v3 private-credit deployments by chain. Pool ids
+            # from DefiLlama's yields catalog. Each chain gets its
+            # own supply line; the per-chain entry can carry multiple
+            # pool ids if a chain hosts more than one tracked asset.
+            # Today's set:
+            #   Ethereum — SYRUPUSDT (Maple via Aave Horizon Market)
+            #              + JAAA (Centrifuge AAA CLO via Aave Horizon)
+            #   Plasma   — SYRUPUSDT (largest Maple-on-Aave deployment)
+            #   Mantle   — SYRUPUSDT
+            #   Base     — SYRUPUSDC
+            _EVM_AAVE_POOLS: dict[str, list[str]] = {
+                "Ethereum": [
+                    "a79fdd93-2747-43ee-bf53-0c372192964d",  # SYRUPUSDT
+                    "ac338ec5-c38f-43e1-8e5c-b5e9b4842aa3",  # JAAA (Horizon)
+                ],
                 "Plasma":   ["569ab5a6-76e4-46a6-abb6-b12be4197e31"],
                 "Mantle":   ["4dfb0ee0-6fa3-4b8b-83f7-b92e83f5242f"],
                 "Base":     ["974b8732-2dce-4a46-8204-7f9e6b7efb71"],
@@ -11026,25 +11037,25 @@ if __name__ == "__main__":
 
             # Ethereum = Morpho syrup vaults + Aave Eth syrupUSDT pool.
             _eth_pieces = []
-            _morpho = _sum_pool_supplies(_ETH_MORPHO_SYRUP_POOLS)
+            _morpho = _sum_pool_supplies(_ETH_MORPHO_POOLS)
             if not _morpho.empty:
                 _eth_pieces.append(_morpho.rename(columns={"supply_usd":
                                                              "sup_Morpho"}))
             _aave_eth = _sum_pool_supplies(
-                _EVM_AAVE_SYRUP_POOLS["Ethereum"])
+                _EVM_AAVE_POOLS["Ethereum"])
             if not _aave_eth.empty:
                 _eth_pieces.append(_aave_eth.rename(columns={"supply_usd":
                                                                 "sup_Aave"}))
             _ethereum = _collapse(_eth_pieces, "Ethereum")
 
             # Plasma / Mantle / Base = Aave only, one pool each.
-            _plasma = _sum_pool_supplies(_EVM_AAVE_SYRUP_POOLS["Plasma"])
+            _plasma = _sum_pool_supplies(_EVM_AAVE_POOLS["Plasma"])
             _plasma = _plasma.rename(columns={"supply_usd": "Plasma"}) \
                 if not _plasma.empty else pd.DataFrame(columns=["date","Plasma"])
-            _mantle = _sum_pool_supplies(_EVM_AAVE_SYRUP_POOLS["Mantle"])
+            _mantle = _sum_pool_supplies(_EVM_AAVE_POOLS["Mantle"])
             _mantle = _mantle.rename(columns={"supply_usd": "Mantle"}) \
                 if not _mantle.empty else pd.DataFrame(columns=["date","Mantle"])
-            _base = _sum_pool_supplies(_EVM_AAVE_SYRUP_POOLS["Base"])
+            _base = _sum_pool_supplies(_EVM_AAVE_POOLS["Base"])
             _base = _base.rename(columns={"supply_usd": "Base"}) \
                 if not _base.empty else pd.DataFrame(columns=["date","Base"])
 
@@ -11121,7 +11132,9 @@ if __name__ == "__main__":
                     "[OnRe](https://kamino.com/borrow/47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8)) "
                     "plus JupLend's syrupUSDC pool (disk seed). "
                     "**Ethereum** — Morpho Blue's three main syrupUSDC "
-                    "vaults plus Aave v3 SYRUPUSDT. "
+                    "vaults (Maple) + WJAAA vault (Centrifuge), plus "
+                    "Aave Horizon's SYRUPUSDT (Maple) and JAAA "
+                    "(Centrifuge AAA CLO) pools. "
                     "**Plasma / Mantle / Base** — Aave v3 SYRUPUSDT or "
                     "SYRUPUSDC vault on each chain (one pool per chain). "
                     "Sources: Kamino API + JupLend seed + DefiLlama "

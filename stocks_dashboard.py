@@ -160,10 +160,31 @@ class CacheDB:
     def _init(self) -> None:
         """Create the schema. Wrapped in tenacity retry so transient Supabase
         pgbouncer drops (EDBHANDLEREXITED) on startup don't crash the app —
-        the next attempt grabs a fresh pooler connection cleanly."""
+        the next attempt grabs a fresh pooler connection cleanly.
+
+        Skip DDL if the schema already exists. Why: Streamlit Cloud's
+        Solana dashboard container occasionally lands on a Supabase
+        read-only replica (Supavisor routing decision — both apps share
+        the same `DATABASE_URL` but the pooler can route reads to a
+        replica transparently). On those connections, even
+        `CREATE TABLE IF NOT EXISTS` on an existing table trips
+        psycopg.errors.ReadOnlySqlTransaction (Postgres SQLSTATE 25006)
+        because the DDL parser still requires write privileges. By
+        probing with `SELECT to_regclass('public.pulls')` first — a
+        plain SELECT, no DDL — we can decide at runtime whether DDL is
+        needed at all. Cron + RWA-app cold starts where the table
+        already exists also skip a no-op DDL round-trip, so this is
+        purely faster on the happy path."""
         with self._connect() as c:
             if self.backend == "postgres":
                 with c.cursor() as cur:
+                    cur.execute("SELECT to_regclass('public.pulls')")
+                    if cur.fetchone()[0] is not None:
+                        # Table exists. Schema is owned by the cron's
+                        # write-capable connection; nothing for us to do
+                        # here even if we have write privileges. Returning
+                        # early prevents 25006 on read-only replicas.
+                        return
                     cur.execute("""
                         CREATE TABLE IF NOT EXISTS pulls (
                             id        BIGSERIAL PRIMARY KEY,

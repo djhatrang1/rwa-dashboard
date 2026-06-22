@@ -1558,6 +1558,78 @@ def _fetch_birdeye_ohlcv_daily(address: str, chain: str,
               .reset_index(drop=True))
 
 
+# ── Kamino market aggregate history fetcher (render-time, not pull-time) ─────
+# Module-level helper for the Private-credit "PRIME on Kamino" supply/borrow
+# chart. Same pattern as `_fetch_birdeye_ohlcv_daily` above — render-time
+# live fetch + 4h `@st.cache_data` window — so we don't add a new puller
+# class or Postgres column schema for what's currently one chart.
+#
+# Endpoint: GET /kamino-market/<lending_market_pubkey>/metrics/history
+# Returns a list of hourly snapshots, each
+#   {market, timestamp, metrics: {depositTVL, borrowTVL, obligations}}
+# Daily resample (last reading per UTC day, since deposit/borrow TVL are
+# stocks not flows) trims ~4800 hourly snapshots → ~200 daily rows for
+# the PRIME market and keeps the line chart legible.
+@st.cache_data(ttl=14_400, show_spinner=False)
+def _fetch_kamino_market_history(lending_market: str,
+                                   revision: str = "v1") -> pd.DataFrame:
+    """Fetch daily supply + borrow TVL history for one Kamino lending market.
+
+    Returns DataFrame with columns `date` (datetime64[ns], tz-naive,
+    day-truncated), `supply_usd`, `borrow_usd`, `obligations` (open-
+    position count). One row per UTC day, last hourly snapshot of the
+    day wins (supply/borrow are stocks, not flows).
+
+    Returns an empty DataFrame on network failure — caller is expected
+    to handle the empty case with an info placeholder.
+
+    `lending_market` is the base58 Solana pubkey of the lending market
+    account (NOT the reserve pubkey). For the Hastra PRIME isolated
+    market: `CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA`.
+
+    `revision` is a cache-bust knob (bump v1 → v2 inside the 4h TTL
+    window when you want the next page-load to re-fetch instead of
+    serving the cached frame). Stored in the cache key but otherwise
+    unused."""
+    try:
+        r = requests.get(
+            f"https://api.kamino.finance/kamino-market/{lending_market}"
+            f"/metrics/history",
+            timeout=30,
+        )
+        r.raise_for_status()
+        items = r.json() or []
+    except Exception as exc:
+        log.warning("Kamino market history fetch failed (%s): %s",
+                    lending_market[:8], exc)
+        return pd.DataFrame()
+    rows = []
+    for it in items:
+        ts = it.get("timestamp")
+        m = it.get("metrics") or {}
+        if not ts or "depositTVL" not in m:
+            continue
+        try:
+            rows.append({
+                "ts":           pd.to_datetime(ts, utc=True).tz_localize(None),
+                "supply_usd":   float(m.get("depositTVL") or 0),
+                "borrow_usd":   float(m.get("borrowTVL")  or 0),
+                "obligations":  int(m.get("obligations")  or 0),
+            })
+        except (ValueError, TypeError):
+            continue
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows).sort_values("ts").reset_index(drop=True)
+    # Daily resample: last value per UTC day (stock semantics).
+    df["date"] = df["ts"].dt.normalize()
+    daily = (df.groupby("date", as_index=False)
+                .agg(supply_usd=("supply_usd", "last"),
+                     borrow_usd=("borrow_usd", "last"),
+                     obligations=("obligations", "last")))
+    return daily
+
+
 # Process-wide cache for DefiLlama per-chain market-cap history (free API).
 # Cached so concurrent scheduler threads don't duplicate work or hammer the API.
 _DL_CACHE: dict[str, tuple[float, dict]] = {}
@@ -10628,20 +10700,123 @@ if __name__ == "__main__":
             # "PRIME" symbol is a different project (Echelon Prime,
             # DeltaPrime, Prime Intellect, etc.). If Hastra later
             # bridges to Base/Arbitrum/etc., add a tuple here.
-            _render_token_volume(
-                symbol="PRIME",
-                label="Hastra",
-                url="https://hastra.io",
-                tokens=[
-                    ("Solana",
-                     "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
-                     "solana",   "#9945FF"),
-                    ("Ethereum",
-                     "0x19ebb35279A16207Ec4ba82799CC64715065F7F6",
-                     "ethereum", "#627EEA"),
-                ],
-                raw_key="hastra_prime_volume_by_chain",
-            )
+            #
+            # The PRIME volume chart on the left is paired with the
+            # Kamino-market supply/borrow chart on the right (Hastra
+            # PRIME is the collateral asset on Kamino's isolated PRIME
+            # market — `CqAoLuq…HA`) so an analyst can read DEX flow
+            # and on-chain lending depth side by side. Both charts
+            # share the same x-axis range so the eye can correlate
+            # volume spikes with deposit/borrow inflows.
+            _PRIME_KAMINO_LM = (
+                "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA")
+            _col_v, _col_k = st.columns(2, gap="medium")
+            with _col_v:
+                _render_token_volume(
+                    symbol="PRIME",
+                    label="Hastra",
+                    url="https://hastra.io",
+                    tokens=[
+                        ("Solana",
+                         "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+                         "solana",   "#9945FF"),
+                        ("Ethereum",
+                         "0x19ebb35279A16207Ec4ba82799CC64715065F7F6",
+                         "ethereum", "#627EEA"),
+                    ],
+                    raw_key="hastra_prime_volume_by_chain",
+                )
+            with _col_k:
+                _kam = _fetch_kamino_market_history(_PRIME_KAMINO_LM)
+                if _kam.empty:
+                    st.info(
+                        "Kamino PRIME-market history unavailable — "
+                        "`api.kamino.finance` returned empty. Likely a "
+                        "transient outage; refreshes on next 4h cache "
+                        "expiry."
+                    )
+                else:
+                    # Stock-semantics for resampling: latest reading
+                    # per period wins (supply/borrow are TVL snapshots,
+                    # not flows). Daily tab serves the raw daily rows
+                    # we already aggregated; W/M tabs `last`-aggregate.
+                    _kam_palette = {
+                        # Pick visually-distinct hues that don't clash
+                        # with the brand colors in the volume chart on
+                        # the left — green for supply (deposit), amber
+                        # for borrow (utilization). Both far enough
+                        # from the EVM/Solana brand purples/blues that
+                        # the user's eye doesn't conflate the two
+                        # charts.
+                        "Supply (TVL)": "#10B981",
+                        "Borrow":       "#F59E0B",
+                    }
+
+                    def _build_kam_fig(view, _palette=_kam_palette):
+                        fig = go.Figure()
+                        for label, col in (("Supply (TVL)", "supply_usd"),
+                                            ("Borrow",       "borrow_usd")):
+                            if col not in view.columns:
+                                continue
+                            y = view[col].fillna(0)
+                            fig.add_trace(go.Scatter(
+                                x=view["date"], y=y, name=label,
+                                mode="lines",
+                                line=dict(color=_palette[label],
+                                            width=2.0),
+                                customdata=y.map(_fmt_usd),
+                                hovertemplate=(
+                                    f"{label}: %{{customdata}}<extra></extra>"),
+                            ))
+                        fig.update_layout(
+                            height=420, hovermode="x unified",
+                            margin=dict(t=10, b=10, l=10, r=10),
+                            showlegend=False,   # _legend() renders below
+                            yaxis=dict(tickprefix="$", tickformat="~s",
+                                        showgrid=True, rangemode="tozero"),
+                        )
+                        return fig
+
+                    _raw_kam = (_kam[["date", "supply_usd",
+                                        "borrow_usd", "obligations"]]
+                                  .rename(columns={
+                                      "supply_usd":  "Supply (TVL)",
+                                      "borrow_usd":  "Borrow",
+                                      "obligations": "Obligations",
+                                  })
+                                  .sort_values("date", ascending=False))
+                    _chart_dwm_simple(
+                        "PRIME on Kamino — Supply vs Borrow",
+                        source_df=_kam,
+                        build_fig=_build_kam_fig,
+                        raw_df=_raw_kam,
+                        raw_key="prime_kamino_market_supply_borrow",
+                        raw_filename="prime_kamino_market_supply_borrow",
+                        caption=(
+                            "Total deposit TVL (supply) and outstanding "
+                            "borrow on Hastra's isolated PRIME market on "
+                            "[Kamino](https://kamino.com/borrow/"
+                            f"{_PRIME_KAMINO_LM}). PRIME is the "
+                            "collateral asset (88% LTV); USDC / PYUSD / "
+                            "CASH / USDS are the borrowable stables. "
+                            "Source: Kamino API "
+                            "`/kamino-market/<lm>/metrics/history` — "
+                            "hourly snapshots since launch (2025-12-04), "
+                            "daily-resampled. Cached 4h."
+                        ),
+                        # Stocks (not flows) → last-of-period for W/M.
+                        col_aggs={"supply_usd": "last",
+                                    "borrow_usd": "last",
+                                    "obligations": "last"},
+                        # Not a stacked chart — supply contains borrow
+                        # (utilization = borrow / supply), they're not
+                        # additive. % toolbar disabled accordingly.
+                        stacked=False,
+                        legend_entries=[
+                            ("Supply (TVL)", _kam_palette["Supply (TVL)"]),
+                            ("Borrow",       _kam_palette["Borrow"]),
+                        ],
+                    )
             st.stop()
 
         if selected_asset == "RWA perps":

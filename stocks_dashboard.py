@@ -1462,6 +1462,81 @@ def _cg_seed_write(cg_id: str, kind: str, fresh: dict[str, float]) -> None:
         pass   # seed write is purely opportunistic; never block live fetch
 
 
+# ── Standalone Birdeye OHLCV V3 fetcher (render-time, not pull-time) ──────────
+# Module-level helper for charts that need daily trading-volume history for a
+# single (token, chain) tuple WITHOUT going through the full puller pipeline.
+# Used by the Private-credit syrupUSDC volume chart — one (chain, addr) per
+# chain Maple has deployed on. Keeping the fetch live + cached at render time
+# means we don't have to add a dedicated puller class, write a new column
+# schema to Postgres, or grow the cache table for what is fundamentally a
+# 3-token, 3-chain chart consumed by exactly one render block.
+#
+# Cache TTL = 4h to match the dashboard's other live-fetch helpers
+# (paymentscan.fetch, dune.fetch_dune_query_results, allium.*). Streamlit
+# Cloud's session reuse means concurrent viewers all share the cached
+# DataFrame inside that window.
+@st.cache_data(ttl=14_400, show_spinner=False)
+def _fetch_birdeye_ohlcv_daily(address: str, chain: str,
+                                 days: int = 365,
+                                 revision: str = "v1") -> pd.DataFrame:
+    """Fetch daily volume history from Birdeye OHLCV V3.
+
+    Returns DataFrame with columns `date` (datetime64[ns], tz-naive, day-
+    truncated) and `v_usd` (float, USD-denominated trading volume for that
+    UTC day). Sorted ascending. Returns an empty DataFrame on auth/network
+    failure — caller is expected to handle the empty case.
+
+    `days` is the lookback window in days. 365 is the default; Birdeye
+    serves up to ~2 years on most plans, so this is well within limits.
+
+    `chain` must be a Birdeye `x-chain` value (e.g. 'solana', 'ethereum',
+    'base'). Pre-V3 chains like Arbitrum / Polygon would need the legacy
+    `/defi/ohlcv` endpoint — see the OHLCV V3 vs legacy fallback in the
+    Token Group Metrics puller class above (line ~2245). Not handled here
+    since the only call site (syrupUSDC) lives on V3-supported chains.
+
+    `revision` is a cache-bust knob (bump v1 → v2 inside the 4h TTL window
+    when you want the next page-load to re-fetch instead of serving the
+    cached frame). Stored in the cache key but otherwise unused."""
+    key = settings.birdeye_api_key
+    if not key:
+        log.warning("Birdeye OHLCV: BIRDEYE_API_KEY missing — returning empty frame")
+        return pd.DataFrame()
+    end = int(time.time())
+    start = end - (days * 86400)
+    try:
+        resp = requests.get(
+            f"{settings.birdeye_base_url}/defi/v3/ohlcv",
+            headers={"X-API-KEY": key, "x-chain": chain},
+            params={
+                "address": address, "type": "1D",
+                "time_from": start, "time_to": end,
+                "currency": "usd",
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json().get("data") or {}
+        items = (data.get("items") if isinstance(data, dict) else data) or []
+    except Exception as exc:
+        log.warning("Birdeye OHLCV fetch failed (%s/%s): %s",
+                    chain, address[:8], exc)
+        return pd.DataFrame()
+    rows = []
+    for it in items:
+        ts = it.get("unix_time")
+        v_usd = it.get("v_usd")
+        if ts is None or v_usd is None:
+            continue
+        rows.append({
+            "date":  pd.to_datetime(ts, unit="s").normalize(),
+            "v_usd": float(v_usd),
+        })
+    return (pd.DataFrame(rows)
+              .sort_values("date")
+              .reset_index(drop=True))
+
+
 # Process-wide cache for DefiLlama per-chain market-cap history (free API).
 # Cached so concurrent scheduler threads don't duplicate work or hammer the API.
 _DL_CACHE: dict[str, tuple[float, dict]] = {}
@@ -10385,6 +10460,119 @@ if __name__ == "__main__":
                 stack_id="credit_repr",
                 raw_key="rwa_credit_history_represented",
             )
+
+            # ── syrupUSDC — daily trading volume by chain ────────────
+            # Maple Finance's syrupUSDC is the largest "distributed"
+            # private-credit token on rwa.xyz (~$1.4B aggregate MC
+            # across Ethereum + Solana + Base) and the one a credit
+            # analyst is most likely to want to see traded liquidity
+            # for. The two stacked-area MC charts above show value at
+            # rest; this one shows flow.
+            #
+            # Source is Birdeye OHLCV V3 per (chain, address) — see
+            # `_fetch_birdeye_ohlcv_daily` near the top of this file
+            # for the fetcher (cached 4h, render-time, not a puller).
+            # Three (chain, address) tuples below were verified by
+            # cross-checking Birdeye search results against MC +
+            # liquidity (canonical Maple deployment per chain; smaller
+            # impostor-symbol matches with $0-4K MC discarded).
+            #
+            # Chart shape: stacked daily bars with one segment per
+            # chain. Stacked = True so the toolbar's % view works
+            # (share-of-volume-by-chain over time).
+            st.divider()
+            _SYRUP_TOKENS: list[tuple[str, str, str, str]] = [
+                # (label, address, x-chain, brand color)
+                # Ethereum first — largest deployment by both MC
+                # ($1.29B) and 24h volume (~$360K typical). Solana
+                # second (~$107M MC, ~$240K vol). Base third — tiny
+                # ($12.5M MC, ~$120/day) but kept for completeness so
+                # the chart truthfully reflects every chain where the
+                # token lives.
+                ("Ethereum",
+                 "0x80ac24aA929eaF5013f6436cdA2a7ba190f5Cc0b",
+                 "ethereum", "#627EEA"),
+                ("Solana",
+                 "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+                 "solana",   "#9945FF"),
+                ("Base",
+                 "0x660975730059246A68521a3e2FBD4740173100f5",
+                 "base",     "#0052FF"),
+            ]
+            _frames = []
+            for _label, _addr, _chain, _color in _SYRUP_TOKENS:
+                _f = _fetch_birdeye_ohlcv_daily(_addr, _chain)
+                if _f.empty:
+                    continue
+                _f = _f.rename(columns={"v_usd": _label})
+                _frames.append(_f[["date", _label]])
+            if not _frames:
+                st.info(
+                    "syrupUSDC volume unavailable — Birdeye OHLCV V3 "
+                    "returned empty for all three chains. Likely a "
+                    "transient outage; will refresh on next 4h cache "
+                    "expiry."
+                )
+            else:
+                _syrup_df = _frames[0]
+                for _f in _frames[1:]:
+                    _syrup_df = _syrup_df.merge(_f, on="date", how="outer")
+                _present_labels = [lbl for lbl, _, _, _ in _SYRUP_TOKENS
+                                    if lbl in _syrup_df.columns]
+                # Fill missing-chain days with 0 so the stack draws
+                # cleanly; raw export below keeps NaN-vs-0 semantics
+                # by sorting only.
+                _syrup_df = (_syrup_df.sort_values("date")
+                                       .fillna(0)
+                                       .reset_index(drop=True))
+                _color_map = {lbl: clr for lbl, _, _, clr in _SYRUP_TOKENS}
+
+                def _build_syrup_fig(view, _labels=_present_labels,
+                                      _colors=_color_map):
+                    fig = go.Figure()
+                    for lbl in _labels:
+                        if lbl not in view.columns:
+                            continue
+                        y = view[lbl].fillna(0)
+                        fig.add_trace(go.Bar(
+                            x=view["date"], y=y, name=lbl,
+                            marker_color=_colors[lbl],
+                            customdata=y.map(_fmt_usd),
+                            hovertemplate=(
+                                f"{lbl}: %{{customdata}}<extra></extra>"),
+                        ))
+                    fig.update_layout(
+                        barmode="stack",
+                        height=420, hovermode="x unified",
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        showlegend=False,   # _legend() renders below
+                        yaxis=dict(tickprefix="$", tickformat="~s",
+                                    showgrid=True, rangemode="tozero"),
+                    )
+                    return fig
+
+                _chart_dwm_simple(
+                    "syrupUSDC — Daily Trading Volume by chain",
+                    source_df=_syrup_df,
+                    build_fig=_build_syrup_fig,
+                    raw_df=_syrup_df.sort_values("date", ascending=False),
+                    raw_key="syrup_usdc_volume_by_chain",
+                    raw_filename="syrup_usdc_volume_by_chain",
+                    caption=(
+                        "Daily DEX trading volume for Maple Finance's "
+                        "[syrupUSDC](https://syrup.fi) across the chains "
+                        "where it's deployed (Ethereum, Solana, Base). "
+                        "Source: Birdeye OHLCV V3, fetched at render "
+                        "time and cached 4h. Stacked daily bars; switch "
+                        "the toolbar to % for share-of-volume by chain."
+                    ),
+                    col_aggs={lbl: "sum" for lbl in _present_labels},
+                    stacked=True,
+                    legend_entries=[
+                        (lbl, _color_map[lbl]) for lbl in _present_labels
+                    ],
+                    legend_label="chains",
+                )
             st.stop()
 
         if selected_asset == "RWA perps":

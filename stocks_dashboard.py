@@ -1630,6 +1630,142 @@ def _fetch_kamino_market_history(lending_market: str,
     return daily
 
 
+# ── JupLend syrupUSDC supply seed loader ──────────────────────────────────────
+# JupLend doesn't expose a public REST API, so the seed is hand-pasted from
+# their internal endpoint as a JSON file under `juplend_seeds/`. The file
+# format is a list of `{totalSupply, assetPriceUsd, createdAt}` objects where
+# `totalSupply` is the raw on-chain syrupUSDC amount (6 decimals like USDC)
+# and `assetPriceUsd` is the per-token USD price at that timestamp. We compute
+# USD value as `totalSupply / 1e6 * float(assetPriceUsd)`.
+#
+# Refresh procedure: re-paste the JSON from JupLend's internal dashboard into
+# `juplend_seeds/syrup_usdc_supply.json` and bump the cache-bust knob if
+# needed. We aggregate by UTC day (last reading wins — supply is a stock).
+@st.cache_data(ttl=14_400, show_spinner=False)
+def _fetch_juplend_syrup_history(revision: str = "v1") -> pd.DataFrame:
+    """Daily USD-valued supply history for syrupUSDC on JupLend (Solana).
+
+    Returns DataFrame with columns `date` (day-truncated tz-naive) and
+    `supply_usd` (float). Returns an empty DataFrame if the seed file
+    is missing or unreadable — caller treats that as a zero-contribution
+    chain and continues."""
+    import json as _j
+    path = "juplend_seeds/syrup_usdc_supply.json"
+    try:
+        with open(path) as f:
+            items = _j.load(f) or []
+    except Exception as exc:
+        log.warning("JupLend seed unreadable (%s): %s", path, exc)
+        return pd.DataFrame()
+    rows = []
+    for it in items:
+        ts = it.get("createdAt")
+        ts_amt = it.get("totalSupply")
+        price = it.get("assetPriceUsd")
+        if not ts or ts_amt is None or price is None:
+            continue
+        try:
+            usd = (float(ts_amt) / 1e6) * float(price)
+        except (ValueError, TypeError):
+            continue
+        rows.append({
+            "ts":   pd.to_datetime(ts, utc=True).tz_localize(None),
+            "supply_usd": usd,
+        })
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows).sort_values("ts").reset_index(drop=True)
+    df["date"] = df["ts"].dt.normalize()
+    return (df.groupby("date", as_index=False)
+              .agg(supply_usd=("supply_usd", "last")))
+
+
+# ── DefiLlama protocol history fetcher (supply + borrow per chain) ────────────
+# Used for the Ethereum side of the private-credit aggregate chart. DL's
+# `/protocol/<slug>` endpoint exposes daily TVL series under
+# `chainTvls.<chain>.tvl` (supply) and `chainTvls.<chain>-borrowed.tvl`
+# (borrow). The `tvl` field is misleadingly named — for lending protocols
+# it's the supply side. Returns a DataFrame with `date`, `supply_usd`,
+# `borrow_usd` columns aligned per day; missing fields are filled with 0.
+@st.cache_data(ttl=14_400, show_spinner=False)
+def _fetch_defillama_protocol_history(slug: str, chain: str = "Ethereum",
+                                       revision: str = "v1") -> pd.DataFrame:
+    """Fetch daily supply + borrow history for a DefiLlama protocol on
+    a specific chain.
+
+    `slug` is the DL protocol slug (e.g. `aave-horizon-rwa`). `chain` is
+    the DL chain name as it appears in the response's `chainTvls` keys
+    (e.g. `Ethereum`). Returns an empty DataFrame on network failure."""
+    try:
+        r = requests.get(f"https://api.llama.fi/protocol/{slug}", timeout=30)
+        r.raise_for_status()
+        body = r.json() or {}
+    except Exception as exc:
+        log.warning("DL protocol fetch failed (%s): %s", slug, exc)
+        return pd.DataFrame()
+    chain_tvls = body.get("chainTvls") or {}
+    sup = (chain_tvls.get(chain) or {}).get("tvl") or []
+    bor = (chain_tvls.get(f"{chain}-borrowed") or {}).get("tvl") or []
+    def _to_df(rows, colname):
+        if not rows:
+            return pd.DataFrame(columns=["date", colname])
+        return pd.DataFrame([
+            {"date": pd.to_datetime(r["date"], unit="s").normalize(),
+             colname: float(r.get("totalLiquidityUSD") or 0)}
+            for r in rows
+        ])
+    sup_df = _to_df(sup, "supply_usd")
+    bor_df = _to_df(bor, "borrow_usd")
+    if sup_df.empty and bor_df.empty:
+        return pd.DataFrame()
+    merged = sup_df.merge(bor_df, on="date", how="outer").sort_values("date")
+    return merged.fillna(0).reset_index(drop=True)
+
+
+# ── DefiLlama yields-chart fetcher (per-pool TVL history) ─────────────────────
+# Used for Morpho Blue's syrupUSDC vaults on Ethereum. DL's `/chart/<pool_id>`
+# endpoint returns hourly snapshots of `tvlUsd` per individual pool. We
+# call it once per pool in the configured list and sum into a single
+# Ethereum syrupUSDC supply series. Note: yields chart does NOT expose
+# borrow per vault — Morpho's per-vault borrow lives in their own API.
+# So for Morpho syrupUSDC we contribute SUPPLY only (matches the JupLend
+# situation on the Solana side).
+@st.cache_data(ttl=14_400, show_spinner=False)
+def _fetch_defillama_yields_pool_history(pool_id: str,
+                                          revision: str = "v1") -> pd.DataFrame:
+    """Fetch daily TVL history for one DefiLlama yields pool.
+
+    Hourly snapshots downsampled to daily (last-of-day wins, since TVL
+    is a stock not a flow). Returns columns `date`, `tvl_usd`."""
+    try:
+        r = requests.get(f"https://yields.llama.fi/chart/{pool_id}",
+                          timeout=30)
+        r.raise_for_status()
+        items = (r.json() or {}).get("data") or []
+    except Exception as exc:
+        log.warning("DL yields chart fetch failed (%s): %s",
+                    pool_id[:8], exc)
+        return pd.DataFrame()
+    if not items:
+        return pd.DataFrame()
+    rows = []
+    for it in items:
+        ts = it.get("timestamp")
+        tvl = it.get("tvlUsd")
+        if not ts or tvl is None:
+            continue
+        rows.append({
+            "ts":      pd.to_datetime(ts, utc=True).tz_localize(None),
+            "tvl_usd": float(tvl),
+        })
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows).sort_values("ts").reset_index(drop=True)
+    df["date"] = df["ts"].dt.normalize()
+    return (df.groupby("date", as_index=False)
+              .agg(tvl_usd=("tvl_usd", "last")))
+
+
 # Process-wide cache for DefiLlama per-chain market-cap history (free API).
 # Cached so concurrent scheduler threads don't duplicate work or hammer the API.
 _DL_CACHE: dict[str, tuple[float, dict]] = {}
@@ -10771,101 +10907,183 @@ if __name__ == "__main__":
                 )
 
             st.divider()
-            # ── Row 1: syrupUSDC volume (left) + Maple-on-Kamino
-            #    supply/borrow (right). Maple's isolated lending market
-            #    on Kamino takes syrupUSDC as collateral (88% LTV) and
-            #    lets borrowers draw USDC / PYUSD / USDS / CASH / USDG
-            #    / USD1 against it. Launched 2025-06-03 — over a year
-            #    of hourly history. Current state: $151M supply,
-            #    $62M borrow, ~41% utilization, 710 open positions.
-            _MAPLE_KAMINO_LM = (
-                "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y")
-            _col_sv, _col_sk = st.columns(2, gap="medium")
-            with _col_sv:
-                # syrupUSDC — Maple Finance's primary distributed
-                # credit token. ~$1.4B aggregate MC across three
-                # chains; Ethereum is largest by MC ($1.29B) but
-                # Solana dominates DEX volume (~$110M / 30d vs ~$23M
-                # on Ethereum) — Solana is the active trading hub.
-                _render_token_volume(
-                    symbol="syrupUSDC",
-                    label="Maple Finance",
-                    url="https://syrup.fi",
-                    tokens=[
-                        ("Ethereum",
-                         "0x80ac24aA929eaF5013f6436cdA2a7ba190f5Cc0b",
-                         "ethereum", "#627EEA"),
-                        ("Solana",
-                         "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
-                         "solana",   "#9945FF"),
-                        ("Base",
-                         "0x660975730059246A68521a3e2FBD4740173100f5",
-                         "base",     "#0052FF"),
-                    ],
-                    raw_key="syrup_usdc_volume_by_chain",
-                )
-            with _col_sk:
-                _render_kamino_market(
-                    title="Maple on Kamino — Supply vs Borrow",
-                    lending_market=_MAPLE_KAMINO_LM,
-                    raw_key="maple_kamino_market_supply_borrow",
-                    caption_tail=(
-                        f"the Maple market on [Kamino]"
-                        f"(https://kamino.com/borrow/"
-                        f"{_MAPLE_KAMINO_LM}). syrupUSDC is the "
-                        "collateral asset (88% LTV); USDC / PYUSD / "
-                        "USDS / CASH / USDG / USD1 are the borrowable "
-                        "stables. Hourly history since 2025-06-03."
-                    ),
-                )
+            # ── Per-token volume + per-market supply/borrow charts —
+            #    HIDDEN. Replaced by the aggregated "private credit by
+            #    chain" chart below, which rolls up the same Kamino
+            #    supply/borrow numbers (PRIME + Maple + OnRe markets)
+            #    plus JupLend on Solana and Aave Horizon + Morpho
+            #    syrupUSDC on Ethereum into one cross-chain view.
+            #    Restoring: paste the previous 2x2 block back here
+            #    (see git history at commit 40ee829 or earlier).
 
-            # ── Row 2: PRIME volume (left) + PRIME-on-Kamino
-            #    supply/borrow (right). Hastra PRIME is the collateral
-            #    asset on its own isolated Kamino market (`CqAoLuq…HA`,
-            #    88% LTV); USDC / PYUSD / CASH / USDS are the borrowable
-            #    stables. Launched 2025-12-04. Current state: $358M
-            #    supply, $146M borrow, ~41% utilization, 2,910 open
-            #    positions.
-            _PRIME_KAMINO_LM = (
-                "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA")
-            _col_pv, _col_pk = st.columns(2, gap="medium")
-            with _col_pv:
-                # PRIME — Hastra's tokenized prime brokerage credit
-                # position. Verified Birdeye search hits across 8 EVM
-                # L1s + Solana; "Hastra PRIME" only appears on Solana
-                # ($216M MC) and Ethereum ($175M MC) — every other
-                # chain's "PRIME" symbol is a different project
-                # (Echelon Prime, DeltaPrime, Prime Intellect, etc.).
-                # If Hastra later bridges to Base/Arbitrum/etc., add
-                # a tuple here.
-                _render_token_volume(
-                    symbol="PRIME",
-                    label="Hastra",
-                    url="https://hastra.io",
-                    tokens=[
-                        ("Solana",
-                         "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
-                         "solana",   "#9945FF"),
-                        ("Ethereum",
-                         "0x19ebb35279A16207Ec4ba82799CC64715065F7F6",
-                         "ethereum", "#627EEA"),
-                    ],
-                    raw_key="hastra_prime_volume_by_chain",
+            # ── Aggregate: total private-credit supply + borrow by chain ──
+            # Single time-series chart with four lines, two per chain:
+            # Solana Supply + Solana Borrow + Ethereum Supply + Ethereum
+            # Borrow. Gives the credit analyst a one-glance comparison of
+            # which chain dominates onchain RWA-credit liquidity at any
+            # point in time. Solana side aggregates the three Kamino
+            # isolated RWA markets (PRIME, Maple, OnRe) for both supply
+            # and borrow, plus JupLend's syrupUSDC pool for supply only.
+            # Ethereum side aggregates Aave Horizon RWA (supply + borrow,
+            # both via DefiLlama's protocol endpoint) plus Morpho Blue's
+            # three main syrupUSDC vaults (supply only — DL doesn't
+            # expose per-vault borrow). "Supply only" sources are noted
+            # explicitly in the caption so the borrow undercount is
+            # transparent rather than hidden.
+            _SOL_KAMINO_MARKETS = [
+                ("PRIME",
+                 "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA"),
+                ("Maple",
+                 "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y"),
+                ("OnRe",
+                 "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8"),
+            ]
+            # Morpho syrupUSDC: three main Ethereum vaults (the 4th,
+            # `d202a84b...`, is < $100K and noise-level). Aggregated
+            # for the "Ethereum Supply" total. Borrow undercounted —
+            # see caption.
+            _ETH_MORPHO_SYRUP_POOLS = [
+                "44d88566-7795-49d3-a4a9-5d174cd40007",
+                "90f4a341-6dbf-435f-8808-2d4b983cb233",
+                "785d94f7-fa71-415c-b594-3767680580be",
+            ]
+
+            # Build a list of per-source DataFrames keyed by chain.
+            # Each has columns ['date', 'supply_usd'] and (sometimes)
+            # 'borrow_usd'. Missing borrow series are silently filled
+            # with 0 at merge time.
+            _sol_frames = []
+            for _name, _lm in _SOL_KAMINO_MARKETS:
+                _f = _fetch_kamino_market_history(_lm)
+                if _f.empty:
+                    continue
+                _sol_frames.append(
+                    _f[["date", "supply_usd", "borrow_usd"]]
+                    .rename(columns={"supply_usd": f"sup_{_name}",
+                                       "borrow_usd": f"bor_{_name}"}))
+            _jup = _fetch_juplend_syrup_history()
+            if not _jup.empty:
+                _sol_frames.append(
+                    _jup.rename(columns={"supply_usd": "sup_JupLend"}))
+
+            _eth_frames = []
+            _aave = _fetch_defillama_protocol_history(
+                "aave-horizon-rwa", chain="Ethereum")
+            if not _aave.empty:
+                _eth_frames.append(
+                    _aave.rename(columns={"supply_usd": "sup_AaveHorizon",
+                                            "borrow_usd": "bor_AaveHorizon"}))
+            for _pool in _ETH_MORPHO_SYRUP_POOLS:
+                _mp = _fetch_defillama_yields_pool_history(_pool)
+                if _mp.empty:
+                    continue
+                _eth_frames.append(
+                    _mp.rename(columns={"tvl_usd": f"sup_Morpho_{_pool[:8]}"}))
+
+            if not _sol_frames or not _eth_frames:
+                st.warning(
+                    "Aggregate private-credit chart unavailable — one or "
+                    "more upstream sources (Kamino, JupLend seed, "
+                    "DefiLlama) returned empty. Refreshes on next 4h "
+                    "cache expiry."
                 )
-            with _col_pk:
-                _render_kamino_market(
-                    title="PRIME on Kamino — Supply vs Borrow",
-                    lending_market=_PRIME_KAMINO_LM,
-                    raw_key="prime_kamino_market_supply_borrow",
-                    caption_tail=(
-                        f"Hastra's isolated PRIME market on [Kamino]"
-                        f"(https://kamino.com/borrow/"
-                        f"{_PRIME_KAMINO_LM}). PRIME is the collateral "
-                        "asset (88% LTV); USDC / PYUSD / CASH / USDS "
-                        "are the borrowable stables. Hourly history "
-                        "since launch (2025-12-04)."
-                    ),
+                st.stop()
+
+            # Outer-join all frames on `date`, fill missing with 0,
+            # then collapse into 4 series (Solana supply/borrow,
+            # Ethereum supply/borrow).
+            def _merge_all(frames):
+                out = frames[0]
+                for f in frames[1:]:
+                    out = out.merge(f, on="date", how="outer")
+                return out.sort_values("date").fillna(0).reset_index(drop=True)
+
+            _sol = _merge_all(_sol_frames)
+            _eth = _merge_all(_eth_frames)
+            _sup_cols_sol = [c for c in _sol.columns if c.startswith("sup_")]
+            _bor_cols_sol = [c for c in _sol.columns if c.startswith("bor_")]
+            _sup_cols_eth = [c for c in _eth.columns if c.startswith("sup_")]
+            _bor_cols_eth = [c for c in _eth.columns if c.startswith("bor_")]
+            _sol["Solana Supply"] = _sol[_sup_cols_sol].sum(axis=1)
+            _sol["Solana Borrow"] = _sol[_bor_cols_sol].sum(axis=1) \
+                if _bor_cols_sol else 0
+            _eth["Ethereum Supply"] = _eth[_sup_cols_eth].sum(axis=1)
+            _eth["Ethereum Borrow"] = _eth[_bor_cols_eth].sum(axis=1) \
+                if _bor_cols_eth else 0
+
+            _agg = (_sol[["date", "Solana Supply", "Solana Borrow"]]
+                      .merge(_eth[["date", "Ethereum Supply", "Ethereum Borrow"]],
+                              on="date", how="outer")
+                      .sort_values("date").fillna(0).reset_index(drop=True))
+
+            # Color choice: solid = supply, dashed = borrow; chain
+            # encoded by hue (Solana purple, Ethereum blue) to match
+            # the brand colors used in the rest of the dashboard.
+            _AGG_STYLE = {
+                "Solana Supply":   ("#9945FF", "solid"),
+                "Solana Borrow":   ("#9945FF", "dash"),
+                "Ethereum Supply": ("#627EEA", "solid"),
+                "Ethereum Borrow": ("#627EEA", "dash"),
+            }
+
+            def _build_agg_fig(view, _style=_AGG_STYLE):
+                fig = go.Figure()
+                for lbl, (color, dash) in _style.items():
+                    if lbl not in view.columns:
+                        continue
+                    y = view[lbl].fillna(0)
+                    fig.add_trace(go.Scatter(
+                        x=view["date"], y=y, name=lbl, mode="lines",
+                        line=dict(color=color, width=2.0, dash=dash),
+                        customdata=y.map(_fmt_usd),
+                        hovertemplate=(
+                            f"{lbl}: %{{customdata}}<extra></extra>"),
+                    ))
+                fig.update_layout(
+                    height=460, hovermode="x unified",
+                    margin=dict(t=10, b=10, l=10, r=10),
+                    showlegend=False,   # _legend() renders below
+                    yaxis=dict(tickprefix="$", tickformat="~s",
+                                showgrid=True, rangemode="tozero"),
                 )
+                return fig
+
+            _chart_dwm_simple(
+                "Onchain private credit — Supply & Borrow by chain",
+                source_df=_agg,
+                build_fig=_build_agg_fig,
+                raw_df=_agg.sort_values("date", ascending=False),
+                raw_key="private_credit_agg_by_chain",
+                raw_filename="private_credit_agg_by_chain",
+                caption=(
+                    "Daily aggregate supply and outstanding borrow for "
+                    "onchain private-credit lending markets, split by "
+                    "chain.\n\n"
+                    "**Solana** sources (4): Kamino's three isolated "
+                    "RWA markets — "
+                    "[PRIME](https://kamino.com/borrow/CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA), "
+                    "[Maple](https://kamino.com/borrow/6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y), "
+                    "[OnRe](https://kamino.com/borrow/47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8) — "
+                    "plus **JupLend's syrupUSDC pool (supply only — "
+                    "no borrow exposed)**. "
+                    "**Ethereum** sources (2): "
+                    "[Aave Horizon RWA](https://app.aave.com/) "
+                    "(supply + borrow via DefiLlama) plus **Morpho "
+                    "Blue's three main syrupUSDC vaults (supply only — "
+                    "per-vault borrow not exposed by DefiLlama)**. "
+                    "Both Solana and Ethereum borrow totals therefore "
+                    "slightly undercount actual outstanding debt at "
+                    "the chain level. Sources: Kamino API + JupLend "
+                    "seed + DefiLlama. Cached 4h."
+                ),
+                col_aggs={"Solana Supply":   "last",
+                            "Solana Borrow":   "last",
+                            "Ethereum Supply": "last",
+                            "Ethereum Borrow": "last"},
+                stacked=False,
+                legend_entries=[(lbl, c) for lbl, (c, _) in _AGG_STYLE.items()],
+                legend_label="series",
+            )
             st.stop()
 
         if selected_asset == "RWA perps":

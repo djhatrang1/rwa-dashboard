@@ -11970,6 +11970,130 @@ if __name__ == "__main__":
                                     legend_label="symbols",
                                 )
 
+                # ── Solana RWA Perps aggregate (4 asset classes summed) ─
+                # Mirrors the Hyperliquid umbrella chart's dual-axis
+                # layout above so an analyst can read the two
+                # ecosystems side by side. Bars = daily volume (left
+                # axis), line = open interest (right axis). Both
+                # metrics are summed across all 4 asset-class queries
+                # (Commodity 4625 + Equity 4626 + Index 4627 + FX 4628)
+                # over the single-underscore-prefixed symbol rows —
+                # i.e. real per-ticker perp markets, excluding the
+                # "Total" rollups and the `__crypto` sub-categories
+                # the queries also carry.
+                _AC_QUERIES = [
+                    qid for _, qid in _ASSET_CLASSES
+                ]
+                _agg_rows = []
+                for _qid in _AC_QUERIES:
+                    _df_q = _bw_data.get(_qid)
+                    if _df_q is None or _df_q.empty:
+                        continue
+                    if "symbol" not in _df_q.columns:
+                        continue
+                    _sub = _df_q[_df_q["symbol"].apply(
+                        _asset_class_filter)]
+                    if _sub.empty:
+                        continue
+                    _cols = [c for c in
+                              ("date", "vol_market_symbol",
+                                "oi_market_symbol")
+                              if c in _sub.columns]
+                    if "date" not in _cols:
+                        continue
+                    _agg_rows.append(_sub[_cols])
+                if _agg_rows:
+                    _sol_agg = pd.concat(_agg_rows, ignore_index=True)
+                    _sol_agg["date"] = pd.to_datetime(
+                        _sol_agg["date"], errors="coerce")
+                    _sol_agg = _sol_agg.dropna(subset=["date"])
+                    # Sum per-day across every asset class. The
+                    # underlying queries already return one row per
+                    # (date, symbol) so a plain groupby-sum gives the
+                    # right per-day total without double-counting.
+                    _sol_agg = (_sol_agg.groupby("date", as_index=False)
+                                          .agg(total_volume_usd=(
+                                              "vol_market_symbol", "sum"),
+                                                total_open_interest_usd=(
+                                                  "oi_market_symbol", "sum"))
+                                          .sort_values("date")
+                                          .reset_index(drop=True))
+
+                    def _build_sol_agg_fig(df_view):
+                        fig = go.Figure()
+                        fig.add_trace(go.Bar(
+                            x=df_view["date"],
+                            y=df_view["total_volume_usd"],
+                            name="Volume",
+                            marker_color="#4285F4", opacity=0.85,
+                            customdata=df_view["total_volume_usd"].map(
+                                _fmt_usd),
+                            hovertemplate=(
+                                "Volume: %{customdata}<extra></extra>"),
+                        ))
+                        fig.add_trace(go.Scatter(
+                            x=df_view["date"],
+                            y=df_view["total_open_interest_usd"],
+                            name="Open Interest",
+                            mode="lines+markers",
+                            line=dict(color="#10B981", width=1.5),
+                            marker=dict(color="#10B981", size=4),
+                            yaxis="y2",
+                            customdata=df_view[
+                                "total_open_interest_usd"].map(
+                                lambda v: _fmt_usd(v) if pd.notna(v)
+                                else "—"),
+                            hovertemplate=(
+                                "OI: %{customdata}<extra></extra>"),
+                        ))
+                        fig.update_layout(
+                            height=400, hovermode="x unified",
+                            margin=dict(t=10, b=10, l=10, r=10),
+                            showlegend=False,
+                            yaxis=dict(tickprefix="$", tickformat="~s",
+                                        showgrid=True,
+                                        rangemode="tozero"),
+                            yaxis2=dict(overlaying="y", side="right",
+                                        tickprefix="$", tickformat="~s",
+                                        showgrid=False,
+                                        rangemode="tozero"),
+                        )
+                        return fig
+
+                    _chart_dwm_simple(
+                        "Daily Volume + Open Interest (Solana RWA "
+                        "— all asset classes)",
+                        source_df=_sol_agg,
+                        build_fig=_build_sol_agg_fig,
+                        raw_df=_sol_agg.sort_values(
+                            "date", ascending=False),
+                        raw_key="rwa_perp_solana_agg",
+                        raw_filename="solana_rwa_perps_aggregate",
+                        caption=(
+                            "Daily perp activity on Solana DEXs "
+                            "(Drift / Jupiter / Flash Trade / GMTrade "
+                            "/ Pacifica / Phoenix / Bullet) aggregated "
+                            "across the 4 RWA asset classes "
+                            "(Commodity + Equity + Index + FX). Volume "
+                            "(left axis, bars) is a flow → Weekly / "
+                            "Monthly tabs sum; Open Interest (right "
+                            "axis, line) is a stock → period-end "
+                            "(last) value. Crypto perps excluded "
+                            "(only single-underscore-prefixed RWA "
+                            "asset-class symbols are summed). Source: "
+                            "Blockworks queries 4625-4628. Layout "
+                            "mirrors the Hyperliquid umbrella chart "
+                            "above so the two ecosystems read side "
+                            "by side."
+                        ),
+                        # Volume = flow → SUM; OI = stock → LAST.
+                        col_aggs={
+                            "total_volume_usd": "sum",
+                            "total_open_interest_usd": "last",
+                        },
+                    )
+                    st.divider()
+
                 # Volume — flow metric → SUM across periods.
                 _render_grid(
                     metric_prefix="vol",

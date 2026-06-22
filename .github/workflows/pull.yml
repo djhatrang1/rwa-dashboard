@@ -17,6 +17,12 @@ concurrency:
   group: data-pull
   cancel-in-progress: false
 
+# `contents: write` is required so the "Commit CoinGecko seeds" step
+# below can `git push` the refreshed seed snapshots back to main. The
+# default GITHUB_TOKEN at the job level is read-only otherwise.
+permissions:
+  contents: write
+
 jobs:
   pull:
     runs-on: ubuntu-latest
@@ -68,3 +74,44 @@ jobs:
           PULL_GROUP:        ${{ github.event.inputs.groups }}
         run: |
           python scripts/run_pull.py
+
+      - name: Commit CoinGecko seeds
+        # The xStocks puller writes per-token JSON snapshots into
+        # `coingecko_seeds/` on every successful CG call (see
+        # `_cg_seed_write` in stocks_dashboard.py). Without this
+        # auto-commit step the seeds would only live on this
+        # runner's ephemeral disk and be thrown away when the
+        # job ends — meaning the Streamlit Cloud container would
+        # never see them and the render-path fallback (when CG
+        # 429s or the cached Postgres rows go stale) wouldn't
+        # have anything to fall back to.
+        #
+        # We pull --rebase before pushing so the weekly
+        # `hyperliquid_categories.yml` workflow's commits (which
+        # land on the same branch, different concurrency group)
+        # don't cause this push to be rejected. The --quiet on
+        # `git diff --cached --quiet` short-circuits when there
+        # are no new seed days (e.g. the puller failed entirely),
+        # so we don't waste a commit on a no-op.
+        #
+        # Author identity is the default GitHub Actions bot — same
+        # as the Hyperliquid workflow, so the two automation
+        # commits look uniform in git log.
+        if: always()   # commit even if a later step in the future
+                       # fails — partial seed progress is still
+                       # worth keeping.
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add coingecko_seeds/
+          if git diff --cached --quiet; then
+            echo "no seed changes — nothing to commit"
+          else
+            git commit -m "chore: refresh CoinGecko seeds"
+            # Rebase onto any commits that landed while the
+            # 90-min pull was running (rare but possible with the
+            # weekly Hyperliquid workflow). Retries once if the
+            # push race re-happens during the rebase window.
+            git pull --rebase origin main || true
+            git push || (git pull --rebase origin main && git push)
+          fi

@@ -10461,74 +10461,76 @@ if __name__ == "__main__":
                 raw_key="rwa_credit_history_represented",
             )
 
-            # ── syrupUSDC — daily trading volume by chain ────────────
-            # Maple Finance's syrupUSDC is the largest "distributed"
-            # private-credit token on rwa.xyz (~$1.4B aggregate MC
-            # across Ethereum + Solana + Base) and the one a credit
-            # analyst is most likely to want to see traded liquidity
-            # for. The two stacked-area MC charts above show value at
-            # rest; this one shows flow.
+            # ── Per-token trading-volume charts (Maple + Hastra) ──────
+            # The two stacked-area MC charts above show value at REST
+            # for the entire credit basket. The blocks below show
+            # FLOW for the two most actively-traded distributed
+            # tokens — `syrupUSDC` (Maple) and `PRIME` (Hastra) —
+            # which combined account for ~80% of the distributed-
+            # credit aggregate MC. A credit analyst typically wants
+            # both views: trust in the protocol shows up as MC
+            # holdings, exit liquidity shows up as DEX volume.
             #
-            # Source is Birdeye OHLCV V3 per (chain, address) — see
-            # `_fetch_birdeye_ohlcv_daily` near the top of this file
-            # for the fetcher (cached 4h, render-time, not a puller).
-            # Three (chain, address) tuples below were verified by
-            # cross-checking Birdeye search results against MC +
-            # liquidity (canonical Maple deployment per chain; smaller
-            # impostor-symbol matches with $0-4K MC discarded).
+            # Both charts share the same shape — stacked daily bars,
+            # one segment per chain the token is deployed on — so
+            # they're rendered via a shared `_render_token_volume`
+            # helper (defined inline below). Adding a third token
+            # later is one extra call to the helper with a fresh
+            # `(label, addr, chain, color)` list.
             #
-            # Chart shape: stacked daily bars with one segment per
-            # chain. Stacked = True so the toolbar's % view works
-            # (share-of-volume-by-chain over time).
-            st.divider()
-            _SYRUP_TOKENS: list[tuple[str, str, str, str]] = [
-                # (label, address, x-chain, brand color)
-                # Ethereum first — largest deployment by both MC
-                # ($1.29B) and 24h volume (~$360K typical). Solana
-                # second (~$107M MC, ~$240K vol). Base third — tiny
-                # ($12.5M MC, ~$120/day) but kept for completeness so
-                # the chart truthfully reflects every chain where the
-                # token lives.
-                ("Ethereum",
-                 "0x80ac24aA929eaF5013f6436cdA2a7ba190f5Cc0b",
-                 "ethereum", "#627EEA"),
-                ("Solana",
-                 "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
-                 "solana",   "#9945FF"),
-                ("Base",
-                 "0x660975730059246A68521a3e2FBD4740173100f5",
-                 "base",     "#0052FF"),
-            ]
-            _frames = []
-            for _label, _addr, _chain, _color in _SYRUP_TOKENS:
-                _f = _fetch_birdeye_ohlcv_daily(_addr, _chain)
-                if _f.empty:
-                    continue
-                _f = _f.rename(columns={"v_usd": _label})
-                _frames.append(_f[["date", _label]])
-            if not _frames:
-                st.info(
-                    "syrupUSDC volume unavailable — Birdeye OHLCV V3 "
-                    "returned empty for all three chains. Likely a "
-                    "transient outage; will refresh on next 4h cache "
-                    "expiry."
-                )
-            else:
-                _syrup_df = _frames[0]
-                for _f in _frames[1:]:
-                    _syrup_df = _syrup_df.merge(_f, on="date", how="outer")
-                _present_labels = [lbl for lbl, _, _, _ in _SYRUP_TOKENS
-                                    if lbl in _syrup_df.columns]
+            # Source: Birdeye OHLCV V3 per (chain, address). Fetcher
+            # is `_fetch_birdeye_ohlcv_daily` near the top of this
+            # file — cached 4h, render-time, not a puller. Token
+            # addresses below were cross-checked against Birdeye
+            # search results by MC + liquidity to filter out
+            # impostor-symbol matches (e.g. there are many "PRIME"
+            # tokens on EVM chains — Echelon Prime, DeltaPrime,
+            # Prime Intellect — none of which are Hastra's).
+
+            def _render_token_volume(*, symbol: str, label: str,
+                                       url: str,
+                                       tokens: list[tuple[str, str, str, str]],
+                                       raw_key: str) -> None:
+                """Render one stacked-bar daily-volume chart for a
+                single token across multiple chains.
+
+                `tokens` is a list of `(chain_label, contract_addr,
+                birdeye_x_chain, brand_color_hex)` tuples — one entry
+                per chain the token is deployed on. Chains for which
+                Birdeye returns an empty frame (no on-chain DEX
+                activity tracked) are quietly omitted from the chart.
+                If ALL chains return empty (typically a Birdeye
+                outage), an info placeholder is shown instead so the
+                page still renders."""
+                frames = []
+                for _lbl, _addr, _chain, _ in tokens:
+                    _f = _fetch_birdeye_ohlcv_daily(_addr, _chain)
+                    if _f.empty:
+                        continue
+                    _f = _f.rename(columns={"v_usd": _lbl})
+                    frames.append(_f[["date", _lbl]])
+                if not frames:
+                    st.info(
+                        f"{symbol} volume unavailable — Birdeye OHLCV V3 "
+                        f"returned empty for all "
+                        f"{len(tokens)} configured chains. Likely a "
+                        "transient outage; refreshes on next 4h cache "
+                        "expiry."
+                    )
+                    return
+                df_v = frames[0]
+                for f in frames[1:]:
+                    df_v = df_v.merge(f, on="date", how="outer")
+                present = [lbl for lbl, _, _, _ in tokens
+                            if lbl in df_v.columns]
                 # Fill missing-chain days with 0 so the stack draws
                 # cleanly; raw export below keeps NaN-vs-0 semantics
                 # by sorting only.
-                _syrup_df = (_syrup_df.sort_values("date")
-                                       .fillna(0)
-                                       .reset_index(drop=True))
-                _color_map = {lbl: clr for lbl, _, _, clr in _SYRUP_TOKENS}
+                df_v = (df_v.sort_values("date").fillna(0)
+                              .reset_index(drop=True))
+                cmap = {lbl: clr for lbl, _, _, clr in tokens}
 
-                def _build_syrup_fig(view, _labels=_present_labels,
-                                      _colors=_color_map):
+                def _build_fig(view, _labels=present, _colors=cmap):
                     fig = go.Figure()
                     for lbl in _labels:
                         if lbl not in view.columns:
@@ -10551,28 +10553,74 @@ if __name__ == "__main__":
                     )
                     return fig
 
+                _chain_list_phrase = ", ".join(present[:-1]) + (
+                    f", and {present[-1]}" if len(present) > 1 else present[0])
                 _chart_dwm_simple(
-                    "syrupUSDC — Daily Trading Volume by chain",
-                    source_df=_syrup_df,
-                    build_fig=_build_syrup_fig,
-                    raw_df=_syrup_df.sort_values("date", ascending=False),
-                    raw_key="syrup_usdc_volume_by_chain",
-                    raw_filename="syrup_usdc_volume_by_chain",
+                    f"{symbol} — Daily Trading Volume by chain",
+                    source_df=df_v,
+                    build_fig=_build_fig,
+                    raw_df=df_v.sort_values("date", ascending=False),
+                    raw_key=raw_key,
+                    raw_filename=raw_key,
                     caption=(
-                        "Daily DEX trading volume for Maple Finance's "
-                        "[syrupUSDC](https://syrup.fi) across the chains "
-                        "where it's deployed (Ethereum, Solana, Base). "
+                        f"Daily DEX trading volume for {label}'s "
+                        f"[`{symbol}`]({url}) across the chains where "
+                        f"it's deployed ({_chain_list_phrase}). "
                         "Source: Birdeye OHLCV V3, fetched at render "
                         "time and cached 4h. Stacked daily bars; switch "
                         "the toolbar to % for share-of-volume by chain."
                     ),
-                    col_aggs={lbl: "sum" for lbl in _present_labels},
+                    col_aggs={lbl: "sum" for lbl in present},
                     stacked=True,
-                    legend_entries=[
-                        (lbl, _color_map[lbl]) for lbl in _present_labels
-                    ],
+                    legend_entries=[(lbl, cmap[lbl]) for lbl in present],
                     legend_label="chains",
                 )
+
+            st.divider()
+            # syrupUSDC — Maple Finance's primary distributed credit
+            # token. ~$1.4B aggregate MC across three chains; Ethereum
+            # is largest by MC ($1.29B) but Solana dominates DEX
+            # volume (~$110M / 30d vs ~$23M on Ethereum) — Solana is
+            # the active trading hub.
+            _render_token_volume(
+                symbol="syrupUSDC",
+                label="Maple Finance",
+                url="https://syrup.fi",
+                tokens=[
+                    ("Ethereum",
+                     "0x80ac24aA929eaF5013f6436cdA2a7ba190f5Cc0b",
+                     "ethereum", "#627EEA"),
+                    ("Solana",
+                     "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
+                     "solana",   "#9945FF"),
+                    ("Base",
+                     "0x660975730059246A68521a3e2FBD4740173100f5",
+                     "base",     "#0052FF"),
+                ],
+                raw_key="syrup_usdc_volume_by_chain",
+            )
+
+            # PRIME — Hastra's tokenized prime brokerage credit
+            # position. Verified Birdeye search hits across 8 EVM L1s
+            # + Solana; "Hastra PRIME" only appears on Solana
+            # ($216M MC) and Ethereum ($175M MC) — every other chain's
+            # "PRIME" symbol is a different project (Echelon Prime,
+            # DeltaPrime, Prime Intellect, etc.). If Hastra later
+            # bridges to Base/Arbitrum/etc., add a tuple here.
+            _render_token_volume(
+                symbol="PRIME",
+                label="Hastra",
+                url="https://hastra.io",
+                tokens=[
+                    ("Solana",
+                     "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
+                     "solana",   "#9945FF"),
+                    ("Ethereum",
+                     "0x19ebb35279A16207Ec4ba82799CC64715065F7F6",
+                     "ethereum", "#627EEA"),
+                ],
+                raw_key="hastra_prime_volume_by_chain",
+            )
             st.stop()
 
         if selected_asset == "RWA perps":

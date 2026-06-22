@@ -10948,6 +10948,14 @@ if __name__ == "__main__":
                  "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y"),
                 ("OnRe",
                  "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8"),
+                # Apollo's sACRED market — collateral asset is sACRED
+                # (Apollo's tokenized private credit via Securitize),
+                # borrowable assets are USDC + USDG. Live since
+                # 2025-06-11 but still tiny ($2.6K deposit TVL, 6
+                # obligations as of 2026-06-22). Included so the
+                # chart + table track it as it grows.
+                ("Apollo",
+                 "3koBPZPPV4Ag4DPWCyTdAVGxzxABWw9vEZ9vX8sjbbM2"),
             ]
             # Morpho Blue vaults on Ethereum that we track as part of
             # the private-credit aggregate. Today: 3 syrupUSDC vaults
@@ -11135,6 +11143,10 @@ if __name__ == "__main__":
                  "asset": "ONyc",      "issuer": "OnRe",
                  "source": "kamino:47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
                  "link":   "https://kamino.com/borrow/47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8"},
+                {"chain": "Solana", "market": "Kamino · Apollo",
+                 "asset": "sACRED",    "issuer": "Apollo",
+                 "source": "kamino:3koBPZPPV4Ag4DPWCyTdAVGxzxABWw9vEZ9vX8sjbbM2",
+                 "link":   "https://kamino.com/borrow/3koBPZPPV4Ag4DPWCyTdAVGxzxABWw9vEZ9vX8sjbbM2"},
                 {"chain": "Solana", "market": "JupLend",
                  "asset": "syrupUSDC", "issuer": "Maple",
                  "source": "juplend",  "link": "https://jup.ag/lend"},
@@ -11242,10 +11254,11 @@ if __name__ == "__main__":
                     "shown — only Kamino exposes per-market borrow "
                     "numbers via API, so a borrow line would heavily "
                     "undercount the EVM side and confuse the read.\n\n"
-                    "**Solana** — Kamino's three isolated RWA markets "
+                    "**Solana** — Kamino's four isolated RWA markets "
                     "([PRIME](https://kamino.com/borrow/CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA), "
                     "[Maple](https://kamino.com/borrow/6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y), "
-                    "[OnRe](https://kamino.com/borrow/47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8)) "
+                    "[OnRe](https://kamino.com/borrow/47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8), "
+                    "[Apollo](https://kamino.com/borrow/3koBPZPPV4Ag4DPWCyTdAVGxzxABWw9vEZ9vX8sjbbM2)) "
                     "plus JupLend's syrupUSDC pool (disk seed). "
                     "**Ethereum** — Morpho Blue's three main syrupUSDC "
                     "vaults (Maple) + WJAAA vault (Centrifuge), plus "

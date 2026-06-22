@@ -109,9 +109,27 @@ jobs:
           else
             git commit -m "chore: refresh CoinGecko seeds"
             # Rebase onto any commits that landed while the
-            # 90-min pull was running (rare but possible with the
-            # weekly Hyperliquid workflow). Retries once if the
-            # push race re-happens during the rebase window.
-            git pull --rebase origin main || true
-            git push || (git pull --rebase origin main && git push)
+            # 90-min pull was running (e.g. the weekly Hyperliquid
+            # workflow auto-commit on the same branch, or a human
+            # pushing to main during the long pull). `--autostash`
+            # tucks away the unstaged tree (the puller also writes
+            # to `defillama_seeds/` and similar — those modifications
+            # live in the working tree, not staged, and would
+            # otherwise abort the rebase with "cannot pull with
+            # rebase: You have unstaged changes"). After the rebase
+            # the stash is reapplied so the next puller-tick still
+            # sees the same disk state.
+            #
+            # Race-retry: if the push is rejected because another
+            # commit landed between our pull and our push, retry
+            # the pull-then-push once. Two-attempt cap keeps the
+            # step bounded.
+            for attempt in 1 2; do
+              git pull --rebase --autostash origin main || true
+              if git push; then
+                echo "push succeeded on attempt $attempt"
+                break
+              fi
+              echo "push rejected on attempt $attempt — retrying"
+            done
           fi

@@ -11113,6 +11113,122 @@ if __name__ == "__main__":
                 )
                 return fig
 
+            # ── Per-market detail table (rendered below the chart) ────
+            # Pulls latest supply from each source via the same cached
+            # fetchers as the chart, so the table and chart can never
+            # disagree. One row per market; chains sorted by today's
+            # total descending, markets within a chain sorted the same
+            # way. Adding a new market is one tuple in `_PC_MARKETS`
+            # below — the resolver below picks the right fetcher based
+            # on the `source` URI scheme.
+            _PC_MARKETS: list[dict] = [
+                # ── Solana ────
+                {"chain": "Solana", "market": "Kamino · PRIME",
+                 "asset": "PRIME",     "issuer": "Hastra",
+                 "source": "kamino:CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
+                 "link":   "https://kamino.com/borrow/CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA"},
+                {"chain": "Solana", "market": "Kamino · Maple",
+                 "asset": "syrupUSDC", "issuer": "Maple",
+                 "source": "kamino:6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+                 "link":   "https://kamino.com/borrow/6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y"},
+                {"chain": "Solana", "market": "Kamino · OnRe",
+                 "asset": "ONyc",      "issuer": "OnRe",
+                 "source": "kamino:47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+                 "link":   "https://kamino.com/borrow/47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8"},
+                {"chain": "Solana", "market": "JupLend",
+                 "asset": "syrupUSDC", "issuer": "Maple",
+                 "source": "juplend",  "link": "https://jup.ag/lend"},
+                # ── Ethereum ────
+                # Morpho syrupUSDC: 3 vaults aggregated for clarity
+                # (same project / asset / issuer; different curators).
+                {"chain": "Ethereum", "market": "Morpho Blue · syrupUSDC (3 vaults)",
+                 "asset": "syrupUSDC", "issuer": "Maple",
+                 "source": ("dl-sum:"
+                              "44d88566-7795-49d3-a4a9-5d174cd40007,"
+                              "90f4a341-6dbf-435f-8808-2d4b983cb233,"
+                              "785d94f7-fa71-415c-b594-3767680580be"),
+                 "link":   "https://app.morpho.org/"},
+                {"chain": "Ethereum", "market": "Aave Horizon",
+                 "asset": "SYRUPUSDT", "issuer": "Maple",
+                 "source": "dl:a79fdd93-2747-43ee-bf53-0c372192964d",
+                 "link":   "https://app.aave.com/"},
+                {"chain": "Ethereum", "market": "Aave Horizon",
+                 "asset": "JAAA",      "issuer": "Centrifuge",
+                 "source": "dl:ac338ec5-c38f-43e1-8e5c-b5e9b4842aa3",
+                 "link":   "https://app.aave.com/"},
+                {"chain": "Ethereum", "market": "Morpho Blue",
+                 "asset": "WJAAA",     "issuer": "Centrifuge",
+                 "source": "dl:8f8c622b-1c29-452c-a0f2-b5f97133c7ac",
+                 "link":   "https://app.morpho.org/"},
+                # ── Plasma / Mantle / Base ────
+                {"chain": "Plasma", "market": "Aave v3",
+                 "asset": "SYRUPUSDT", "issuer": "Maple",
+                 "source": "dl:569ab5a6-76e4-46a6-abb6-b12be4197e31",
+                 "link":   "https://app.aave.com/"},
+                {"chain": "Mantle", "market": "Aave v3",
+                 "asset": "SYRUPUSDT", "issuer": "Maple",
+                 "source": "dl:4dfb0ee0-6fa3-4b8b-83f7-b92e83f5242f",
+                 "link":   "https://app.aave.com/"},
+                {"chain": "Base",   "market": "Aave v3",
+                 "asset": "SYRUPUSDC", "issuer": "Maple",
+                 "source": "dl:974b8732-2dce-4a46-8204-7f9e6b7efb71",
+                 "link":   "https://app.aave.com/"},
+            ]
+
+            def _latest_supply_for_source(src: str) -> float:
+                """Resolve a source URI to today's USD supply via the
+                same cached fetchers used by the chart above. All
+                lookups hit the @st.cache_data layer, so this loop
+                doesn't trigger any extra HTTP — every value comes
+                from the same in-memory cache the chart used."""
+                if src.startswith("kamino:"):
+                    lm = src.split(":", 1)[1]
+                    df = _fetch_kamino_market_history(lm)
+                    if df.empty: return 0.0
+                    return float(df["supply_usd"].iloc[-1])
+                if src == "juplend":
+                    df = _fetch_juplend_syrup_history()
+                    if df.empty: return 0.0
+                    return float(df["supply_usd"].iloc[-1])
+                if src.startswith("dl-sum:"):
+                    # Comma-separated pool ids — sum their latest TVL.
+                    total = 0.0
+                    for pid in src.split(":", 1)[1].split(","):
+                        df = _fetch_defillama_yields_pool_history(pid.strip())
+                        if not df.empty:
+                            total += float(df["tvl_usd"].iloc[-1])
+                    return total
+                if src.startswith("dl:"):
+                    pid = src.split(":", 1)[1]
+                    df = _fetch_defillama_yields_pool_history(pid)
+                    if df.empty: return 0.0
+                    return float(df["tvl_usd"].iloc[-1])
+                return 0.0
+
+            _table_rows = []
+            for m in _PC_MARKETS:
+                sup = _latest_supply_for_source(m["source"])
+                _table_rows.append({
+                    "Chain":      m["chain"],
+                    "Market":     m["market"],
+                    "Asset":      m["asset"],
+                    "Issuer":     m["issuer"],
+                    "Supply USD": sup,
+                    "Link":       m["link"],
+                })
+            _tbl = pd.DataFrame(_table_rows)
+            # Order chains by today's total supply desc, then within
+            # each chain by row supply desc — same reading order as
+            # the chart's hover panel and legend.
+            _chain_totals = (_tbl.groupby("Chain", sort=False)["Supply USD"]
+                                  .sum().sort_values(ascending=False))
+            _tbl["_chain_rank"] = _tbl["Chain"].map(
+                {c: i for i, c in enumerate(_chain_totals.index)})
+            _tbl = (_tbl.sort_values(["_chain_rank", "Supply USD"],
+                                       ascending=[True, False])
+                          .drop(columns=["_chain_rank"])
+                          .reset_index(drop=True))
+
             _chart_dwm_simple(
                 "Onchain private credit — Supply by chain",
                 source_df=_agg,
@@ -11145,6 +11261,44 @@ if __name__ == "__main__":
                 legend_entries=[(ch, _CHAIN_PALETTE[ch])
                                   for ch in _chain_order],
                 legend_label="chains",
+            )
+
+            # Per-market breakdown table — one row per market that
+            # contributes to the chart above. Chains and markets
+            # within a chain are sorted by today's supply descending,
+            # so the eye lands on the largest contributor first. The
+            # `Supply USD` column is shown as a dollar-formatted bar
+            # via Streamlit's column_config so relative sizes read at
+            # a glance without a separate sparkline.
+            st.markdown("**Markets included**")
+            st.dataframe(
+                _tbl,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Chain":   st.column_config.TextColumn(width="small"),
+                    "Market":  st.column_config.TextColumn(width="medium"),
+                    "Asset":   st.column_config.TextColumn(width="small"),
+                    "Issuer":  st.column_config.TextColumn(width="small"),
+                    "Supply USD": st.column_config.ProgressColumn(
+                        "Supply",
+                        format="$%.0f",
+                        min_value=0,
+                        max_value=float(_tbl["Supply USD"].max())
+                                    if not _tbl["Supply USD"].empty
+                                    else 1.0,
+                        help=("Latest total supply on this market, "
+                                "from Kamino API / JupLend seed / "
+                                "DefiLlama yields. Updated on the "
+                                "same 4h cache cadence as the chart "
+                                "above."),
+                    ),
+                    "Link":    st.column_config.LinkColumn(
+                        "Link",
+                        display_text="open",
+                        width="small",
+                    ),
+                },
             )
             st.stop()
 

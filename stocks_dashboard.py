@@ -3632,16 +3632,30 @@ class TokenGroupMetricsPuller(DataPuller):
                 raw_filename=raw_key,
                 stacked=True,
             ) as (tab_d, tab_w, tab_m):
+                # Pass a per-tab key derived from `raw_key` so
+                # `st.plotly_chart` never auto-hashes to a duplicate ID
+                # when two charts in the same render pass happen to
+                # produce identical figures. Symptom this fixes:
+                # StreamlitDuplicateElementId when the asset-equities
+                # vertical (loop at ~9880) renders multiple Ondo/xStocks/
+                # PreStocks projects whose MC frames are all empty (e.g.
+                # while the cron's BIRDEYE_API_KEY secret was missing →
+                # every per-token MC col stayed None → every project's
+                # figure hashed identically). Without the explicit key
+                # Streamlit's element-id collision check raises.
                 with tab_d:
-                    _chart(_build_mc_fig(mdf), use_container_width=True)
+                    _chart(_build_mc_fig(mdf), use_container_width=True,
+                           key=f"mc_chart_{raw_key}_d")
                 with tab_w:
                     _chart(_build_mc_fig(
                         _resample_dwm(mdf, "W", col_aggs=_agg)),
-                        use_container_width=True)
+                        use_container_width=True,
+                        key=f"mc_chart_{raw_key}_w")
                 with tab_m:
                     _chart(_build_mc_fig(
                         _resample_dwm(mdf, "M", col_aggs=_agg)),
-                        use_container_width=True)
+                        use_container_width=True,
+                        key=f"mc_chart_{raw_key}_m")
         else:
             raw_kwargs = {}
             if raw_key and _raw is not None:

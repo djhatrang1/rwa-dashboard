@@ -10916,20 +10916,31 @@ if __name__ == "__main__":
             #    Restoring: paste the previous 2x2 block back here
             #    (see git history at commit 40ee829 or earlier).
 
-            # ── Aggregate: total private-credit supply + borrow by chain ──
-            # Single time-series chart with four lines, two per chain:
-            # Solana Supply + Solana Borrow + Ethereum Supply + Ethereum
-            # Borrow. Gives the credit analyst a one-glance comparison of
-            # which chain dominates onchain RWA-credit liquidity at any
-            # point in time. Solana side aggregates the three Kamino
-            # isolated RWA markets (PRIME, Maple, OnRe) for both supply
-            # and borrow, plus JupLend's syrupUSDC pool for supply only.
-            # Ethereum side aggregates Aave Horizon RWA (supply + borrow,
-            # both via DefiLlama's protocol endpoint) plus Morpho Blue's
-            # three main syrupUSDC vaults (supply only — DL doesn't
-            # expose per-vault borrow). "Supply only" sources are noted
-            # explicitly in the caption so the borrow undercount is
-            # transparent rather than hidden.
+            # ── Aggregate: total private-credit SUPPLY by chain ────────────
+            # Single time-series chart with one supply line per chain
+            # (5 chains total). Borrow is intentionally NOT shown: only
+            # Kamino exposes per-market borrow numbers, every other
+            # source (JupLend seed + Morpho yields + Aave yields) is
+            # supply-only on DefiLlama's free tier, so any aggregated
+            # "borrow" line would be a chain-by-chain undercount
+            # mostly driven by Kamino — confusing rather than
+            # informative. Supply numbers are clean across every
+            # source, so we stick with supply-only here.
+            #
+            # Per-chain source mapping:
+            #   Solana   — Kamino RWA isolated markets (PRIME + Maple +
+            #              OnRe) plus JupLend's syrupUSDC pool seed.
+            #   Ethereum — Morpho Blue's three main syrupUSDC vaults
+            #              plus the small Aave v3 SYRUPUSDT pool.
+            #   Plasma   — Aave v3 SYRUPUSDT (largest Maple-on-Aave
+            #              deployment by TVL — most of the Aave syrup
+            #              footprint sits here).
+            #   Mantle   — Aave v3 SYRUPUSDT.
+            #   Base     — Aave v3 SYRUPUSDC.
+            #
+            # Adding a sixth chain later: append a tuple in
+            # `_EVM_AAVE_SYRUP_POOLS` (or a new helper for non-Aave
+            # sources) and assign a color in `_CHAIN_PALETTE`.
             _SOL_KAMINO_MARKETS = [
                 ("PRIME",
                  "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA"),
@@ -10938,106 +10949,149 @@ if __name__ == "__main__":
                 ("OnRe",
                  "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8"),
             ]
-            # Morpho syrupUSDC: three main Ethereum vaults (the 4th,
-            # `d202a84b...`, is < $100K and noise-level). Aggregated
-            # for the "Ethereum Supply" total. Borrow undercounted —
-            # see caption.
+            # Morpho syrupUSDC vaults on Ethereum — three main vaults
+            # (the 4th, `d202a84b...`, is < $100K and noise-level).
             _ETH_MORPHO_SYRUP_POOLS = [
                 "44d88566-7795-49d3-a4a9-5d174cd40007",
                 "90f4a341-6dbf-435f-8808-2d4b983cb233",
                 "785d94f7-fa71-415c-b594-3767680580be",
             ]
+            # Aave v3 syrupUSDC/T pools — one per chain. Pool ids from
+            # DefiLlama yields catalog. The symbol differs per chain
+            # (USDT-flavored on Plasma/Mantle/Ethereum, USDC on Base)
+            # but they're all Maple syrup-asset deployments on Aave,
+            # so we treat them as one project class. Each chain gets
+            # its own supply line; the Aave v3 numbers go into the
+            # chain bucket (so Ethereum aggregates Morpho + small
+            # Aave Eth pool, while Plasma/Mantle/Base are Aave-only).
+            _EVM_AAVE_SYRUP_POOLS: dict[str, list[str]] = {
+                "Ethereum": ["a79fdd93-2747-43ee-bf53-0c372192964d"],
+                "Plasma":   ["569ab5a6-76e4-46a6-abb6-b12be4197e31"],
+                "Mantle":   ["4dfb0ee0-6fa3-4b8b-83f7-b92e83f5242f"],
+                "Base":     ["974b8732-2dce-4a46-8204-7f9e6b7efb71"],
+            }
 
-            # Build a list of per-source DataFrames keyed by chain.
-            # Each has columns ['date', 'supply_usd'] and (sometimes)
-            # 'borrow_usd'. Missing borrow series are silently filled
-            # with 0 at merge time.
-            _sol_frames = []
+            # Helper: sum daily TVL across a list of pool ids, returns
+            # a DataFrame with ['date', 'supply_usd'] columns. Pools
+            # that return empty are silently skipped (per-pool DL
+            # outages don't block the chain-level total).
+            def _sum_pool_supplies(pool_ids: list[str]) -> pd.DataFrame:
+                frames = []
+                for pid in pool_ids:
+                    pf = _fetch_defillama_yields_pool_history(pid)
+                    if pf.empty:
+                        continue
+                    frames.append(pf.rename(columns={"tvl_usd":
+                                                       f"sup_{pid[:8]}"}))
+                if not frames:
+                    return pd.DataFrame()
+                out = frames[0]
+                for f in frames[1:]:
+                    out = out.merge(f, on="date", how="outer")
+                out = out.sort_values("date").fillna(0).reset_index(drop=True)
+                out["supply_usd"] = out[[c for c in out.columns
+                                          if c.startswith("sup_")]].sum(axis=1)
+                return out[["date", "supply_usd"]]
+
+            # ── Per-chain supply DataFrames ─────────────────────────
+            # Solana = Kamino markets (supply col) + JupLend seed.
+            _sol_pieces = []
             for _name, _lm in _SOL_KAMINO_MARKETS:
                 _f = _fetch_kamino_market_history(_lm)
                 if _f.empty:
                     continue
-                _sol_frames.append(
-                    _f[["date", "supply_usd", "borrow_usd"]]
-                    .rename(columns={"supply_usd": f"sup_{_name}",
-                                       "borrow_usd": f"bor_{_name}"}))
+                _sol_pieces.append(_f[["date", "supply_usd"]]
+                                     .rename(columns={"supply_usd":
+                                                       f"sup_{_name}"}))
             _jup = _fetch_juplend_syrup_history()
             if not _jup.empty:
-                _sol_frames.append(
-                    _jup.rename(columns={"supply_usd": "sup_JupLend"}))
+                _sol_pieces.append(_jup.rename(columns={"supply_usd":
+                                                          "sup_JupLend"}))
 
-            _eth_frames = []
-            _aave = _fetch_defillama_protocol_history(
-                "aave-horizon-rwa", chain="Ethereum")
-            if not _aave.empty:
-                _eth_frames.append(
-                    _aave.rename(columns={"supply_usd": "sup_AaveHorizon",
-                                            "borrow_usd": "bor_AaveHorizon"}))
-            for _pool in _ETH_MORPHO_SYRUP_POOLS:
-                _mp = _fetch_defillama_yields_pool_history(_pool)
-                if _mp.empty:
-                    continue
-                _eth_frames.append(
-                    _mp.rename(columns={"tvl_usd": f"sup_Morpho_{_pool[:8]}"}))
+            def _collapse(pieces, label):
+                """Outer-join a list of per-source frames and collapse
+                their `sup_*` columns into one chain-level `<label>`
+                column. Returns empty if no sources had data."""
+                if not pieces:
+                    return pd.DataFrame(columns=["date", label])
+                out = pieces[0]
+                for f in pieces[1:]:
+                    out = out.merge(f, on="date", how="outer")
+                out = out.sort_values("date").fillna(0).reset_index(drop=True)
+                out[label] = out[[c for c in out.columns
+                                    if c.startswith("sup_")]].sum(axis=1)
+                return out[["date", label]]
 
-            if not _sol_frames or not _eth_frames:
+            _solana = _collapse(_sol_pieces, "Solana")
+
+            # Ethereum = Morpho syrup vaults + Aave Eth syrupUSDT pool.
+            _eth_pieces = []
+            _morpho = _sum_pool_supplies(_ETH_MORPHO_SYRUP_POOLS)
+            if not _morpho.empty:
+                _eth_pieces.append(_morpho.rename(columns={"supply_usd":
+                                                             "sup_Morpho"}))
+            _aave_eth = _sum_pool_supplies(
+                _EVM_AAVE_SYRUP_POOLS["Ethereum"])
+            if not _aave_eth.empty:
+                _eth_pieces.append(_aave_eth.rename(columns={"supply_usd":
+                                                                "sup_Aave"}))
+            _ethereum = _collapse(_eth_pieces, "Ethereum")
+
+            # Plasma / Mantle / Base = Aave only, one pool each.
+            _plasma = _sum_pool_supplies(_EVM_AAVE_SYRUP_POOLS["Plasma"])
+            _plasma = _plasma.rename(columns={"supply_usd": "Plasma"}) \
+                if not _plasma.empty else pd.DataFrame(columns=["date","Plasma"])
+            _mantle = _sum_pool_supplies(_EVM_AAVE_SYRUP_POOLS["Mantle"])
+            _mantle = _mantle.rename(columns={"supply_usd": "Mantle"}) \
+                if not _mantle.empty else pd.DataFrame(columns=["date","Mantle"])
+            _base = _sum_pool_supplies(_EVM_AAVE_SYRUP_POOLS["Base"])
+            _base = _base.rename(columns={"supply_usd": "Base"}) \
+                if not _base.empty else pd.DataFrame(columns=["date","Base"])
+
+            _frames = [df for df in (_solana, _ethereum, _plasma, _mantle, _base)
+                        if not df.empty]
+            if not _frames:
                 st.warning(
-                    "Aggregate private-credit chart unavailable — one or "
-                    "more upstream sources (Kamino, JupLend seed, "
-                    "DefiLlama) returned empty. Refreshes on next 4h "
-                    "cache expiry."
+                    "Aggregate private-credit chart unavailable — every "
+                    "upstream source returned empty. Refreshes on next "
+                    "4h cache expiry."
                 )
                 st.stop()
 
-            # Outer-join all frames on `date`, fill missing with 0,
-            # then collapse into 4 series (Solana supply/borrow,
-            # Ethereum supply/borrow).
-            def _merge_all(frames):
-                out = frames[0]
-                for f in frames[1:]:
-                    out = out.merge(f, on="date", how="outer")
-                return out.sort_values("date").fillna(0).reset_index(drop=True)
+            _agg = _frames[0]
+            for f in _frames[1:]:
+                _agg = _agg.merge(f, on="date", how="outer")
+            _agg = _agg.sort_values("date").fillna(0).reset_index(drop=True)
 
-            _sol = _merge_all(_sol_frames)
-            _eth = _merge_all(_eth_frames)
-            _sup_cols_sol = [c for c in _sol.columns if c.startswith("sup_")]
-            _bor_cols_sol = [c for c in _sol.columns if c.startswith("bor_")]
-            _sup_cols_eth = [c for c in _eth.columns if c.startswith("sup_")]
-            _bor_cols_eth = [c for c in _eth.columns if c.startswith("bor_")]
-            _sol["Solana Supply"] = _sol[_sup_cols_sol].sum(axis=1)
-            _sol["Solana Borrow"] = _sol[_bor_cols_sol].sum(axis=1) \
-                if _bor_cols_sol else 0
-            _eth["Ethereum Supply"] = _eth[_sup_cols_eth].sum(axis=1)
-            _eth["Ethereum Borrow"] = _eth[_bor_cols_eth].sum(axis=1) \
-                if _bor_cols_eth else 0
-
-            _agg = (_sol[["date", "Solana Supply", "Solana Borrow"]]
-                      .merge(_eth[["date", "Ethereum Supply", "Ethereum Borrow"]],
-                              on="date", how="outer")
-                      .sort_values("date").fillna(0).reset_index(drop=True))
-
-            # Color choice: solid = supply, dashed = borrow; chain
-            # encoded by hue (Solana purple, Ethereum blue) to match
-            # the brand colors used in the rest of the dashboard.
-            _AGG_STYLE = {
-                "Solana Supply":   ("#9945FF", "solid"),
-                "Solana Borrow":   ("#9945FF", "dash"),
-                "Ethereum Supply": ("#627EEA", "solid"),
-                "Ethereum Borrow": ("#627EEA", "dash"),
+            # Per-chain palette — solid lines, distinct hues that
+            # don't clash with each other on a dark background.
+            _CHAIN_PALETTE = {
+                "Solana":   "#9945FF",   # canonical Solana purple
+                "Ethereum": "#627EEA",   # canonical Ethereum blue
+                "Plasma":   "#10B981",   # green — biggest non-Solana TVL
+                "Mantle":   "#F97316",   # orange — high contrast
+                "Base":     "#0052FF",   # canonical Base royal blue
             }
+            # Render order: Solana first, then Ethereum, then by TVL
+            # descending so the legend / hover panel reads top→bottom
+            # by current size.
+            _chain_order = [c for c in
+                             ("Solana", "Ethereum", "Plasma", "Mantle", "Base")
+                             if c in _agg.columns]
 
-            def _build_agg_fig(view, _style=_AGG_STYLE):
+            def _build_agg_fig(view, _order=_chain_order,
+                                _palette=_CHAIN_PALETTE):
                 fig = go.Figure()
-                for lbl, (color, dash) in _style.items():
-                    if lbl not in view.columns:
+                for ch in _order:
+                    if ch not in view.columns:
                         continue
-                    y = view[lbl].fillna(0)
+                    y = view[ch].fillna(0)
                     fig.add_trace(go.Scatter(
-                        x=view["date"], y=y, name=lbl, mode="lines",
-                        line=dict(color=color, width=2.0, dash=dash),
+                        x=view["date"], y=y, name=ch, mode="lines",
+                        line=dict(color=_palette[ch], width=2.0),
                         customdata=y.map(_fmt_usd),
                         hovertemplate=(
-                            f"{lbl}: %{{customdata}}<extra></extra>"),
+                            f"{ch}: %{{customdata}}<extra></extra>"),
                     ))
                 fig.update_layout(
                     height=460, hovermode="x unified",
@@ -11049,40 +11103,35 @@ if __name__ == "__main__":
                 return fig
 
             _chart_dwm_simple(
-                "Onchain private credit — Supply & Borrow by chain",
+                "Onchain private credit — Supply by chain",
                 source_df=_agg,
                 build_fig=_build_agg_fig,
                 raw_df=_agg.sort_values("date", ascending=False),
-                raw_key="private_credit_agg_by_chain",
-                raw_filename="private_credit_agg_by_chain",
+                raw_key="private_credit_supply_by_chain",
+                raw_filename="private_credit_supply_by_chain",
                 caption=(
-                    "Daily aggregate supply and outstanding borrow for "
-                    "onchain private-credit lending markets, split by "
-                    "chain.\n\n"
-                    "**Solana** sources (4): Kamino's three isolated "
-                    "RWA markets — "
-                    "[PRIME](https://kamino.com/borrow/CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA), "
+                    "Daily aggregate supply of onchain private-credit "
+                    "lending markets, split by chain. Borrow is not "
+                    "shown — only Kamino exposes per-market borrow "
+                    "numbers via API, so a borrow line would heavily "
+                    "undercount the EVM side and confuse the read.\n\n"
+                    "**Solana** — Kamino's three isolated RWA markets "
+                    "([PRIME](https://kamino.com/borrow/CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA), "
                     "[Maple](https://kamino.com/borrow/6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y), "
-                    "[OnRe](https://kamino.com/borrow/47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8) — "
-                    "plus **JupLend's syrupUSDC pool (supply only — "
-                    "no borrow exposed)**. "
-                    "**Ethereum** sources (2): "
-                    "[Aave Horizon RWA](https://app.aave.com/) "
-                    "(supply + borrow via DefiLlama) plus **Morpho "
-                    "Blue's three main syrupUSDC vaults (supply only — "
-                    "per-vault borrow not exposed by DefiLlama)**. "
-                    "Both Solana and Ethereum borrow totals therefore "
-                    "slightly undercount actual outstanding debt at "
-                    "the chain level. Sources: Kamino API + JupLend "
-                    "seed + DefiLlama. Cached 4h."
+                    "[OnRe](https://kamino.com/borrow/47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8)) "
+                    "plus JupLend's syrupUSDC pool (disk seed). "
+                    "**Ethereum** — Morpho Blue's three main syrupUSDC "
+                    "vaults plus Aave v3 SYRUPUSDT. "
+                    "**Plasma / Mantle / Base** — Aave v3 SYRUPUSDT or "
+                    "SYRUPUSDC vault on each chain (one pool per chain). "
+                    "Sources: Kamino API + JupLend seed + DefiLlama "
+                    "yields catalog. Cached 4h."
                 ),
-                col_aggs={"Solana Supply":   "last",
-                            "Solana Borrow":   "last",
-                            "Ethereum Supply": "last",
-                            "Ethereum Borrow": "last"},
+                col_aggs={ch: "last" for ch in _chain_order},
                 stacked=False,
-                legend_entries=[(lbl, c) for lbl, (c, _) in _AGG_STYLE.items()],
-                legend_label="series",
+                legend_entries=[(ch, _CHAIN_PALETTE[ch])
+                                  for ch in _chain_order],
+                legend_label="chains",
             )
             st.stop()
 

@@ -20,7 +20,17 @@ concurrency:
 jobs:
   pull:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 90 min: the xStocks puller fans out per-token CoinGecko calls,
+    # and each 429 from CoinGecko triggers ~90s of backoff. At ~80
+    # xStocks tokens × 2 endpoints (MC + Vol), a fully rate-limited
+    # run can take ~60 min just for xStocks. The previous 25-min cap
+    # was killing every run mid-xStocks, starving every downstream
+    # group (RWA / Foreign L1 / Solana tokens / etc) and producing
+    # the "data hasn't updated since June 11" symptom users saw.
+    # 90 min leaves comfortable headroom; if even this isn't enough,
+    # we'll need to either upgrade CoinGecko Pro tier or move xStocks
+    # to a parallel job so it can't block the others.
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4

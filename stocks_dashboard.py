@@ -3996,9 +3996,26 @@ _TOKENIZED_STOCK_GROUPS: list[tuple[str, str, list]] = [
         ],
     ),
     (
+        # Backpack — new tokenized-equity issuer with one listing so
+        # far (SPCX = SpaceX). Sister to PreStocks' SPACEX (different
+        # issuer, same underlying). No CoinGecko coverage yet; per-
+        # token Birdeye snapshot (the default `market_cap_source`) is
+        # the only working MC path. Add more entries here as Backpack
+        # launches more equities.
+        "backpack_group",
+        "Backpack",
+        [
+            ("SPCX", "SPCXxcqXj6e5dJDVNovHN8744zkbhM2bYudU45BimGb", "Solana"),
+        ],
+    ),
+    (
         "xstocks_group",
         "xStocks",
         [
+            # SPCXx — Backed.fi xStocks' SpaceX representation. Sister
+            # to PreStocks' SPACEX entry (different issuer, same
+            # underlying), and to Ondo's SPCXon series below.
+            ("SPCXx", "Xs3oZwbHvqis4NYcf4YKWmEia2eC84wSiVrcYcTqpH8", "Solana"),
             ("AAPLx", "XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp", "Solana"),
             ("ABBVx", "XswbinNKyPmzTa5CskMbCPvMW6G5CMnZXZEeQSSQoie", "Solana"),
             ("ABTx", "XsHtf5RpxsQ7jeJ9ivNewouZKJHbPxhPoEy6yYvULr7", "Solana"),
@@ -4348,6 +4365,10 @@ _TOKENIZED_STOCK_GROUPS: list[tuple[str, str, list]] = [
             ("SLVon", "iy11ytbSGcUnrjE6Lfv78TFqxKyUESfku1FugS9ondo", "Solana"),
             ("SMCIon", "jLca79XzcewRuBZyaJxVxuKpUHcEix1X4CP1RP9ondo", "Solana"),
             ("SNOWon", "JmFLCBwoNvcXy6B2VqABg6m784ubkXpaEx3p7S5ondo", "Solana"),
+            # SPCXon — Ondo's SpaceX representation (3 chains).
+            # Sister to PreStocks' SPACEX, Backpack's SPCX, xStocks'
+            # SPCXx — all four track the same underlying.
+            ("SPCXon", "wzAyQTorWyoVXuJKj2x8EqKEGJpS13z6EWE9z5Aondo", "Solana"),
             ("SPGIon", "JrTYw7A9jihX5TwpRStYviEbsYf2X2VJpZ13719ondo", "Solana"),
             ("SPOTon", "jzCvs2Pk8tDcfsFRqnEMjurgaQW4iQfEkandUR8ondo", "Solana"),
             ("SPYon", "k18WJUULWheRkSpSquYGdNNmtuE2Vbw1hpuUi92ondo", "Solana"),
@@ -4744,6 +4765,8 @@ _TOKENIZED_STOCK_GROUPS: list[tuple[str, str, list]] = [
             ("SOon", "0x99aA107e55250a9fE52bB4b5541A59239EB6D974", "Ethereum"),
             ("SOUNon", "0x966dB065199A3edEa2228C6E5Eb6Ac49FF251AcC", "Ethereum"),
             ("SOXXon", "0x1fE2126bC05E4BB0468C4a198e930c889e1054a3", "Ethereum"),
+            # SPCXon Ethereum — see Solana entry above for context.
+            ("SPCXon", "0xc9eef266834730340A55B6CC24621B31BAF55581", "Ethereum"),
             ("SPGIon", "0xbc843b147DB4C7E00721d76037b8b92e13AfE13f", "Ethereum"),
             ("SPOTon", "0x590F21186489cA1612f49a4B1ff5c66acD6796A9", "Ethereum"),
             ("SPYon", "0xFeDC5f4a6c38211c1338aa411018DFAf26612c08", "Ethereum"),
@@ -5009,6 +5032,8 @@ _TOKENIZED_STOCK_GROUPS: list[tuple[str, str, list]] = [
             ("SOon", "0xD7a6353a23ED2c4fcaC29A63CBBe3f65ffEf41F5", "BinanceSmartChain"),
             ("SOUNon", "0xeDCF71B2e2217064038AdCb54A3C3a5fC3488eF1", "BinanceSmartChain"),
             ("SOXXon", "0x2A3cbF64C8181DB4a25D41D4d7a7Db9984C59DAC", "BinanceSmartChain"),
+            # SPCXon BSC — see Solana entry above for context.
+            ("SPCXon", "0xd0a58BC9D88D3FF48C0294Cb7e45937d0E41A928", "BinanceSmartChain"),
             ("SPGIon", "0x55B370B704240a914f42B5bBB3195431C031f9f8", "BinanceSmartChain"),
             ("SPOTon", "0x50356167a4DbC38BeA6779C045e24E25fAcEdfdc", "BinanceSmartChain"),
             ("SPYon", "0x6a708EAD771238919D85930b5a0f10454E1C331a", "BinanceSmartChain"),
@@ -7266,7 +7291,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v68-birdeye-holder-count"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v69-spcx-backpack-xstocks-ondo"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────

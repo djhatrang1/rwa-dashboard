@@ -215,7 +215,25 @@ class CacheDB:
 
     # ── public API ────────────────────────────────────────────────────────────
 
+    @retry(stop=stop_after_attempt(5),
+           wait=wait_exponential(multiplier=1, min=1, max=10),
+           reraise=True)
     def save(self, puller: str, df: pd.DataFrame) -> None:
+        """Insert one snapshot row. Wrapped in tenacity retry to
+        handle Supabase's Supavisor pooler occasionally routing a
+        connection to a read-only replica — INSERT then fails with
+        `psycopg.errors.ReadOnlySqlTransaction` (SQLSTATE 25006).
+        Each retry opens a fresh `self._connect()` connection, which
+        is re-routed by Supavisor; sticking to RW takes 1-3 attempts
+        in practice.
+
+        We previously fixed the same hazard for `_init()` (commit
+        6e8dc30) — without this guard on `save()`, individual pullers
+        would silently drop their row mid-cron when their connection
+        happened to land on a read replica, leaving the dashboard
+        stuck on the last successful write (the symptom that surfaced
+        as "stablecoin data hasn't updated since 2026-06-22 07:58
+        UTC" after a series of otherwise-successful cron runs)."""
         with self._lock, self._connect() as c:
             if self.backend == "postgres":
                 payload = _json.loads(df.to_json(orient="records"))
@@ -2718,7 +2736,21 @@ class TokenGroupMetricsPuller(DataPuller):
                 headers=headers, params={"address": address}, timeout=15,
             )
             r.raise_for_status()
-            return r.json()["data"]["circulating_supply"]
+            # Birdeye's v3 market-data endpoint returns `{"data": null}`
+            # for tokens it doesn't index by this code path — most
+            # commonly Token-2022 mints (BUIDL, OUSG, USYC, sACRED,
+            # etc., which use the SPL Token-2022 program instead of
+            # the SPL Token program). The previous unchecked
+            # `r.json()["data"]["circulating_supply"]` then raised
+            # `'NoneType' object is not subscriptable` and surfaced as
+            # a warning on every cron tick. Returning None lets the
+            # caller fall back to other supply sources (Token Overview
+            # MC + price-based derivation) or skip circ-supply for
+            # this token altogether.
+            data = (r.json() or {}).get("data")
+            if not isinstance(data, dict):
+                return None
+            return data.get("circulating_supply")
         except Exception as exc:
             self.logger.warning("%s circ-supply fetch failed (%s): %s",
                                 self.GROUP_LABEL, address[:8], exc)

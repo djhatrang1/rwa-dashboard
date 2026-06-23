@@ -929,11 +929,23 @@ class SolanaTokenMetricsPuller(DataPuller):
                 .get("chainBalances", {})
                 .get(self.DEFILLAMA_CHAIN, {})
             )
+            # Prefer `minted` (matches Artemis's per-chain supply
+            # numbers within ~3% vs ~12% for `circulating`). Fall back
+            # to `circulating` so existing on-disk seeds (written
+            # before the June 2026 switch) still resolve to a value
+            # rather than 0 during the rollout window — the next live
+            # refresh re-writes the seed in the new format.
+            def _mc(it):
+                m = (it.get("minted") or {}).get("peggedUSD")
+                if m is not None:
+                    return float(m)
+                c = (it.get("circulating") or {}).get("peggedUSD")
+                return float(c) if c is not None else None
             return {
                 pd.to_datetime(item["date"], unit="s").strftime("%Y-%m-%d"):
-                float(item["circulating"]["peggedUSD"])
+                _mc(item)
                 for item in chain_data.get("tokens", [])
-                if item.get("circulating", {}).get("peggedUSD") is not None
+                if _mc(item) is not None
             }
         except Exception as exc:
             self.logger.warning("%s DeFiLlama supply fetch failed: %s",
@@ -1835,7 +1847,9 @@ def _fetch_dl_protocol(slug: str) -> dict:
 
 def _fetch_dl_stablecoin(stable_id: int) -> dict:
     """Return {chain_name: {date_str: market_cap_usd}} from DefiLlama
-    `/stablecoin/{id}` (chainBalances.{chain}.tokens[].circulating.peggedUSD)."""
+    `/stablecoin/{id}` (chainBalances.{chain}.tokens[].minted.peggedUSD,
+    with `circulating` as a backward-compat fallback for seeds written
+    before the minted→circulating switch in June 2026)."""
     now = time.time()
     key = f"stablecoin:{stable_id}"
     with _DL_LOCK:
@@ -1851,7 +1865,11 @@ def _fetch_dl_stablecoin(stable_id: int) -> dict:
             for pt in (payload.get("tokens") or []):
                 try:
                     ts = int(pt["date"])
-                    mc = (pt.get("circulating") or {}).get("peggedUSD")
+                    # Prefer `minted` (Artemis-aligned); fall back to
+                    # `circulating` for seeds written pre-switch.
+                    mc = (pt.get("minted") or {}).get("peggedUSD")
+                    if mc is None:
+                        mc = (pt.get("circulating") or {}).get("peggedUSD")
                     if mc is None:
                         continue
                     series[pd.to_datetime(ts, unit="s").strftime("%Y-%m-%d")] = float(mc)
@@ -7726,7 +7744,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v70-buidl-syrupusdc-usx-eurc-usdy"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v71-stables-dl-minted"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────

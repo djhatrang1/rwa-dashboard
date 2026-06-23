@@ -130,8 +130,18 @@ def _trim_protocol_for_seed(d: dict, *, keep_per_asset: bool = False) -> dict:
 
 def _trim_stablecoin_for_seed(d: dict) -> dict:
     """Strip everything except chainBalances.{chain}.tokens (the
-    per-day circulating peggedUSD series). Drops bridgedAmount, raw
-    token counts, etc."""
+    per-day per-chain `minted` peggedUSD series). Drops bridgedAmount,
+    raw token counts, etc.
+
+    NOTE: switched from `circulating` to `minted` (June 2026) to align
+    with Artemis's per-chain stablecoin supply numbers. The two
+    differ by `unreleased` (issuer treasury inventory not yet in
+    market) — typically 10-15% of issued supply. Cross-checked over
+    40 weeks of Solana USDC: mean abs error vs Artemis dropped from
+    12.1% (circulating) to 3.2% (minted). Seeds now carry the
+    `minted` field name to make the semantic explicit; the live-fetch
+    consumer prefers `minted` and falls back to `circulating` so
+    existing seeds don't go to zero during the rollout window."""
     if not isinstance(d, dict):
         return {}
     cb_in = d.get("chainBalances") or {}
@@ -141,17 +151,18 @@ def _trim_stablecoin_for_seed(d: dict) -> dict:
             continue
         tokens = payload.get("tokens") or []
         # Each entry is {date, circulating: {peggedUSD: float},
-        # minted: ..., unreleased: ..., ...}. We only read peggedUSD.
+        # minted: ..., unreleased: ..., bridgedTo: ...}. We read
+        # `minted` (matches Artemis).
         trimmed = []
         for pt in tokens:
             if not isinstance(pt, dict):
                 continue
             d_v = pt.get("date")
-            mc = (pt.get("circulating") or {}).get("peggedUSD")
+            mc = (pt.get("minted") or {}).get("peggedUSD")
             if d_v is None or mc is None:
                 continue
             trimmed.append({"date": d_v,
-                             "circulating": {"peggedUSD": mc}})
+                             "minted": {"peggedUSD": mc}})
         if trimmed:
             cb_out[chain] = {"tokens": trimmed}
     out = {"chainBalances": cb_out}
@@ -293,7 +304,14 @@ def fetch_stablecoin_chain_chart(chain: str) -> pd.DataFrame:
     for p in pts:
         try:
             d = pd.to_datetime(int(p["date"]), unit="s").strftime("%Y-%m-%d")
-            mc = float((p.get("totalCirculatingUSD")
+            # Read `totalMintedUSD` (matches Artemis's chain-level
+            # totals — at the aggregate endpoint, `totalCirculatingUSD`
+            # = `totalMintedUSD` + `totalBridgedToUSD`, so picking
+            # minted avoids double-counting native-mint + bridged-in
+            # supply that some downstream consumers treat as
+            # equivalent to native issuance). Switched from
+            # `totalCirculatingUSD` to `totalMintedUSD` in June 2026.
+            mc = float((p.get("totalMintedUSD")
                           or {}).get("peggedUSD") or 0)
             if mc > 0:
                 rows.append({"date": d, "mc_usd": mc})

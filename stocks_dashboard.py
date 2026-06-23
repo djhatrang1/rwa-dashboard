@@ -5923,6 +5923,28 @@ _STABLECOIN_GROUPS: list[tuple[str, str, list]] = [
             ("USDe",   "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT", "Solana"),
             ("JupUSD", "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD",  "Solana"),
             ("USDS",   "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",  "Solana"),
+            # ── Yield-bearing USD-equivalents + non-USD pegs (additions
+            #    requested via the Solana stablecoin chart). BUIDL and
+            #    USDY are also tracked in `_TREASURY_GROUPS` — duplicate
+            #    is intentional so they surface on BOTH the Treasury
+            #    & MMF chart and the Stablecoin MC chart. Per-token
+            #    Birdeye MC fires for each registry entry; the same
+            #    address fetched twice is cache-de-duped at the Birdeye
+            #    layer anyway. ──────────────────────────────────────
+            ("BUIDL",     "GyWgeqpy5GueU2YbkE8xqUeVEokCMMCEeUrfbtMw6phr", "Solana"),
+            ("syrupUSDC", "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj", "Solana"),
+            # USX = Solstice Finance's USD-pegged stable (~$508M MC,
+            # 15K holders on Solana). DefiLlama lists a second "USX"
+            # from dForce (id=44) — distinct project, EVM-only, NOT
+            # what's tracked here. The DL ID below pins this to the
+            # Solstice variant (id=310).
+            ("USX",       "6FrrzDk5mQARGc1TDYoyVnSyRdds1t4PbtohCD6p3tgG", "Solana"),
+            # EURC = Circle's EUR-pegged stable (~$120M MC on Solana,
+            # 54K holders). Multiple Birdeye matches for "EURC" exist
+            # but most are unbacked/dust — this address has the live
+            # Circle issuer + meaningful liquidity ($2.7M).
+            ("EURC",      "HzwqbKZw8HxMN6bF2yFZNrht3c2iXXzpKcFu7uBEDKtr", "Solana"),
+            ("USDY",      "A1KLoBrKBde8Ty9qtNQUtq3C2ortoC3u7twggz7sEto6", "Solana"),
             # ── Ethereum mirrors (USDC/USDT/USDe/USD1/USDG/PYUSD/USDS only —
             #    CASH and JupUSD are Solana-native and have no Ethereum
             #    deployment). Birdeye chain inferred from address; DefiLlama
@@ -5966,6 +5988,17 @@ _STABLECOIN_DEFILLAMA: dict = {
     "USD1":  {"type": "stablecoin", "id": 262},
     "USDG":  {"type": "stablecoin", "id": 286},
     "USDS":  {"type": "stablecoin", "id": 209},   # Sky Dollar (Maker rebrand)
+    # ── New (June 2026): yield-bearing USD-equivalents + EURC. ──────
+    "BUIDL": {"type": "stablecoin", "id": 173},   # BlackRock USD MMF
+    "USDY":  {"type": "stablecoin", "id": 129},   # Ondo US Dollar Yield
+    # USX from Solstice (id=310) — distinct from dForce USX (id=44,
+    # EVM-only). DL classification: Solana-only stablecoin.
+    "USX":   {"type": "stablecoin", "id": 310},
+    "EURC":  {"type": "stablecoin", "id":  50},   # Circle EUR Coin
+    # syrupUSDC: not in DL stablecoin catalog (yield wrapper, not pegged).
+    # Solana MC comes from per-token Birdeye Token Overview. Multi-chain
+    # MC charts elsewhere consume Maple's syrup data via the Morpho /
+    # Aave yields pools (see _ETH_MORPHO_POOLS + _EVM_AAVE_POOLS).
     # CASH / JupUSD: no DefiLlama coverage at the moment — Solana-only via Birdeye.
 }
 
@@ -7693,7 +7726,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v69-spcx-backpack-xstocks-ondo"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v70-buidl-syrupusdc-usx-eurc-usdy"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────

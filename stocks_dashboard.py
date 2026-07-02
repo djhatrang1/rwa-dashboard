@@ -8963,9 +8963,16 @@ if __name__ == "__main__":
                             _cc_colors[c] = _PS_PALETTE[
                                 _ci % len(_PS_PALETTE)]
                             _ci += 1
-                    for col in _cc_ordered:
-                        if col in _cc_wide.columns:
-                            _cc_wide[col] = _clip_spike(_cc_wide[col])
+                    # NB: `_clip_spike` intentionally NOT applied here
+                    # (previously ran with factor=2.0 and clipped real
+                    # payment-volume spikes down to their neighbors' avg
+                    # — e.g. Solana 2026-06-28 went from $6.41M raw to
+                    # $211K clipped because Jun 27/29 were both quiet
+                    # $200K days). Paymentscan's `/chains/daily` is
+                    # already validated upstream, and card volume
+                    # legitimately swings 10-30× day-to-day on weekly
+                    # promo cycles + weekend patterns. Clipping does
+                    # more harm than good for this data source.
                     _cc_raw = _cc_wide.copy()
                     _cc_raw["Total"] = (_cc_wide[_cc_ordered]
                                           .fillna(0).sum(axis=1).values)

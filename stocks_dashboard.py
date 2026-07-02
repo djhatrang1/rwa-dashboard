@@ -9153,8 +9153,18 @@ if __name__ == "__main__":
             # ── Tempo — daily stablecoin volume by token ──────────
             # Query 7209618 is already wide-format (one row per day,
             # one column per token volume). Just rename + plot.
+            #
+            # `revision` bumps invalidate the fetcher's 4h
+            # `@st.cache_data` window without waiting for TTL to
+            # expire — bump the string when someone re-runs the
+            # query on Dune's side and the current cached response
+            # is stale. Bumped 2026-07-02 after a fresh manual
+            # re-execution (Dune query was stuck at 2026-06-11 for
+            # 21 days because nobody had re-run it since — the
+            # /results endpoint returns the LAST executed snapshot,
+            # not a live run).
             try:
-                _tempo_raw = _dune_fetch(7209618)
+                _tempo_raw = _dune_fetch(7209618, revision="2026-07-02")
             except Exception:
                 _tempo_raw = pd.DataFrame()
             if _tempo_raw.empty:

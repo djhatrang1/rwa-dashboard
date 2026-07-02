@@ -4617,6 +4617,14 @@ _TOKENIZED_STOCK_GROUPS: list[tuple[str, str, list]] = [
             ("Vx", "0x2363fd1235c1b6d3a5088ddf8df3a0b3a30c5293", "Ethereum"),
             ("WMTx", "0x7aefc9965699fbea943e03264d96e50cd4a97b21", "Ethereum"),
             ("XOMx", "0xeedb0273c5af792745180e9ff568cd01550ffa13", "Ethereum"),
+            # STRCx on Ethereum — dominant deployment (~$143M MC as of
+            # 2026-07-02). Was missing from the registry entirely; only
+            # the Solana STRCx entry was tracked. Cross-checked via
+            # Birdeye Token Overview + confirmed same address on
+            # Arbitrum/BSC below. Also silently missing from the chart
+            # previously — its Ethereum contribution is the biggest
+            # single-symbol gap we've identified.
+            ("STRCx", "0x1Aad217B8F78dbA5E6693460e8470F8b1A3977f3", "Ethereum"),
 
             ("AAPLx", "0x9d275685dc284c8eb1c79f6aba7a63dc75ec890a", "BinanceSmartChain"),
             ("ABBVx", "0xfbf2398df672cee4afcc2a4a733222331c742a6a", "BinanceSmartChain"),
@@ -4681,6 +4689,19 @@ _TOKENIZED_STOCK_GROUPS: list[tuple[str, str, list]] = [
             ("Vx", "0x2363fd1235c1b6d3a5088ddf8df3a0b3a30c5293", "BinanceSmartChain"),
             ("WMTx", "0x7aefc9965699fbea943e03264d96e50cd4a97b21", "BinanceSmartChain"),
             ("XOMx", "0xeedb0273c5af792745180e9ff568cd01550ffa13", "BinanceSmartChain"),
+            # STRCx on BSC (~$5.2M MC).
+            ("STRCx", "0x1Aad217B8F78dbA5E6693460e8470F8b1A3977f3", "BinanceSmartChain"),
+            # ── Arbitrum deployments — the "third-largest chain" band
+            #    in the Market-Cap-by-Chain chart. Currently only 2
+            #    tickers have live MC on Arbitrum, but they account for
+            #    ~$30.5M combined (SPYx $21.7M + STRCx $8.9M) — matches
+            #    the total the user was expecting to see. The 63-token
+            #    EVM address set is deployed everywhere else (Ethereum,
+            #    BSC, Mantle) but Arbitrum's Birdeye indexer only
+            #    surfaces these 2 with meaningful MC today. Add more
+            #    entries as/when Backed.fi + Birdeye light up. ────────
+            ("SPYx",  "0x90a2a4c76b5d8c0bc892a69ea28aa775a8f2dd48", "Arbitrum"),
+            ("STRCx", "0x1Aad217B8F78dbA5E6693460e8470F8b1A3977f3", "Arbitrum"),
             # ── Mantle deployments (Backed.fi reused deterministic CREATE2
             #    addresses — identical to Ethereum/BSC). As of 2026-07-02
             #    only 4 tickers had non-trivial MC on Mantle; the rest
@@ -7791,7 +7812,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v72-xstocks-mantle"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v73-xstocks-arb-strcx"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────

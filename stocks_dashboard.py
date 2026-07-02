@@ -2666,6 +2666,12 @@ class TokenGroupMetricsPuller(DataPuller):
         "avalanche":"avalanche",
         "sui":      "sui",
         "zksync":   "zksync",
+        # Newer L2s / alt-VMs Birdeye added support for. Added when we
+        # started tracking bridged xStocks + tokenized-gold deployments
+        # there — Mantle for xStocks (GOOGLx/AAPLx/AMZNx/NVDAx currently),
+        # Monad for XAUT bridged mirror (~$14M).
+        "mantle":   "mantle",
+        "monad":    "monad",
     }
 
     @staticmethod
@@ -4675,6 +4681,15 @@ _TOKENIZED_STOCK_GROUPS: list[tuple[str, str, list]] = [
             ("Vx", "0x2363fd1235c1b6d3a5088ddf8df3a0b3a30c5293", "BinanceSmartChain"),
             ("WMTx", "0x7aefc9965699fbea943e03264d96e50cd4a97b21", "BinanceSmartChain"),
             ("XOMx", "0xeedb0273c5af792745180e9ff568cd01550ffa13", "BinanceSmartChain"),
+            # ── Mantle deployments (Backed.fi reused deterministic CREATE2
+            #    addresses — identical to Ethereum/BSC). As of 2026-07-02
+            #    only 4 tickers had non-trivial MC on Mantle; the rest
+            #    are unindexed. Add more here as Backed.fi bridges more
+            #    tickers or as we spot activity via Birdeye. ────────────
+            ("GOOGLx", "0xe92f673ca36c5e2efd2de7628f815f84807e803f", "Mantle"),
+            ("AAPLx",  "0x9d275685dc284c8eb1c79f6aba7a63dc75ec890a", "Mantle"),
+            ("AMZNx",  "0x3557ba345b01efa20a1bddc61f573bfd87195081", "Mantle"),
+            ("NVDAx",  "0xc845b2894dbddd03858fd2d643b4ef725fe0849d", "Mantle"),
         ],
     ),
     (
@@ -7776,7 +7791,7 @@ def _raw_data_modal(df: pd.DataFrame, fmt: dict | None = None,
 # stale session-state instances (from before a code reload) are discarded.
 # Exposed at module level so solana_dashboard.py can use it for its own
 # session-state version-gating without re-defining a parallel constant.
-_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v71-stables-dl-minted"
+_PULLERS_VERSION = "stocks-commodities-stables-treasuries-multichain-v72-xstocks-mantle"
 
 
 # ── Module guard ────────────────────────────────────────────────────────────

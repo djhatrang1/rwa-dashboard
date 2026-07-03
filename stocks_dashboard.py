@@ -1726,7 +1726,7 @@ def _fetch_kamino_reserve_history(lending_market: str, reserve: str,
 # `juplend_seeds/syrup_usdc_supply.json` and bump the cache-bust knob if
 # needed. We aggregate by UTC day (last reading wins — supply is a stock).
 @st.cache_data(ttl=14_400, show_spinner=False)
-def _fetch_juplend_syrup_history(revision: str = "v1") -> pd.DataFrame:
+def _fetch_juplend_syrup_history(revision: str = "v2-2026-07-03") -> pd.DataFrame:
     """Daily USD-valued supply history for syrupUSDC on JupLend (Solana).
 
     Returns DataFrame with columns `date` (day-truncated tz-naive) and

@@ -1660,6 +1660,60 @@ def _fetch_kamino_market_history(lending_market: str,
     return daily
 
 
+# ── Kamino per-reserve history fetcher ────────────────────────────────────────
+# Sibling to `_fetch_kamino_market_history` above but at the RESERVE level
+# instead of the aggregate market. Needed for charts that isolate a single
+# asset (e.g., syrupUSDC deposits on the Maple market) from the mixed
+# market total. The Maple market on Kamino has ~$74M of syrupUSDC as
+# collateral (LTV=88%) plus ~$77M of borrowable stables (USDC/PYUSD/CASH/
+# USDS/USDG/USD1) — the market-level supply chart mixes both, this
+# reserve-level chart isolates just the syrupUSDC collateral.
+#
+# Endpoint shape: GET /kamino-market/<lm>/reserves/<reserve>/metrics/history
+# → `{reserve, history: [{timestamp, metrics: {depositTvl, borrowTvl, ...}}]}`
+# Hourly snapshots since reserve creation. Daily-resample with last-of-day
+# for stock semantics (depositTvl is a TVL snapshot, not a flow).
+@st.cache_data(ttl=14_400, show_spinner=False)
+def _fetch_kamino_reserve_history(lending_market: str, reserve: str,
+                                    revision: str = "v1") -> pd.DataFrame:
+    """Daily depositTvl (supply) + borrowTvl (borrow) history for one
+    Kamino RESERVE within a lending market. Returns DataFrame with
+    columns `date`, `supply_usd`, `borrow_usd`. Empty on failure."""
+    try:
+        r = requests.get(
+            f"https://api.kamino.finance/kamino-market/{lending_market}"
+            f"/reserves/{reserve}/metrics/history",
+            timeout=30,
+        )
+        r.raise_for_status()
+        history = (r.json() or {}).get("history") or []
+    except Exception as exc:
+        log.warning("Kamino reserve history fetch failed (%s/%s): %s",
+                    lending_market[:8], reserve[:8], exc)
+        return pd.DataFrame()
+    rows = []
+    for it in history:
+        ts = it.get("timestamp")
+        m = it.get("metrics") or {}
+        if not ts:
+            continue
+        try:
+            rows.append({
+                "ts":         pd.to_datetime(ts, utc=True).tz_localize(None),
+                "supply_usd": float(m.get("depositTvl") or 0),
+                "borrow_usd": float(m.get("borrowTvl")  or 0),
+            })
+        except (ValueError, TypeError):
+            continue
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows).sort_values("ts").reset_index(drop=True)
+    df["date"] = df["ts"].dt.normalize()
+    return (df.groupby("date", as_index=False)
+              .agg(supply_usd=("supply_usd", "last"),
+                   borrow_usd=("borrow_usd", "last")))
+
+
 # ── JupLend syrupUSDC supply seed loader ──────────────────────────────────────
 # JupLend doesn't expose a public REST API, so the seed is hand-pasted from
 # their internal endpoint as a JSON file under `juplend_seeds/`. The file
@@ -11449,6 +11503,246 @@ if __name__ == "__main__":
                     ),
                 },
             )
+
+            # ── syrupUSDC-specific decomposition charts ─────────────
+            # Zoom in on Maple's syrupUSDC — the biggest single asset
+            # in this section. Two views:
+            #
+            #  (1) BY CHAIN — where does syrupUSDC supply actually
+            #      live? Sums the same underlying pool balances the
+            #      main chart uses but filtered to the syrupUSDC
+            #      asset only (syrupUSDT / JAAA / WJAAA excluded).
+            #      Solana isolates the Kamino RESERVE-level TVL
+            #      (via `_fetch_kamino_reserve_history`) so the
+            #      market's non-syrupUSDC borrowable stables don't
+            #      contaminate the total.
+            #
+            #  (2) BY PROTOCOL — where does syrupUSDC get deployed?
+            #      Same numbers, re-grouped by the venue that
+            #      accepts it (Kamino / JupLend / Morpho / Aave).
+            #
+            # These share the render-time fetcher cache (4h @
+            # st.cache_data) with the main chart above, so no
+            # additional API hits.
+
+            # Syrup Maple market on Kamino (Solana) — reserve pubkey
+            # for syrupUSDC-only supply within the mixed Maple market.
+            _MAPLE_KAMINO_LM  = "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y"
+            _MAPLE_SYRUP_RES  = "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY"
+            # Aave v3 SYRUPUSDC pool on Base (the ONLY Aave syrupUSDC
+            # deployment — Ethereum / Plasma / Mantle Aave pools are
+            # syrupUSDT, deliberately excluded from these charts).
+            _AAVE_BASE_SYRUPUSDC = "974b8732-2dce-4a46-8204-7f9e6b7efb71"
+
+            # Fetch component series
+            _kam_syrup = _fetch_kamino_reserve_history(
+                _MAPLE_KAMINO_LM, _MAPLE_SYRUP_RES)
+            _jup_syrup = _fetch_juplend_syrup_history()
+            _morpho_frames = []
+            for _pool in _ETH_MORPHO_POOLS[:3]:  # first 3 = syrupUSDC vaults
+                _mp = _fetch_defillama_yields_pool_history(_pool)
+                if not _mp.empty:
+                    _morpho_frames.append(_mp.rename(columns={
+                        "tvl_usd": f"m_{_pool[:8]}"}))
+            _aave_base = _fetch_defillama_yields_pool_history(
+                _AAVE_BASE_SYRUPUSDC)
+
+            # Merge helper
+            def _merge_series(pieces, out_col):
+                if not pieces:
+                    return pd.DataFrame(columns=["date", out_col])
+                out = pieces[0]
+                for f in pieces[1:]:
+                    out = out.merge(f, on="date", how="outer")
+                out = out.sort_values("date").fillna(0).reset_index(drop=True)
+                out[out_col] = out[[c for c in out.columns
+                                     if c != "date"]].sum(axis=1)
+                return out[["date", out_col]]
+
+            # Per-source normalized frames (one supply col each)
+            _kam_sol_syrup = (
+                _kam_syrup[["date","supply_usd"]]
+                    .rename(columns={"supply_usd": "kamino_sol"})
+                if not _kam_syrup.empty else pd.DataFrame())
+            _jup_sol_syrup = (
+                _jup_syrup.rename(columns={"supply_usd": "juplend_sol"})
+                if not _jup_syrup.empty else pd.DataFrame())
+            _morpho_eth = _merge_series(_morpho_frames, "morpho_eth")
+            _aave_base_df = (
+                _aave_base.rename(columns={"tvl_usd": "aave_base"})
+                if not _aave_base.empty else pd.DataFrame())
+
+            # ── Chart (1): syrupUSDC supply BY CHAIN ────────────────
+            # Solana = Kamino + JupLend  ·  Ethereum = 3 Morpho vaults
+            # · Base = 1 Aave v3 pool
+            _sol_df = _kam_sol_syrup.merge(
+                _jup_sol_syrup, on="date", how="outer") \
+                if not _kam_sol_syrup.empty and not _jup_sol_syrup.empty \
+                else (_kam_sol_syrup if not _kam_sol_syrup.empty
+                        else _jup_sol_syrup)
+            if not _sol_df.empty:
+                _sol_df = _sol_df.sort_values("date").fillna(0).reset_index(drop=True)
+                _sol_df["Solana"] = _sol_df[[c for c in _sol_df.columns
+                                              if c != "date"]].sum(axis=1)
+                _sol_df = _sol_df[["date","Solana"]]
+            else:
+                _sol_df = pd.DataFrame(columns=["date","Solana"])
+            _eth_df = _morpho_eth.rename(columns={"morpho_eth": "Ethereum"}) \
+                if not _morpho_eth.empty else pd.DataFrame(columns=["date","Ethereum"])
+            _base_df = _aave_base_df.rename(columns={"aave_base": "Base"}) \
+                if not _aave_base_df.empty else pd.DataFrame(columns=["date","Base"])
+
+            _by_chain_frames = [df for df in (_sol_df, _eth_df, _base_df)
+                                  if not df.empty]
+            if _by_chain_frames:
+                _syrup_chain = _by_chain_frames[0]
+                for f in _by_chain_frames[1:]:
+                    _syrup_chain = _syrup_chain.merge(f, on="date", how="outer")
+                _syrup_chain = (_syrup_chain.sort_values("date")
+                                              .fillna(0)
+                                              .reset_index(drop=True))
+                # Reuse the palette conventions from the main chart above.
+                _SYRUP_CHAIN_PALETTE = {
+                    "Solana":   "#9945FF",
+                    "Ethereum": "#627EEA",
+                    "Base":     "#0052FF",
+                }
+                _syrup_chain_order = [c for c in
+                                       ("Solana","Ethereum","Base")
+                                       if c in _syrup_chain.columns]
+
+                def _build_syrup_chain_fig(view,
+                                              _order=_syrup_chain_order,
+                                              _pal=_SYRUP_CHAIN_PALETTE):
+                    fig = go.Figure()
+                    for ch in _order:
+                        if ch not in view.columns: continue
+                        y = view[ch].fillna(0)
+                        fig.add_trace(go.Scatter(
+                            x=view["date"], y=y, name=ch, mode="lines",
+                            line=dict(color=_pal[ch], width=2.0),
+                            customdata=y.map(_fmt_usd),
+                            hovertemplate=(
+                                f"{ch}: %{{customdata}}<extra></extra>"),
+                        ))
+                    fig.update_layout(
+                        height=380, hovermode="x unified",
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        showlegend=False,
+                        yaxis=dict(tickprefix="$", tickformat="~s",
+                                    showgrid=True, rangemode="tozero"),
+                    )
+                    return fig
+
+                _chart_dwm_simple(
+                    "Maple's syrupUSDC — Supply by chain",
+                    source_df=_syrup_chain,
+                    build_fig=_build_syrup_chain_fig,
+                    raw_df=_syrup_chain.sort_values("date", ascending=False),
+                    raw_key="syrup_usdc_supply_by_chain",
+                    raw_filename="syrup_usdc_supply_by_chain",
+                    caption=(
+                        "Filtered to Maple's **syrupUSDC** only "
+                        "(syrupUSDT / JAAA / WJAAA excluded). Solana "
+                        "isolates the Kamino Maple market's syrupUSDC "
+                        "collateral RESERVE (not the mixed market "
+                        "total) plus JupLend's syrupUSDC pool. "
+                        "Ethereum = Morpho Blue's 3 syrupUSDC vaults. "
+                        "Base = Aave v3 SYRUPUSDC pool (the only "
+                        "Aave syrupUSDC deployment)."
+                    ),
+                    col_aggs={ch: "last" for ch in _syrup_chain_order},
+                    stacked=False,
+                    legend_entries=[(ch, _SYRUP_CHAIN_PALETTE[ch])
+                                      for ch in _syrup_chain_order],
+                    legend_label="chains",
+                )
+
+            # ── Chart (2): syrupUSDC supply BY PROTOCOL ─────────────
+            # Same numbers, re-grouped by the venue that accepts it.
+            _proto_frames = []
+            if not _kam_sol_syrup.empty:
+                _proto_frames.append(_kam_sol_syrup.rename(
+                    columns={"kamino_sol": "Kamino"}))
+            if not _jup_sol_syrup.empty:
+                _proto_frames.append(_jup_sol_syrup.rename(
+                    columns={"juplend_sol": "JupLend"}))
+            if not _morpho_eth.empty:
+                _proto_frames.append(_morpho_eth.rename(
+                    columns={"morpho_eth": "Morpho"}))
+            if not _aave_base_df.empty:
+                _proto_frames.append(_aave_base_df.rename(
+                    columns={"aave_base": "Aave"}))
+
+            if _proto_frames:
+                _syrup_proto = _proto_frames[0]
+                for f in _proto_frames[1:]:
+                    _syrup_proto = _syrup_proto.merge(
+                        f, on="date", how="outer")
+                _syrup_proto = (_syrup_proto.sort_values("date")
+                                              .fillna(0).reset_index(drop=True))
+                # Order by today's supply desc
+                _proto_totals = _syrup_proto.iloc[-1].drop("date")
+                _proto_order = list(_proto_totals.sort_values(
+                    ascending=False).index)
+                # Distinct hues (avoid confusion with the chain chart
+                # above — swap in warmer/cooler set so users don't
+                # mis-associate Kamino's purple with "Solana" etc.)
+                _SYRUP_PROTO_PALETTE = {
+                    "Kamino":  "#F97316",   # orange
+                    "JupLend": "#EC4899",   # pink
+                    "Morpho":  "#10B981",   # green
+                    "Aave":    "#8B5CF6",   # violet
+                }
+
+                def _build_syrup_proto_fig(view,
+                                             _order=_proto_order,
+                                             _pal=_SYRUP_PROTO_PALETTE):
+                    fig = go.Figure()
+                    for p in _order:
+                        if p not in view.columns: continue
+                        y = view[p].fillna(0)
+                        fig.add_trace(go.Scatter(
+                            x=view["date"], y=y, name=p, mode="lines",
+                            line=dict(color=_pal.get(p, "#888"),
+                                        width=2.0),
+                            customdata=y.map(_fmt_usd),
+                            hovertemplate=(
+                                f"{p}: %{{customdata}}<extra></extra>"),
+                        ))
+                    fig.update_layout(
+                        height=380, hovermode="x unified",
+                        margin=dict(t=10, b=10, l=10, r=10),
+                        showlegend=False,
+                        yaxis=dict(tickprefix="$", tickformat="~s",
+                                    showgrid=True, rangemode="tozero"),
+                    )
+                    return fig
+
+                _chart_dwm_simple(
+                    "Maple's syrupUSDC — Supply by protocol",
+                    source_df=_syrup_proto,
+                    build_fig=_build_syrup_proto_fig,
+                    raw_df=_syrup_proto.sort_values("date", ascending=False),
+                    raw_key="syrup_usdc_supply_by_protocol",
+                    raw_filename="syrup_usdc_supply_by_protocol",
+                    caption=(
+                        "Same syrupUSDC universe as the by-chain "
+                        "chart above, re-grouped by the venue "
+                        "accepting the deposit. **Kamino** = Solana "
+                        "Maple market (syrupUSDC-collateral reserve). "
+                        "**JupLend** = Solana syrupUSDC pool. "
+                        "**Morpho** = Ethereum's 3 main syrupUSDC "
+                        "vaults. **Aave** = Base Aave v3 SYRUPUSDC "
+                        "pool (Aave's Ethereum/Plasma/Mantle pools "
+                        "are syrupUSDT, not USDC — excluded)."
+                    ),
+                    col_aggs={p: "last" for p in _proto_order},
+                    stacked=False,
+                    legend_entries=[(p, _SYRUP_PROTO_PALETTE.get(p, "#888"))
+                                      for p in _proto_order],
+                    legend_label="protocols",
+                )
             st.stop()
 
         if selected_asset == "RWA perps":

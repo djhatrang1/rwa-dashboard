@@ -218,6 +218,23 @@
       }
     ],
     [
+      "mkts:US500",
+      {
+        "category": "indices"
+      }
+    ],
+    [
+      "mkts:USTECH",
+      {
+        "category": "indices",
+        "displayName": "QQQ",
+        "keywords": [
+          "USTECH",
+          "NQ"
+        ]
+      }
+    ],
+    [
       "para:AVGO",
       {
         "category": "stocks",
@@ -1386,6 +1403,6 @@
       }
     ]
   ],
-  "fetched_at": "2026-06-28T05:02:06.090835Z",
+  "fetched_at": "2026-07-05T04:39:28.933664Z",
   "source": "POST https://api.hyperliquid.xyz/info type=perpConciseAnnotations"
 }

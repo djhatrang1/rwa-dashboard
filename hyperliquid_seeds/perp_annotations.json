@@ -220,7 +220,11 @@
     [
       "mkts:US500",
       {
-        "category": "indices"
+        "category": "indices",
+        "keywords": [
+          "S&P500",
+          "SPY"
+        ]
       }
     ],
     [
@@ -780,6 +784,17 @@
       }
     ],
     [
+      "xyz:GIGADEV",
+      {
+        "category": "stocks",
+        "displayName": "GIGADEV",
+        "keywords": [
+          "603986",
+          "memory"
+        ]
+      }
+    ],
+    [
       "xyz:GME",
       {
         "category": "stocks",
@@ -842,6 +857,17 @@
         "keywords": [
           "korea",
           "car"
+        ]
+      }
+    ],
+    [
+      "xyz:IBIDEN",
+      {
+        "category": "stocks",
+        "displayName": "IBIDEN",
+        "keywords": [
+          "4062",
+          "japan"
         ]
       }
     ],
@@ -1176,6 +1202,17 @@
       }
     ],
     [
+      "xyz:SHAZ",
+      {
+        "category": "stocks",
+        "displayName": "SHAZ",
+        "keywords": [
+          "sharonai",
+          "ai"
+        ]
+      }
+    ],
+    [
       "xyz:SILVER",
       {
         "category": "commodities",
@@ -1194,6 +1231,17 @@
         "keywords": [
           "ai",
           "korea"
+        ]
+      }
+    ],
+    [
+      "xyz:SKHY",
+      {
+        "category": "stocks",
+        "displayName": "SKHY",
+        "keywords": [
+          "skhynix",
+          "memory"
         ]
       }
     ],
@@ -1403,6 +1451,6 @@
       }
     ]
   ],
-  "fetched_at": "2026-07-05T04:39:28.933664Z",
+  "fetched_at": "2026-07-12T04:06:47.198865Z",
   "source": "POST https://api.hyperliquid.xyz/info type=perpConciseAnnotations"
 }

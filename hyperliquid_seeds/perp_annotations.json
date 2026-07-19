@@ -260,6 +260,36 @@
       }
     ],
     [
+      "para:COHR",
+      {
+        "category": "stocks",
+        "keywords": [
+          "coherent",
+          "photonics"
+        ]
+      }
+    ],
+    [
+      "para:CRDO",
+      {
+        "category": "stocks",
+        "keywords": [
+          "credo",
+          "networking"
+        ]
+      }
+    ],
+    [
+      "para:GLW",
+      {
+        "category": "stocks",
+        "keywords": [
+          "corning",
+          "optics"
+        ]
+      }
+    ],
+    [
       "para:OTHERS",
       {
         "category": "crypto",
@@ -659,6 +689,17 @@
         "keywords": [
           "coreweave",
           "ai"
+        ]
+      }
+    ],
+    [
+      "xyz:CXMT",
+      {
+        "category": "preipo",
+        "displayName": "CXMT",
+        "keywords": [
+          "688825",
+          "changxin"
         ]
       }
     ],
@@ -1451,6 +1492,6 @@
       }
     ]
   ],
-  "fetched_at": "2026-07-12T04:06:47.198865Z",
+  "fetched_at": "2026-07-19T04:03:41.397727Z",
   "source": "POST https://api.hyperliquid.xyz/info type=perpConciseAnnotations"
 }

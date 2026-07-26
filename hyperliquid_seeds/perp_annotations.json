@@ -290,6 +290,36 @@
       }
     ],
     [
+      "para:IREN",
+      {
+        "category": "stocks",
+        "keywords": [
+          "iren",
+          "neoclouds"
+        ]
+      }
+    ],
+    [
+      "para:LRCX",
+      {
+        "category": "stocks",
+        "keywords": [
+          "lam",
+          "wafer fab"
+        ]
+      }
+    ],
+    [
+      "para:NET",
+      {
+        "category": "stocks",
+        "keywords": [
+          "cloudflare",
+          "cybersec"
+        ]
+      }
+    ],
+    [
       "para:OTHERS",
       {
         "category": "crypto",
@@ -297,6 +327,16 @@
         "keywords": [
           "altcoin",
           "index"
+        ]
+      }
+    ],
+    [
+      "para:STX",
+      {
+        "category": "stocks",
+        "keywords": [
+          "seagate",
+          "storage"
         ]
       }
     ],
@@ -831,7 +871,7 @@
         "displayName": "GIGADEV",
         "keywords": [
           "603986",
-          "memory"
+          "china"
         ]
       }
     ],
@@ -1492,6 +1532,6 @@
       }
     ]
   ],
-  "fetched_at": "2026-07-19T04:03:41.397727Z",
+  "fetched_at": "2026-07-26T04:05:53.853631Z",
   "source": "POST https://api.hyperliquid.xyz/info type=perpConciseAnnotations"
 }

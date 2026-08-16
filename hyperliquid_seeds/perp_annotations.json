@@ -239,6 +239,16 @@
       }
     ],
     [
+      "para:10Y",
+      {
+        "category": "rates",
+        "keywords": [
+          "treasury",
+          "yield"
+        ]
+      }
+    ],
+    [
       "para:AAOI",
       {
         "category": "stock",
@@ -300,6 +310,16 @@
       }
     ],
     [
+      "para:CRWD",
+      {
+        "category": "stocks",
+        "keywords": [
+          "cybersec",
+          "security"
+        ]
+      }
+    ],
+    [
       "para:GLW",
       {
         "category": "stocks",
@@ -357,6 +377,16 @@
         "keywords": [
           "reddit",
           "media"
+        ]
+      }
+    ],
+    [
+      "para:SMCI",
+      {
+        "category": "stocks",
+        "keywords": [
+          "supermicro",
+          "ai servers"
         ]
       }
     ],
@@ -1669,6 +1699,6 @@
       }
     ]
   ],
-  "fetched_at": "2026-08-09T02:35:15.753298Z",
+  "fetched_at": "2026-08-16T02:06:12.698945Z",
   "source": "POST https://api.hyperliquid.xyz/info type=perpConciseAnnotations"
 }

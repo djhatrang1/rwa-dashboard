@@ -424,10 +424,10 @@
     [
       "para:UNITREE",
       {
-        "category": "preipo",
+        "category": "stocks",
         "keywords": [
           "robotics",
-          "china"
+          "688836"
         ]
       }
     ],
@@ -566,6 +566,17 @@
         "keywords": [
           "grain",
           "food"
+        ]
+      }
+    ],
+    [
+      "xyz:AAOI",
+      {
+        "category": "stocks",
+        "displayName": "AAOI",
+        "keywords": [
+          "optics",
+          "photonics"
         ]
       }
     ],
@@ -808,6 +819,17 @@
         "keywords": [
           "circle",
           "usdc"
+        ]
+      }
+    ],
+    [
+      "xyz:CRWD",
+      {
+        "category": "stocks",
+        "displayName": "CRWD",
+        "keywords": [
+          "crowdstrik",
+          "security"
         ]
       }
     ],
@@ -1076,6 +1098,17 @@
       }
     ],
     [
+      "xyz:IREN",
+      {
+        "category": "stocks",
+        "displayName": "IREN",
+        "keywords": [
+          "compute",
+          "cloud"
+        ]
+      }
+    ],
+    [
       "xyz:JP225",
       {
         "category": "indices",
@@ -1186,6 +1219,17 @@
       }
     ],
     [
+      "xyz:MAGS",
+      {
+        "category": "stocks",
+        "displayName": "MAGS",
+        "keywords": [
+          "roundhill",
+          "etf"
+        ]
+      }
+    ],
+    [
       "xyz:META",
       {
         "category": "stocks",
@@ -1204,6 +1248,17 @@
         "keywords": [
           "0100",
           "china"
+        ]
+      }
+    ],
+    [
+      "xyz:MRNA",
+      {
+        "category": "stocks",
+        "displayName": "MRNA",
+        "keywords": [
+          "moderna",
+          "pharma"
         ]
       }
     ],
@@ -1281,6 +1336,17 @@
         "keywords": [
           "neocloud",
           "etf"
+        ]
+      }
+    ],
+    [
+      "xyz:NET",
+      {
+        "category": "stocks",
+        "displayName": "NET",
+        "keywords": [
+          "cloudflare",
+          "security"
         ]
       }
     ],
@@ -1402,6 +1468,17 @@
         "keywords": [
           "quantum",
           "iontrap"
+        ]
+      }
+    ],
+    [
+      "xyz:RDDT",
+      {
+        "category": "stocks",
+        "displayName": "RDDT",
+        "keywords": [
+          "reddit",
+          "tech"
         ]
       }
     ],
@@ -1584,11 +1661,11 @@
     [
       "xyz:UNITREE",
       {
-        "category": "preipo",
+        "category": "stocks",
         "displayName": "UNITREE",
         "keywords": [
           "688836",
-          "robotics"
+          "yushu"
         ]
       }
     ],
@@ -1699,6 +1776,6 @@
       }
     ]
   ],
-  "fetched_at": "2026-08-16T02:06:12.698945Z",
+  "fetched_at": "2026-08-23T02:09:12.979353Z",
   "source": "POST https://api.hyperliquid.xyz/info type=perpConciseAnnotations"
 }

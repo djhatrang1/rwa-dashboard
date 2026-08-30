@@ -91,6 +91,27 @@
       }
     ],
     [
+      "io:ANTH",
+      {
+        "category": "preipo",
+        "displayName": "ANTH",
+        "keywords": [
+          "anthropic"
+        ]
+      }
+    ],
+    [
+      "io:SNDK",
+      {
+        "category": "stocks",
+        "displayName": "SNDK",
+        "keywords": [
+          "sandisk",
+          "memory"
+        ]
+      }
+    ],
+    [
       "km:AAPL",
       {
         "category": "stocks"
@@ -218,6 +239,13 @@
       }
     ],
     [
+      "mkts:SMALL2000",
+      {
+        "category": "indices",
+        "displayName": "IWM"
+      }
+    ],
+    [
       "mkts:US500",
       {
         "category": "indices",
@@ -225,6 +253,13 @@
           "S&P500",
           "SPY"
         ]
+      }
+    ],
+    [
+      "mkts:USBOND",
+      {
+        "category": "stocks",
+        "displayName": "TLT"
       }
     ],
     [
@@ -255,6 +290,16 @@
         "keywords": [
           "applied",
           "optics"
+        ]
+      }
+    ],
+    [
+      "para:ANSEM",
+      {
+        "category": "crypto",
+        "keywords": [
+          "black bull",
+          "memecoin"
         ]
       }
     ],
@@ -330,6 +375,17 @@
       }
     ],
     [
+      "para:IGV",
+      {
+        "category": "stocks",
+        "displayName": "IGV",
+        "keywords": [
+          "ishares",
+          "software"
+        ]
+      }
+    ],
+    [
       "para:IREN",
       {
         "category": "stocks",
@@ -346,6 +402,16 @@
         "keywords": [
           "lam",
           "wafer fab"
+        ]
+      }
+    ],
+    [
+      "para:MELI",
+      {
+        "category": "stocks",
+        "keywords": [
+          "mercado",
+          "e-commerce"
         ]
       }
     ],
@@ -1516,6 +1582,17 @@
       }
     ],
     [
+      "xyz:SHEIN",
+      {
+        "category": "preipo",
+        "displayName": "SHEIN",
+        "keywords": [
+          "0625",
+          "ecommerce"
+        ]
+      }
+    ],
+    [
       "xyz:SILVER",
       {
         "category": "commodities",
@@ -1732,6 +1809,17 @@
       }
     ],
     [
+      "xyz:XBI",
+      {
+        "category": "stocks",
+        "displayName": "XBI",
+        "keywords": [
+          "biotech",
+          "etf"
+        ]
+      }
+    ],
+    [
       "xyz:XLE",
       {
         "category": "stocks",
@@ -1776,6 +1864,6 @@
       }
     ]
   ],
-  "fetched_at": "2026-08-23T02:09:12.979353Z",
+  "fetched_at": "2026-08-30T05:39:44.761394Z",
   "source": "POST https://api.hyperliquid.xyz/info type=perpConciseAnnotations"
 }

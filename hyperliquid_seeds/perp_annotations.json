@@ -101,6 +101,38 @@
       }
     ],
     [
+      "io:GPRO",
+      {
+        "category": "stocks",
+        "displayName": "GOPRO",
+        "keywords": [
+          "gopro",
+          "gpro"
+        ]
+      }
+    ],
+    [
+      "io:NBIS",
+      {
+        "category": "stocks",
+        "displayName": "NBIS",
+        "keywords": [
+          "nebius"
+        ]
+      }
+    ],
+    [
+      "io:OAI",
+      {
+        "category": "preipo",
+        "displayName": "OPENAI",
+        "keywords": [
+          "openai",
+          "oai"
+        ]
+      }
+    ],
+    [
       "io:SNDK",
       {
         "category": "stocks",
@@ -457,6 +489,16 @@
       }
     ],
     [
+      "para:SOFI",
+      {
+        "category": "stocks",
+        "keywords": [
+          "lending",
+          "fintech"
+        ]
+      }
+    ],
+    [
       "para:STX",
       {
         "category": "stocks",
@@ -484,6 +526,16 @@
         "keywords": [
           "altcoin",
           "index"
+        ]
+      }
+    ],
+    [
+      "para:TTWO",
+      {
+        "category": "stocks",
+        "keywords": [
+          "gaming",
+          "software"
         ]
       }
     ],
@@ -775,6 +827,17 @@
         "keywords": [
           "smartbird",
           "allbirds"
+        ]
+      }
+    ],
+    [
+      "xyz:BMNR",
+      {
+        "category": "stocks",
+        "displayName": "BMNR",
+        "keywords": [
+          "ETH",
+          "Bitmine"
         ]
       }
     ],
@@ -1584,11 +1647,11 @@
     [
       "xyz:SHEIN",
       {
-        "category": "preipo",
+        "category": "stocks",
         "displayName": "SHEIN",
         "keywords": [
-          "0625",
-          "ecommerce"
+          "consumer",
+          "china"
         ]
       }
     ],
@@ -1864,6 +1927,6 @@
       }
     ]
   ],
-  "fetched_at": "2026-08-30T05:39:44.761394Z",
+  "fetched_at": "2026-09-06T04:57:04.440933Z",
   "source": "POST https://api.hyperliquid.xyz/info type=perpConciseAnnotations"
 }

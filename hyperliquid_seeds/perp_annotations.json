@@ -112,6 +112,17 @@
       }
     ],
     [
+      "io:IONQ",
+      {
+        "category": "stocks",
+        "displayName": "IONQ",
+        "keywords": [
+          "quantum",
+          "ionq"
+        ]
+      }
+    ],
+    [
       "io:NBIS",
       {
         "category": "stocks",
@@ -363,6 +374,16 @@
         "keywords": [
           "networking",
           "optics"
+        ]
+      }
+    ],
+    [
+      "para:CIFR",
+      {
+        "category": "stocks",
+        "keywords": [
+          "cipher",
+          "neocloud"
         ]
       }
     ],
@@ -1927,6 +1948,6 @@
       }
     ]
   ],
-  "fetched_at": "2026-09-06T04:57:04.440933Z",
+  "fetched_at": "2026-09-13T05:11:02.364189Z",
   "source": "POST https://api.hyperliquid.xyz/info type=perpConciseAnnotations"
 }
